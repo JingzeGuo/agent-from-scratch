@@ -1,5 +1,6 @@
+from typing import Any, Literal
+
 from pydantic import BaseModel, Field
-from typing import Any
 
 
 # ==========================================
@@ -65,6 +66,7 @@ class ToolCall(BaseModel):
 class ToolResult(BaseModel):
     """Represents the execution result returned by a tool to the Agent."""
 
+    type: Literal["tool_result"] = "tool_result"
     tool_use_id: str = Field(
         description="The unique identifier corresponding to the original tool call. Must strictly match the tool_use_id in the ToolCall."
     )
@@ -75,3 +77,11 @@ class ToolResult(BaseModel):
         default=False,
         description="A flag indicating whether an exception or error occurred during tool execution. Defaults to False.",
     )
+
+
+class AgentStep(BaseModel):
+    step_number: int = Field(ge=1)
+    stop_reason: str | None
+    text: list[str] = Field(default_factory=list)
+    tool_calls: list[ToolCall] = Field(default_factory=list)
+    tool_results: list[ToolResult] = Field(default_factory=list)

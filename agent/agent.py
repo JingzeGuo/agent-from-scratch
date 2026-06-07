@@ -1,5 +1,6 @@
 from anthropic import Anthropic
 
+from .schemas import AgentStep, ToolCall, ToolResult
 from .tool_registry import ToolRegistry
 
 
@@ -16,6 +17,7 @@ class Agent:
         self.model = model
         self.max_steps = max_steps
         self.messages = []
+        self.steps: list[AgentStep] = []
 
     def run(self, user_task: str) -> None:
         self.messages.append(
@@ -30,6 +32,9 @@ class Agent:
 
         while step < self.max_steps:
             step += 1
+            text_blocks: list[str] = []
+            tool_calls: list[ToolCall] = []
+            tool_results: list[ToolResult] = []
             print(f"\n--- Step {step} ---")
 
             response = self.client.messages.create(
@@ -47,36 +52,56 @@ class Agent:
             )
             for block in response.content:
                 if block.type == "text":
+                    text_blocks.append(block.text)
                     print(block.text)
             if response.stop_reason == "end_turn":
+                self.steps.append(
+                    AgentStep(
+                        step_number=step,
+                        stop_reason=response.stop_reason,
+                        text=text_blocks,
+                        tool_calls=tool_calls,
+                        tool_results=tool_results,
+                    )
+                )
                 task_completed = True
                 break
 
-            tool_results = []
-
             for block in response.content:
                 if block.type == "tool_use":
+                    tool_call = ToolCall(
+                        name=block.name,
+                        input=block.input,
+                        tool_use_id=block.id,
+                    )
+                    tool_calls.append(tool_call)
                     print(f"Tool: {block.name}")
                     print(f"Input: {block.input}")
 
                     output, is_error = self.registry.execute(
-                        block.name,
-                        block.input,
+                        tool_call.name,
+                        tool_call.input,
                     )
                     status = "failed" if is_error else "succeeded"
                     print(f"Status: {status}")
                     print(f"Output: {output}")
-
-                    tool_results.append(
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": output,
-                            "is_error": is_error,
-                        }
+                    tool_result = ToolResult(
+                        tool_use_id=tool_call.tool_use_id,
+                        content=output,
+                        is_error=is_error,
                     )
+                    tool_results.append(tool_result)
 
             if not tool_results:
+                self.steps.append(
+                    AgentStep(
+                        step_number=step,
+                        stop_reason=response.stop_reason,
+                        text=text_blocks,
+                        tool_calls=tool_calls,
+                        tool_results=tool_results,
+                    )
+                )
                 print(f"Unexpected stop reason: {response.stop_reason}")
                 task_completed = True
                 break
@@ -84,8 +109,17 @@ class Agent:
             self.messages.append(
                 {
                     "role": "user",
-                    "content": tool_results,
+                    "content": [result.model_dump() for result in tool_results],
                 }
+            )
+            self.steps.append(
+                AgentStep(
+                    step_number=step,
+                    stop_reason=response.stop_reason,
+                    text=text_blocks,
+                    tool_calls=tool_calls,
+                    tool_results=tool_results,
+                )
             )
 
         if not task_completed:
