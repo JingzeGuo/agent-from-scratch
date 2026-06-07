@@ -5,13 +5,11 @@ from pydantic import BaseModel, ValidationError
 
 @dataclass
 class Tool:
-    # ----- 数据字段 -----
     name: str
     description: str
-    input_schema: type[BaseModel]  # Pydantic 类本身, 不是实例
-    fn: Callable  # 真正干活的函数
+    input_schema: type[BaseModel]
+    fn: Callable
 
-    # ----- 方法 1: 生成 Anthropic schema -----
     def to_anthropic_schema(self) -> dict[str, Any]:
         """Build the tool definition expected by the Anthropic Messages API."""
         json_schema = self.input_schema.model_json_schema()
@@ -23,7 +21,6 @@ class Tool:
             "input_schema": json_schema,
         }
 
-    # ----- 方法 2: 执行工具 -----
     def execute(self, raw_input: dict[str, Any]) -> tuple[str, bool]:
         try:
             parsed = self.input_schema(**raw_input)
