@@ -2,6 +2,7 @@ from anthropic import Anthropic
 
 from .schemas import AgentStep, ToolCall, ToolResult
 from .tool_registry import ToolRegistry
+from .token_tracker import TokenTracker
 
 
 class Agent:
@@ -18,6 +19,7 @@ class Agent:
         self.max_steps = max_steps
         self.messages = []
         self.steps: list[AgentStep] = []
+        self.token_tracker = TokenTracker()
 
     def run(self, user_task: str) -> None:
         self.messages.append(
@@ -43,6 +45,7 @@ class Agent:
                 tools=self.registry.to_anthropic_schemas(),
                 messages=self.messages,
             )
+            self.token_tracker.add(response.usage)
 
             self.messages.append(
                 {

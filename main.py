@@ -21,7 +21,8 @@ def main() -> None:
         if user_task.lower() in {"exit", "quit"}:
             print("Goodbye.")
             return
-        agent.run(user_task)
+        with agent.token_tracker:
+            agent.run(user_task)
 
 
 if __name__ == "__main__":
