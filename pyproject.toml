@@ -9,3 +9,8 @@ dependencies = [
     "pydantic>=2.13.4",
     "python-dotenv>=1.2.2",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]

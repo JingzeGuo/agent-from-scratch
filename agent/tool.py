@@ -1,6 +1,9 @@
-from typing import Any, Callable
 from dataclasses import dataclass
+from typing import Any, Callable
+
 from pydantic import BaseModel, ValidationError
+
+from .retry import retry
 
 
 @dataclass
@@ -21,6 +24,10 @@ class Tool:
             "input_schema": json_schema,
         }
 
+    @retry(max_attempts=3, backoff=2)
+    def _run(self, parsed_input: BaseModel) -> Any:
+        return self.fn(**parsed_input.model_dump())
+
     def execute(self, raw_input: dict[str, Any]) -> tuple[str, bool]:
         try:
             parsed = self.input_schema(**raw_input)
@@ -31,7 +38,7 @@ class Tool:
                 error_lines.append(f"  - field '{field}': {err['msg']}")
             return "\n".join(error_lines), True
         try:
-            result = self.fn(**parsed.model_dump())
+            result = self._run(parsed)
             return str(result), False
         except Exception as e:
             return f"Tool '{self.name}' raised {type(e).__name__}: {e}", True
