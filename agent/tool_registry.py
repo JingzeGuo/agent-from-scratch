@@ -1,5 +1,7 @@
 from typing import Any
 
+from anthropic.types import ToolParam
+
 from .tool import Tool
 
 
@@ -10,7 +12,7 @@ class ToolRegistry:
     def register(self, tool: Tool) -> None:
         self.tools[tool.name] = tool
 
-    def to_anthropic_schemas(self) -> list[dict[str, Any]]:
+    def to_anthropic_schemas(self) -> list[ToolParam]:
         return [tool.to_anthropic_schema() for tool in self.tools.values()]
 
     def execute(

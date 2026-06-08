@@ -1,6 +1,8 @@
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
+from anthropic.types import ToolParam
 from pydantic import BaseModel, ValidationError
 
 from .retry import retry
@@ -11,9 +13,9 @@ class Tool:
     name: str
     description: str
     input_schema: type[BaseModel]
-    fn: Callable
+    fn: Callable[..., Any]
 
-    def to_anthropic_schema(self) -> dict[str, Any]:
+    def to_anthropic_schema(self) -> ToolParam:
         """Build the tool definition expected by the Anthropic Messages API."""
         json_schema = self.input_schema.model_json_schema()
         # Anthropic doesn't need Pydantic's "title" field; strip it for cleanliness.

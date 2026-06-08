@@ -11,7 +11,10 @@ tools with schema + validation.
 from __future__ import annotations
 
 import ast
+import json
 import operator
+import os
+from collections.abc import Callable
 from pathlib import Path
 
 import httpx
@@ -24,7 +27,12 @@ import httpx
 #   We use Python's `ast` module to parse the expression and only allow
 #   a whitelist of math operators. This is the safe pattern.
 
-_ALLOWED_BINOPS = {
+Number = int | float
+
+_ALLOWED_BINOPS: dict[
+    type[ast.operator],
+    Callable[[Number, Number], Number],
+] = {
     ast.Add: operator.add,
     ast.Sub: operator.sub,
     ast.Mult: operator.mul,
@@ -33,7 +41,10 @@ _ALLOWED_BINOPS = {
     ast.Pow: operator.pow,
     ast.FloorDiv: operator.floordiv,
 }
-_ALLOWED_UNARYOPS = {
+_ALLOWED_UNARYOPS: dict[
+    type[ast.unaryop],
+    Callable[[Number], Number],
+] = {
     ast.UAdd: operator.pos,
     ast.USub: operator.neg,
 }
@@ -128,9 +139,6 @@ def fetch_url(url: str) -> str:
 # - Designed for LLM/agent use cases (snippets are pre-optimized)
 # - Uses POST + api_key in body (different from Brave's header-based auth)
 
-import os
-import json
-
 
 def search_web(query: str, max_results: int = 5) -> str:
     """Search the web using Tavily Search API.
@@ -141,7 +149,7 @@ def search_web(query: str, max_results: int = 5) -> str:
     api_key = os.environ.get("TAVILY_API_KEY")
     if not api_key:
         raise RuntimeError(
-            "TAVILY_API_KEY is not set. " "Get a free key at https://tavily.com"
+            "TAVILY_API_KEY is not set. Get a free key at https://tavily.com"
         )
 
     with httpx.Client(timeout=10.0) as client:

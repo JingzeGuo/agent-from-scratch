@@ -1,15 +1,17 @@
-from anthropic import Anthropic
+import asyncio
+
+from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
 
 from agent.agent import Agent
 from agent.setup import create_registry
 
 
-def main() -> None:
+async def main() -> None:
     load_dotenv()
 
     agent = Agent(
-        client=Anthropic(),
+        client=AsyncAnthropic(),
         registry=create_registry(),
     )
 
@@ -22,8 +24,8 @@ def main() -> None:
             print("Goodbye.")
             return
         with agent.token_tracker:
-            agent.run(user_task)
+            await agent.run(user_task)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

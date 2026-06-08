@@ -14,7 +14,5 @@ def test_token_tracker_accumulates_usage(
     assert tracker.input_tokens == 150
     assert tracker.output_tokens == 30
     assert capsys.readouterr().out == (
-        "Input tokens: 150\n"
-        "Output tokens: 30\n"
-        "Total tokens: 180\n"
+        "Input tokens: 150\nOutput tokens: 30\nTotal tokens: 180\n"
     )

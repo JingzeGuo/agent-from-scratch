@@ -1,5 +1,6 @@
 from typing import Any, Literal
 
+from anthropic.types import ToolResultBlockParam
 from pydantic import BaseModel, Field
 
 
@@ -77,6 +78,14 @@ class ToolResult(BaseModel):
         default=False,
         description="A flag indicating whether an exception or error occurred during tool execution. Defaults to False.",
     )
+
+    def to_anthropic_block(self) -> ToolResultBlockParam:
+        return {
+            "type": self.type,
+            "tool_use_id": self.tool_use_id,
+            "content": self.content,
+            "is_error": self.is_error,
+        }
 
 
 class AgentStep(BaseModel):

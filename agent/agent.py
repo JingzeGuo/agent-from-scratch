@@ -1,14 +1,15 @@
-from anthropic import Anthropic
+from anthropic import AsyncAnthropic
+from anthropic.types import MessageParam
 
 from .schemas import AgentStep, ToolCall, ToolResult
-from .tool_registry import ToolRegistry
 from .token_tracker import TokenTracker
+from .tool_registry import ToolRegistry
 
 
 class Agent:
     def __init__(
         self,
-        client: Anthropic,
+        client: AsyncAnthropic,
         registry: ToolRegistry,
         model: str = "claude-haiku-4-5",
         max_steps: int = 10,
@@ -17,11 +18,11 @@ class Agent:
         self.registry = registry
         self.model = model
         self.max_steps = max_steps
-        self.messages = []
+        self.messages: list[MessageParam] = []
         self.steps: list[AgentStep] = []
         self.token_tracker = TokenTracker()
 
-    def run(self, user_task: str) -> None:
+    async def run(self, user_task: str) -> None:
         self.messages.append(
             {
                 "role": "user",
@@ -39,7 +40,7 @@ class Agent:
             tool_results: list[ToolResult] = []
             print(f"\n--- Step {step} ---")
 
-            response = self.client.messages.create(
+            response = await self.client.messages.create(
                 model=self.model,
                 max_tokens=1024,
                 tools=self.registry.to_anthropic_schemas(),
@@ -112,7 +113,7 @@ class Agent:
             self.messages.append(
                 {
                     "role": "user",
-                    "content": [result.model_dump() for result in tool_results],
+                    "content": [result.to_anthropic_block() for result in tool_results],
                 }
             )
             self.steps.append(
