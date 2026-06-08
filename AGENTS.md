@@ -26,15 +26,19 @@ The project currently has:
 - Four tools: calculator, file reader, web search, and URL fetcher
 - Pydantic input schemas
 - A `Tool` wrapper and `ToolRegistry`
-- A synchronous multi-step `Agent` loop
+- An asynchronous multi-step `Agent` loop
 - Multi-turn conversation history
-- Tool-call and tool-result models
+- Structured tool-call, tool-result, and agent-step models
+- Tool retries with exponential backoff
 - A ten-step safety limit
-- Basic execution logging
+- Structured execution logging
+- Per-task token and estimated cost tracking
+- Ruff, mypy, and pytest configuration
+- Eight focused tests
 - A thin CLI entry point
 
-The current learning task is to finish Pydantic-based internal structures,
-starting with `ToolCall`, `ToolResult`, and then `AgentStep`.
+The Week 4 implementation is feature-complete. Remaining work is final
+evaluation, documentation, and theory review.
 
 ## Structure
 
@@ -46,6 +50,8 @@ agent/tool.py           Tool schema generation and execution
 agent/tool_registry.py  Tool storage and dispatch
 agent/tools.py          Tool implementations
 agent/schemas.py        Pydantic models
+agent/retry.py          Retry decorator
+agent/token_tracker.py  Token and estimated cost tracking
 tests/                  Automated tests
 ```
 
@@ -104,13 +110,20 @@ be used when local checks cannot verify the behavior.
 
 ## Remaining Week 4 Work
 
-Complete these tasks in dependency order:
+The code implementation is closed unless final evaluation reveals a bug.
 
-1. Finish Pydantic models for internal agent data.
-2. Add retry behavior through a `@retry` decorator.
-3. Add a `TokenTracker` context manager.
-4. Convert the Agent loop to `AsyncAnthropic`.
-5. Configure Ruff, mypy, and pytest in `pyproject.toml`.
-6. Add at least five focused tests.
-7. Run the final multi-tool arXiv research task.
-8. Document usage, architecture, limitations, and learning outcomes.
+1. Run the final multi-tool arXiv research task.
+2. Write the README with usage, architecture, limitations, and test commands.
+3. Review the ReAct paper and Anthropic's agent-building guidance.
+4. Prepare explanations of loop termination, recovery, Pydantic, async,
+   decorators, context managers, and ReAct versus plain tool calling.
+
+## Pricing Scope
+
+Estimated cost currently supports Claude Haiku 4.5 standard input and output
+tokens at $1/MTok and $5/MTok. Pricing was verified against the official
+[Anthropic pricing documentation](https://platform.claude.com/docs/en/about-claude/pricing)
+on 2026-06-08.
+
+Prompt caching and server-side tool fees are not included because this project
+does not enable those features. Update `MODEL_PRICING` before changing models.

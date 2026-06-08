@@ -20,7 +20,7 @@ class Agent:
         self.max_steps = max_steps
         self.messages: list[MessageParam] = []
         self.steps: list[AgentStep] = []
-        self.token_tracker = TokenTracker()
+        self.token_tracker = TokenTracker(model=model)
 
     async def run(self, user_task: str) -> None:
         self.messages.append(
