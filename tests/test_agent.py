@@ -1,0 +1,149 @@
+import asyncio
+from collections.abc import Sequence
+from typing import Any, cast
+
+import pytest
+from anthropic import AsyncAnthropic
+from anthropic.types import (
+    ContentBlock,
+    Message,
+    StopReason,
+    TextBlock,
+    ToolUseBlock,
+    Usage,
+)
+
+from agent.agent import Agent
+from agent.schemas import CalculatorInput
+from agent.tool import Tool
+from agent.tool_registry import ToolRegistry
+from agent.tools import calculator
+
+
+class FakeMessages:
+    def __init__(self, responses: list[Message]) -> None:
+        self.responses = responses
+        self.call_count = 0
+
+    async def create(self, **kwargs: Any) -> Message:
+        response = self.responses[self.call_count]
+        self.call_count += 1
+        return response
+
+
+class FakeClient:
+    def __init__(self, responses: list[Message]) -> None:
+        self.messages = FakeMessages(responses)
+
+
+def make_message(
+    content: Sequence[ContentBlock],
+    stop_reason: StopReason,
+) -> Message:
+    return Message(
+        id="msg_test",
+        type="message",
+        role="assistant",
+        model="claude-haiku-4-5",
+        content=list(content),
+        stop_reason=stop_reason,
+        stop_sequence=None,
+        usage=Usage(input_tokens=10, output_tokens=5),
+    )
+
+
+def create_registry() -> ToolRegistry:
+    registry = ToolRegistry()
+    registry.register(
+        Tool(
+            name="calculator",
+            description="Calculate an expression.",
+            input_schema=CalculatorInput,
+            fn=calculator,
+        )
+    )
+    return registry
+
+
+def create_agent(
+    responses: list[Message],
+    max_steps: int = 10,
+) -> tuple[Agent, FakeMessages]:
+    fake_client = FakeClient(responses)
+    agent = Agent(
+        client=cast(AsyncAnthropic, fake_client),
+        registry=create_registry(),
+        max_steps=max_steps,
+    )
+    return agent, fake_client.messages
+
+
+def test_single_tool_call_completes() -> None:
+    tool_response = make_message(
+        content=[
+            ToolUseBlock(
+                id="toolu_test",
+                name="calculator",
+                input={"expression": "1 + 1"},
+                type="tool_use",
+            )
+        ],
+        stop_reason="tool_use",
+    )
+    final_response = make_message(
+        content=[TextBlock(text="The answer is 2.", type="text")],
+        stop_reason="end_turn",
+    )
+    agent, messages = create_agent([tool_response, final_response])
+
+    asyncio.run(agent.run("Calculate 1 + 1"))
+
+    assert messages.call_count == 2
+    assert len(agent.steps) == 2
+    assert agent.steps[0].tool_calls[0].name == "calculator"
+    assert agent.steps[0].tool_results[0].content == "2"
+    assert agent.steps[0].tool_results[0].is_error is False
+    assert agent.steps[1].text == ["The answer is 2."]
+
+
+def test_agent_stops_at_max_steps(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responses = [
+        make_message(
+            content=[
+                ToolUseBlock(
+                    id=f"toolu_{step}",
+                    name="calculator",
+                    input={"expression": "1 + 1"},
+                    type="tool_use",
+                )
+            ],
+            stop_reason="tool_use",
+        )
+        for step in range(2)
+    ]
+    agent, messages = create_agent(responses, max_steps=2)
+
+    asyncio.run(agent.run("Keep calculating"))
+
+    assert messages.call_count == 2
+    assert len(agent.steps) == 2
+    assert "Agent reached the 2-step limit. Task stopped." in capsys.readouterr().out
+
+
+def test_agent_handles_unexpected_stop_reason(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    response = make_message(
+        content=[TextBlock(text="Partial response", type="text")],
+        stop_reason="max_tokens",
+    )
+    agent, messages = create_agent([response])
+
+    asyncio.run(agent.run("Write a long response"))
+
+    assert messages.call_count == 1
+    assert len(agent.steps) == 1
+    assert agent.steps[0].stop_reason == "max_tokens"
+    assert "Unexpected stop reason: max_tokens" in capsys.readouterr().out
