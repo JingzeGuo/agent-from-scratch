@@ -126,9 +126,12 @@ def test_single_tool_call_completes(
     )
     agent, messages = create_agent([tool_response, final_response])
 
-    asyncio.run(agent.run("Calculate 1 + 1"))
+    agent_run = asyncio.run(agent.run("Calculate 1 + 1"))
 
     assert messages.call_count == 2
+    assert agent_run.objective == "Calculate 1 + 1"
+    assert agent_run.termination == "completed"
+    assert len(agent_run.steps) == 2
     assert len(agent.steps) == 2
     assert agent.steps[0].tool_calls[0].name == "calculator"
     assert agent.steps[0].tool_results[0].content == "2"
@@ -156,9 +159,11 @@ def test_agent_stops_at_max_steps(
     ]
     agent, messages = create_agent(responses, max_steps=2)
 
-    asyncio.run(agent.run("Keep calculating"))
+    agent_run = asyncio.run(agent.run("Keep calculating"))
 
     assert messages.call_count == 2
+    assert agent_run.termination == "max_steps"
+    assert len(agent_run.steps) == 2
     assert len(agent.steps) == 2
     assert capsys.readouterr().out == (
         "Agent reached the 2-step limit. Task stopped.\n"
@@ -174,12 +179,37 @@ def test_agent_handles_unexpected_stop_reason(
     )
     agent, messages = create_agent([response])
 
-    asyncio.run(agent.run("Write a long response"))
+    agent_run = asyncio.run(agent.run("Write a long response"))
 
     assert messages.call_count == 1
+    assert agent_run.termination == "unexpected_stop"
+    assert len(agent_run.steps) == 1
     assert len(agent.steps) == 1
     assert agent.steps[0].stop_reason == "max_tokens"
     assert capsys.readouterr().out == (
         "Partial response\n"
         "Unexpected stop reason: max_tokens\n"
     )
+
+
+def test_agent_run_contains_only_current_task_steps() -> None:
+    responses = [
+        make_message(
+            content=[TextBlock(text="First answer.", type="text")],
+            stop_reason="end_turn",
+        ),
+        make_message(
+            content=[TextBlock(text="Second answer.", type="text")],
+            stop_reason="end_turn",
+        ),
+    ]
+    agent, _ = create_agent(responses)
+
+    first_run = asyncio.run(agent.run("First task"))
+    second_run = asyncio.run(agent.run("Second task"))
+
+    assert first_run.objective == "First task"
+    assert len(first_run.steps) == 1
+    assert second_run.objective == "Second task"
+    assert len(second_run.steps) == 1
+    assert len(agent.steps) == 2

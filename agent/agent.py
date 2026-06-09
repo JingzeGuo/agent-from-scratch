@@ -1,7 +1,7 @@
 from anthropic import AsyncAnthropic
 from anthropic.types import MessageParam
 
-from .schemas import AgentStep, ToolCall, ToolResult
+from .schemas import AgentRun, AgentStep, ToolCall, ToolResult
 from .token_tracker import TokenTracker
 from .tool_registry import ToolRegistry
 
@@ -22,7 +22,8 @@ class Agent:
         self.steps: list[AgentStep] = []
         self.token_tracker = TokenTracker(model=model)
 
-    async def run(self, user_task: str) -> None:
+    async def run(self, user_task: str) -> AgentRun:
+        run_steps: list[AgentStep] = []
         self.messages.append(
             {
                 "role": "user",
@@ -83,22 +84,30 @@ class Agent:
                             )
                         )
 
-            self.steps.append(
-                AgentStep(
-                    step_number=step,
-                    stop_reason=response.stop_reason,
-                    text=text_blocks,
-                    tool_calls=tool_calls,
-                    tool_results=tool_results,
-                )
+            agent_step = AgentStep(
+                step_number=step,
+                stop_reason=response.stop_reason,
+                text=text_blocks,
+                tool_calls=tool_calls,
+                tool_results=tool_results,
             )
+            run_steps.append(agent_step)
+            self.steps.append(agent_step)
 
             if response.stop_reason == "end_turn":
-                return
+                return AgentRun(
+                    objective=user_task,
+                    steps=run_steps,
+                    termination="completed",
+                )
 
             if not tool_results:
                 print(f"Unexpected stop reason: {response.stop_reason}")
-                return
+                return AgentRun(
+                    objective=user_task,
+                    steps=run_steps,
+                    termination="unexpected_stop",
+                )
 
             self.messages.append(
                 {
@@ -107,3 +116,8 @@ class Agent:
                 }
             )
         print(f"Agent reached the {self.max_steps}-step limit. Task stopped.")
+        return AgentRun(
+            objective=user_task,
+            steps=run_steps,
+            termination="max_steps",
+        )

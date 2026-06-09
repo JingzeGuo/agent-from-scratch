@@ -73,3 +73,9 @@ class AgentStep(BaseModel):
     text: list[str] = Field(default_factory=list)
     tool_calls: list[ToolCall] = Field(default_factory=list)
     tool_results: list[ToolResult] = Field(default_factory=list)
+
+
+class AgentRun(BaseModel):
+    objective: str
+    steps: list[AgentStep] = Field(default_factory=list)
+    termination: Literal["completed", "max_steps", "unexpected_stop"]
