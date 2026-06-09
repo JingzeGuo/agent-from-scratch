@@ -38,14 +38,21 @@ class Agent:
             text_blocks: list[str] = []
             tool_calls: list[ToolCall] = []
             tool_results: list[ToolResult] = []
-            print(f"\n--- Step {step} ---")
 
-            response = await self.client.messages.create(
+            streamed_text = False
+            async with self.client.messages.stream(
                 model=self.model,
                 max_tokens=1024,
                 tools=self.registry.to_anthropic_schemas(),
                 messages=self.messages,
-            )
+            ) as stream:
+                async for text in stream.text_stream:
+                    print(text, end="", flush=True)
+                    streamed_text = True
+                response = await stream.get_final_message()
+
+            if streamed_text:
+                print()
             self.token_tracker.add(response.usage)
 
             self.messages.append(
@@ -57,7 +64,6 @@ class Agent:
             for block in response.content:
                 if block.type == "text":
                     text_blocks.append(block.text)
-                    print(block.text)
             if response.stop_reason == "end_turn":
                 self.steps.append(
                     AgentStep(
@@ -79,16 +85,11 @@ class Agent:
                         tool_use_id=block.id,
                     )
                     tool_calls.append(tool_call)
-                    print(f"Tool: {block.name}")
-                    print(f"Input: {block.input}")
 
                     output, is_error = self.registry.execute(
                         tool_call.name,
                         tool_call.input,
                     )
-                    status = "failed" if is_error else "succeeded"
-                    print(f"Status: {status}")
-                    print(f"Output: {output}")
                     tool_result = ToolResult(
                         tool_use_id=tool_call.tool_use_id,
                         content=output,

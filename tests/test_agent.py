@@ -25,10 +25,43 @@ class FakeMessages:
         self.responses = responses
         self.call_count = 0
 
-    async def create(self, **kwargs: Any) -> Message:
+    def stream(self, **kwargs: Any) -> "FakeStreamManager":
         response = self.responses[self.call_count]
         self.call_count += 1
-        return response
+        return FakeStreamManager(response)
+
+
+class FakeStream:
+    def __init__(self, response: Message) -> None:
+        self.response = response
+        self.text_stream = self._stream_text()
+
+    async def _stream_text(self) -> Any:
+        for block in self.response.content:
+            if block.type == "text":
+                midpoint = len(block.text) // 2
+                for chunk in (block.text[:midpoint], block.text[midpoint:]):
+                    if chunk:
+                        yield chunk
+
+    async def get_final_message(self) -> Message:
+        return self.response
+
+
+class FakeStreamManager:
+    def __init__(self, response: Message) -> None:
+        self.stream = FakeStream(response)
+
+    async def __aenter__(self) -> FakeStream:
+        return self.stream
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: object,
+    ) -> None:
+        return None
 
 
 class FakeClient:
@@ -78,7 +111,9 @@ def create_agent(
     return agent, fake_client.messages
 
 
-def test_single_tool_call_completes() -> None:
+def test_single_tool_call_completes(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     tool_response = make_message(
         content=[
             ToolUseBlock(
@@ -104,6 +139,7 @@ def test_single_tool_call_completes() -> None:
     assert agent.steps[0].tool_results[0].content == "2"
     assert agent.steps[0].tool_results[0].is_error is False
     assert agent.steps[1].text == ["The answer is 2."]
+    assert capsys.readouterr().out == "The answer is 2.\n"
 
 
 def test_agent_stops_at_max_steps(
@@ -129,7 +165,9 @@ def test_agent_stops_at_max_steps(
 
     assert messages.call_count == 2
     assert len(agent.steps) == 2
-    assert "Agent reached the 2-step limit. Task stopped." in capsys.readouterr().out
+    assert capsys.readouterr().out == (
+        "Agent reached the 2-step limit. Task stopped.\n"
+    )
 
 
 def test_agent_handles_unexpected_stop_reason(
@@ -146,4 +184,7 @@ def test_agent_handles_unexpected_stop_reason(
     assert messages.call_count == 1
     assert len(agent.steps) == 1
     assert agent.steps[0].stop_reason == "max_tokens"
-    assert "Unexpected stop reason: max_tokens" in capsys.readouterr().out
+    assert capsys.readouterr().out == (
+        "Partial response\n"
+        "Unexpected stop reason: max_tokens\n"
+    )
