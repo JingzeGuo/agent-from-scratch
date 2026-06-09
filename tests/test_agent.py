@@ -31,10 +31,21 @@ class FakeMessages:
         return FakeStreamManager(response)
 
 
-class FakeStream:
+class FakeStreamManager:
     def __init__(self, response: Message) -> None:
         self.response = response
         self.text_stream = self._stream_text()
+
+    async def __aenter__(self) -> "FakeStreamManager":
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: object,
+    ) -> None:
+        return None
 
     async def _stream_text(self) -> Any:
         for block in self.response.content:
@@ -46,22 +57,6 @@ class FakeStream:
 
     async def get_final_message(self) -> Message:
         return self.response
-
-
-class FakeStreamManager:
-    def __init__(self, response: Message) -> None:
-        self.stream = FakeStream(response)
-
-    async def __aenter__(self) -> FakeStream:
-        return self.stream
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        traceback: object,
-    ) -> None:
-        return None
 
 
 class FakeClient:

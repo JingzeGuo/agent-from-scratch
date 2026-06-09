@@ -20,6 +20,7 @@ class ToolRegistry:
         name: str,
         raw_input: dict[str, Any],
     ) -> tuple[str, bool]:
-        if name not in self.tools:
+        tool = self.tools.get(name)
+        if tool is None:
             return f"Unknown tool: '{name}'. Available: {list(self.tools)}", True
-        return self.tools[name].execute(raw_input)
+        return tool.execute(raw_input)

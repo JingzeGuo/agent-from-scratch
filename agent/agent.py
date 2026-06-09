@@ -30,11 +30,7 @@ class Agent:
             }
         )
 
-        step = 0
-        task_completed = False
-
-        while step < self.max_steps:
-            step += 1
+        for step in range(1, self.max_steps + 1):
             text_blocks: list[str] = []
             tool_calls: list[ToolCall] = []
             tool_results: list[ToolResult] = []
@@ -64,59 +60,29 @@ class Agent:
             for block in response.content:
                 if block.type == "text":
                     text_blocks.append(block.text)
-            if response.stop_reason == "end_turn":
-                self.steps.append(
-                    AgentStep(
-                        step_number=step,
-                        stop_reason=response.stop_reason,
-                        text=text_blocks,
-                        tool_calls=tool_calls,
-                        tool_results=tool_results,
-                    )
-                )
-                task_completed = True
-                break
 
-            for block in response.content:
-                if block.type == "tool_use":
-                    tool_call = ToolCall(
-                        name=block.name,
-                        input=block.input,
-                        tool_use_id=block.id,
-                    )
-                    tool_calls.append(tool_call)
+            if response.stop_reason != "end_turn":
+                for block in response.content:
+                    if block.type == "tool_use":
+                        tool_call = ToolCall(
+                            name=block.name,
+                            input=block.input,
+                            tool_use_id=block.id,
+                        )
+                        tool_calls.append(tool_call)
 
-                    output, is_error = self.registry.execute(
-                        tool_call.name,
-                        tool_call.input,
-                    )
-                    tool_result = ToolResult(
-                        tool_use_id=tool_call.tool_use_id,
-                        content=output,
-                        is_error=is_error,
-                    )
-                    tool_results.append(tool_result)
+                        output, is_error = self.registry.execute(
+                            tool_call.name,
+                            tool_call.input,
+                        )
+                        tool_results.append(
+                            ToolResult(
+                                tool_use_id=tool_call.tool_use_id,
+                                content=output,
+                                is_error=is_error,
+                            )
+                        )
 
-            if not tool_results:
-                self.steps.append(
-                    AgentStep(
-                        step_number=step,
-                        stop_reason=response.stop_reason,
-                        text=text_blocks,
-                        tool_calls=tool_calls,
-                        tool_results=tool_results,
-                    )
-                )
-                print(f"Unexpected stop reason: {response.stop_reason}")
-                task_completed = True
-                break
-
-            self.messages.append(
-                {
-                    "role": "user",
-                    "content": [result.to_anthropic_block() for result in tool_results],
-                }
-            )
             self.steps.append(
                 AgentStep(
                     step_number=step,
@@ -127,5 +93,17 @@ class Agent:
                 )
             )
 
-        if not task_completed:
-            print(f"Agent reached the {self.max_steps}-step limit. Task stopped.")
+            if response.stop_reason == "end_turn":
+                return
+
+            if not tool_results:
+                print(f"Unexpected stop reason: {response.stop_reason}")
+                return
+
+            self.messages.append(
+                {
+                    "role": "user",
+                    "content": [result.to_anthropic_block() for result in tool_results],
+                }
+            )
+        print(f"Agent reached the {self.max_steps}-step limit. Task stopped.")
