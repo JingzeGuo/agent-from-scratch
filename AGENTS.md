@@ -73,13 +73,27 @@ tests/                  Automated tests
 
 ## Learning Style
 
-- When a task introduces a new concept, explain only the necessary foundation
-  before implementation.
-- Explain why the concept is needed in this project and show one small example.
+- Treat this repository primarily as an Agent learning project. Engineering
+  work should support understanding Agent concepts rather than become the main
+  objective.
+- When a task introduces a concept, first explain the necessary foundation,
+  the problem it solves, how it appears in the current code, and one small
+  example before discussing implementation.
+- For Agent topics, connect implementation work to concepts such as state,
+  policy, action, observation, controller, trajectory, recovery, termination,
+  context, memory, and evaluation.
+- By default, ask the learner to implement conceptually important changes after
+  the explanation. Review and guide their attempt instead of immediately
+  editing the code.
+- Do not modify code unless the learner explicitly asks Codex to implement or
+  fix it. Questions, discussions, and requests for explanation are not
+  permission to edit files.
+- When explicitly asked to modify code, make the smallest clear change that
+  satisfies the request. Keep the implementation concise and avoid extra
+  abstractions, unrelated cleanup, speculative extensibility, or premature
+  framework patterns.
 - Avoid front-loading advanced details that belong to later tasks.
-- For simple mechanical changes, implement them directly and verify them.
-- Ask the learner to write code when the step teaches an important design or
-  language concept.
+- Explain the purpose and trade-offs of a change, not only its syntax.
 - Continue explanations in Chinese unless the learner requests otherwise.
 - Keep generated project code and documentation in English.
 
