@@ -1,7 +1,13 @@
 from anthropic import AsyncAnthropic
 from anthropic.types import MessageParam
 
-from .schemas import AgentRun, AgentStep, ToolCall, ToolResult
+from .schemas import (
+    AgentRun,
+    AgentStep,
+    ToolCall,
+    ToolResult,
+    VerificationEvidence,
+)
 from .token_tracker import TokenTracker
 from .tool_registry import ToolRegistry
 
@@ -112,6 +118,9 @@ class Agent:
                     objective=user_task,
                     steps=run_steps,
                     termination="completed",
+                    final_stop_reason=response.stop_reason,
+                    verification=VerificationEvidence(status="not_run"),
+                    task_success=None,
                 )
 
             if not tool_results:
@@ -120,6 +129,9 @@ class Agent:
                     objective=user_task,
                     steps=run_steps,
                     termination="unexpected_stop",
+                    final_stop_reason=response.stop_reason,
+                    verification=VerificationEvidence(status="not_run"),
+                    task_success=None,
                 )
 
             self.messages.append(
@@ -133,4 +145,7 @@ class Agent:
             objective=user_task,
             steps=run_steps,
             termination="max_steps",
+            final_stop_reason=response.stop_reason,
+            verification=VerificationEvidence(status="not_run"),
+            task_success=None,
         )

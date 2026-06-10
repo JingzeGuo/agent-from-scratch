@@ -14,7 +14,13 @@ from anthropic.types import (
 )
 
 from agent.agent import Agent
-from agent.schemas import CalculatorInput, ReadFileInput, SearchWebInput
+from agent.schemas import (
+    AgentRun,
+    CalculatorInput,
+    ReadFileInput,
+    SearchWebInput,
+    VerificationEvidence,
+)
 from agent.tool import Tool
 from agent.tool_registry import ToolRegistry
 from agent.tools import calculator
@@ -139,6 +145,9 @@ def test_single_tool_call_completes(
     assert messages.call_count == 2
     assert agent_run.objective == "Calculate 1 + 1"
     assert agent_run.termination == "completed"
+    assert agent_run.final_stop_reason == "end_turn"
+    assert agent_run.verification.status == "not_run"
+    assert agent_run.task_success is None
     assert len(agent_run.steps) == 2
     assert len(agent.steps) == 2
     assert agent.steps[0].tool_calls[0].name == "calculator"
@@ -171,6 +180,9 @@ def test_agent_stops_at_max_steps(
 
     assert messages.call_count == 2
     assert agent_run.termination == "max_steps"
+    assert agent_run.final_stop_reason == "tool_use"
+    assert agent_run.verification.status == "not_run"
+    assert agent_run.task_success is None
     assert len(agent_run.steps) == 2
     assert len(agent.steps) == 2
     assert capsys.readouterr().out == (
@@ -191,6 +203,9 @@ def test_agent_handles_unexpected_stop_reason(
 
     assert messages.call_count == 1
     assert agent_run.termination == "unexpected_stop"
+    assert agent_run.final_stop_reason == "max_tokens"
+    assert agent_run.verification.status == "not_run"
+    assert agent_run.task_success is None
     assert len(agent_run.steps) == 1
     assert len(agent.steps) == 1
     assert agent.steps[0].stop_reason == "max_tokens"
@@ -198,6 +213,27 @@ def test_agent_handles_unexpected_stop_reason(
         "Partial response\n"
         "Unexpected stop reason: max_tokens\n"
     )
+
+
+def test_completed_run_can_contain_failed_verification() -> None:
+    agent_run = AgentRun(
+        objective="Fix the bug",
+        steps=[],
+        termination="completed",
+        final_stop_reason="end_turn",
+        verification=VerificationEvidence(
+            status="failed",
+            command="pytest",
+            exit_code=1,
+            output="1 failed",
+        ),
+        task_success=False,
+    )
+
+    assert agent_run.termination == "completed"
+    assert agent_run.final_stop_reason == "end_turn"
+    assert agent_run.verification.status == "failed"
+    assert agent_run.task_success is False
 
 
 def test_agent_run_contains_only_current_task_steps() -> None:

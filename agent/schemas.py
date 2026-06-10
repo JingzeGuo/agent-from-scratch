@@ -75,7 +75,17 @@ class AgentStep(BaseModel):
     tool_results: list[ToolResult] = Field(default_factory=list)
 
 
+class VerificationEvidence(BaseModel):
+    status: Literal["not_run", "passed", "failed", "error"]
+    command: str | None = None
+    exit_code: int | None = None
+    output: str | None = None
+
+
 class AgentRun(BaseModel):
     objective: str
-    steps: list[AgentStep] = Field(default_factory=list)
+    steps: list[AgentStep]
     termination: Literal["completed", "max_steps", "unexpected_stop"]
+    final_stop_reason: str | None
+    verification: VerificationEvidence
+    task_success: bool | None = None
