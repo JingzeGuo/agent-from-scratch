@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -63,9 +64,11 @@ async def main() -> None:
     load_dotenv()
     config = load_provider_config()
 
+    workspace_root = Path.cwd().resolve()
+    registry = create_registry(workspace_root)
     agent = Agent(
         client=create_client(config),
-        registry=create_registry(),
+        registry=registry,
         model=config.model,
         provider=config.provider,
     )

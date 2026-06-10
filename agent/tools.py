@@ -19,6 +19,8 @@ from pathlib import Path
 
 import httpx
 
+from .workspace import resolve_workspace_path
+
 # ==========================================
 # 1. calculator
 # ==========================================
@@ -86,12 +88,12 @@ def calculator(expression: str) -> str:
 _MAX_FILE_BYTES = 100_000  # ~25k tokens worst case
 
 
-def read_file(path: str) -> str:
+def read_file(path: str, *, workspace_root: Path) -> str:
     """Read the contents of a local text file.
 
     Limited to 100KB to avoid blowing up the context window.
     """
-    p = Path(path).expanduser().resolve()
+    p = resolve_workspace_path(workspace_root, path)
     if not p.exists():
         raise FileNotFoundError(f"File not found: {path}")
     if not p.is_file():

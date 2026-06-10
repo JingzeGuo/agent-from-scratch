@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from anthropic import AsyncAnthropic
@@ -74,7 +75,7 @@ class EvaluationResult:
 
 
 def build_tool_schemas(vague: bool) -> list[ToolParam]:
-    schemas = create_registry().to_anthropic_schemas()
+    schemas = create_registry(Path.cwd()).to_anthropic_schemas()
     if not vague:
         return schemas
 
@@ -88,7 +89,7 @@ def build_tool_schemas(vague: bool) -> list[ToolParam]:
 
 
 def validate_arguments(tool_name: str, arguments: dict[str, Any]) -> bool:
-    tool = create_registry().tools[tool_name]
+    tool = create_registry(Path.cwd()).tools[tool_name]
     try:
         tool.input_schema(**arguments)
     except ValidationError:

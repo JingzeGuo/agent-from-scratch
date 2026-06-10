@@ -1,10 +1,13 @@
+from functools import partial
+from pathlib import Path
+
 from .schemas import CalculatorInput, FetchUrlInput, ReadFileInput, SearchWebInput
 from .tool import Tool
 from .tool_registry import ToolRegistry
 from .tools import calculator, fetch_url, read_file, search_web
 
 
-def create_registry() -> ToolRegistry:
+def create_registry(workspace_root: Path) -> ToolRegistry:
     registry = ToolRegistry()
     tools = [
         Tool(
@@ -17,7 +20,7 @@ def create_registry() -> ToolRegistry:
             name="read_file",
             description="Read the contents of a local text file.",
             input_schema=ReadFileInput,
-            fn=read_file,
+            fn=partial(read_file, workspace_root=workspace_root),
         ),
         Tool(
             name="fetch_url",

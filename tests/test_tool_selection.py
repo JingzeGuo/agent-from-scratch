@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -64,7 +65,7 @@ TOOL_SELECTION_CASES = [
 def test_expected_tool_arguments_match_registered_contract(
     case: ToolSelectionCase,
 ) -> None:
-    registry = create_registry()
+    registry = create_registry(Path.cwd())
 
     assert case.expected_tool in registry.tools, case.task
 
@@ -75,7 +76,7 @@ def test_expected_tool_arguments_match_registered_contract(
 
 
 def test_correct_tool_with_wrong_argument_name_is_an_argument_error() -> None:
-    registry = create_registry()
+    registry = create_registry(Path.cwd())
 
     output, is_error = registry.execute(
         "calculator",

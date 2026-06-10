@@ -16,7 +16,7 @@ class ReadFileInput(BaseModel):
     """Input schema for the file reading tool."""
 
     path: str = Field(
-        description="The absolute or relative path to the local target file, e.g., './data/config.json' or '/var/log/app.log'."
+        description="A workspace-relative path or an absolute path inside the workspace, e.g., 'agent/agent.py'."
     )
 
 
