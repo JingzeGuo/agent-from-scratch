@@ -14,7 +14,7 @@ from anthropic.types import (
 )
 
 from agent.agent import Agent
-from agent.schemas import CalculatorInput
+from agent.schemas import CalculatorInput, ReadFileInput, SearchWebInput
 from agent.tool import Tool
 from agent.tool_registry import ToolRegistry
 from agent.tools import calculator
@@ -24,8 +24,15 @@ class FakeMessages:
     def __init__(self, responses: list[Message]) -> None:
         self.responses = responses
         self.call_count = 0
+        self.requests: list[dict[str, Any]] = []
 
     def stream(self, **kwargs: Any) -> "FakeStreamManager":
+        self.requests.append(
+            {
+                **kwargs,
+                "messages": list(kwargs["messages"]),
+            }
+        )
         response = self.responses[self.call_count]
         self.call_count += 1
         return FakeStreamManager(response)
@@ -96,11 +103,12 @@ def create_registry() -> ToolRegistry:
 def create_agent(
     responses: list[Message],
     max_steps: int = 10,
+    registry: ToolRegistry | None = None,
 ) -> tuple[Agent, FakeMessages]:
     fake_client = FakeClient(responses)
     agent = Agent(
         client=cast(AsyncAnthropic, fake_client),
-        registry=create_registry(),
+        registry=registry or create_registry(),
         max_steps=max_steps,
     )
     return agent, fake_client.messages
@@ -213,3 +221,129 @@ def test_agent_run_contains_only_current_task_steps() -> None:
     assert second_run.objective == "Second task"
     assert len(second_run.steps) == 1
     assert len(agent.steps) == 2
+
+
+def test_agent_recovers_from_invalid_tool_arguments() -> None:
+    invalid_tool_response = make_message(
+        content=[
+            ToolUseBlock(
+                id="toolu_invalid",
+                name="calculator",
+                input={"number": "1 + 1"},
+                type="tool_use",
+            )
+        ],
+        stop_reason="tool_use",
+    )
+    corrected_tool_response = make_message(
+        content=[
+            ToolUseBlock(
+                id="toolu_corrected",
+                name="calculator",
+                input={"expression": "1 + 1"},
+                type="tool_use",
+            )
+        ],
+        stop_reason="tool_use",
+    )
+    final_response = make_message(
+        content=[TextBlock(text="The answer is 2.", type="text")],
+        stop_reason="end_turn",
+    )
+    agent, messages = create_agent(
+        [invalid_tool_response, corrected_tool_response, final_response]
+    )
+
+    agent_run = asyncio.run(agent.run("Calculate 1 + 1"))
+
+    first_step, second_step, final_step = agent_run.steps
+    first_result = first_step.tool_results[0]
+    assert first_result.is_error is True
+    assert "field 'expression': Field required" in first_result.content
+    assert second_step.tool_calls[0].input == {"expression": "1 + 1"}
+    assert second_step.tool_results[0].content == "2"
+    assert second_step.tool_results[0].is_error is False
+    assert final_step.text == ["The answer is 2."]
+    assert agent_run.termination == "completed"
+
+    second_request_messages = messages.requests[1]["messages"]
+    error_observation = second_request_messages[-1]["content"][0]
+    assert error_observation["tool_use_id"] == "toolu_invalid"
+    assert error_observation["is_error"] is True
+
+
+def test_agent_recovers_from_missing_file_with_different_action() -> None:
+    read_attempts = 0
+
+    def missing_file(path: str) -> str:
+        nonlocal read_attempts
+        read_attempts += 1
+        raise FileNotFoundError(f"File not found: {path}")
+
+    def search_web(query: str, max_results: int = 5) -> str:
+        return f"Found {max_results} results for: {query}"
+
+    registry = ToolRegistry()
+    registry.register(
+        Tool(
+            name="read_file",
+            description="Read a local file.",
+            input_schema=ReadFileInput,
+            fn=missing_file,
+        )
+    )
+    registry.register(
+        Tool(
+            name="search_web",
+            description="Search the web.",
+            input_schema=SearchWebInput,
+            fn=search_web,
+        )
+    )
+
+    missing_file_response = make_message(
+        content=[
+            ToolUseBlock(
+                id="toolu_missing",
+                name="read_file",
+                input={"path": "missing.txt"},
+                type="tool_use",
+            )
+        ],
+        stop_reason="tool_use",
+    )
+    fallback_response = make_message(
+        content=[
+            ToolUseBlock(
+                id="toolu_search",
+                name="search_web",
+                input={"query": "requested information", "max_results": 3},
+                type="tool_use",
+            )
+        ],
+        stop_reason="tool_use",
+    )
+    final_response = make_message(
+        content=[TextBlock(text="I found an alternative source.", type="text")],
+        stop_reason="end_turn",
+    )
+    agent, messages = create_agent(
+        [missing_file_response, fallback_response, final_response],
+        registry=registry,
+    )
+
+    agent_run = asyncio.run(agent.run("Find the requested information"))
+
+    first_step, second_step, _ = agent_run.steps
+    first_result = first_step.tool_results[0]
+    assert read_attempts == 1
+    assert first_result.is_error is True
+    assert "FileNotFoundError" in first_result.content
+    assert second_step.tool_calls[0].name == "search_web"
+    assert second_step.tool_results[0].is_error is False
+    assert agent_run.termination == "completed"
+
+    second_request_messages = messages.requests[1]["messages"]
+    error_observation = second_request_messages[-1]["content"][0]
+    assert error_observation["tool_use_id"] == "toolu_missing"
+    assert error_observation["is_error"] is True
