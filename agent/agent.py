@@ -12,15 +12,28 @@ class Agent:
         client: AsyncAnthropic,
         registry: ToolRegistry,
         model: str = "claude-haiku-4-5",
+        provider: str = "anthropic",
         max_steps: int = 10,
     ) -> None:
         self.client = client
         self.registry = registry
         self.model = model
+        self.provider = provider
         self.max_steps = max_steps
         self.messages: list[MessageParam] = []
         self.steps: list[AgentStep] = []
         self.token_tracker = TokenTracker(model=model)
+
+    def switch_provider(
+        self,
+        client: AsyncAnthropic,
+        provider: str,
+        model: str,
+    ) -> None:
+        self.token_tracker.switch_model(model)
+        self.client = client
+        self.provider = provider
+        self.model = model
 
     async def run(self, user_task: str) -> AgentRun:
         run_steps: list[AgentStep] = []
