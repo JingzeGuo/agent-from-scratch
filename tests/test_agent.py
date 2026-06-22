@@ -311,7 +311,7 @@ def test_agent_recovers_from_invalid_tool_arguments() -> None:
 def test_agent_recovers_from_missing_file_with_different_action() -> None:
     read_attempts = 0
 
-    def missing_file(path: str) -> str:
+    def missing_file(path: str, offset: int = 1, limit: int = 200) -> str:
         nonlocal read_attempts
         read_attempts += 1
         raise FileNotFoundError(f"File not found: {path}")

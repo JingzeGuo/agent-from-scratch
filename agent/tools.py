@@ -14,12 +14,15 @@ import ast
 import json
 import operator
 import os
-from collections.abc import Callable
+import re
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import httpx
 
 from .workspace import resolve_workspace_path
+
+_SKIPPED_DIRS = {".git", ".venv", "node_modules", "build", "dist"}
 
 # ==========================================
 # 1. calculator
@@ -80,7 +83,144 @@ def calculator(expression: str) -> str:
 
 
 # ==========================================
-# 2. read_file
+# 2. glob_files
+# ==========================================
+
+
+def _is_skipped_path(path: Path) -> bool:
+    return any(part in _SKIPPED_DIRS for part in path.parts)
+
+
+def _validate_workspace_pattern(pattern: str, *, kind: str) -> None:
+    if Path(pattern).is_absolute() or ".." in Path(pattern).parts:
+        raise ValueError(f"{kind} must be workspace-relative and cannot contain '..'")
+
+
+def _iter_workspace_files(root: Path, pattern: str) -> Iterator[tuple[Path, Path]]:
+    for candidate in sorted(root.glob(pattern)):
+        if not candidate.is_file():
+            continue
+
+        resolved = candidate.resolve()
+        if not resolved.is_relative_to(root):
+            continue
+
+        relative_path = candidate.relative_to(root)
+        if _is_skipped_path(relative_path):
+            continue
+
+        yield candidate, relative_path
+
+
+def glob_files(
+    pattern: str,
+    *,
+    workspace_root: Path,
+    max_results: int = 50,
+) -> str:
+    """Find files in the workspace that match a glob pattern."""
+    _validate_workspace_pattern(pattern, kind="Glob pattern")
+
+    root = workspace_root.expanduser().resolve()
+    matches: list[str] = []
+
+    for _, relative_path in _iter_workspace_files(root, pattern):
+        matches.append(relative_path.as_posix())
+        if len(matches) == max_results:
+            break
+
+    if not matches:
+        return f"[No files matched pattern: {pattern}]"
+
+    truncated = _has_more_glob_matches(root, pattern, max_results)
+    output = "\n".join(matches)
+    if truncated:
+        output += f"\n[truncated after {max_results} files]"
+    return output
+
+
+def _has_more_glob_matches(root: Path, pattern: str, max_results: int) -> bool:
+    match_count = 0
+    for _ in _iter_workspace_files(root, pattern):
+        match_count += 1
+        if match_count > max_results:
+            return True
+    return False
+
+
+# ==========================================
+# 3. search_text
+# ==========================================
+
+
+def search_text(
+    pattern: str,
+    *,
+    workspace_root: Path,
+    file_pattern: str = "**/*",
+    max_matches: int = 50,
+) -> str:
+    """Search workspace file contents with a regular expression."""
+    _validate_workspace_pattern(file_pattern, kind="File pattern")
+
+    try:
+        regex = re.compile(pattern)
+    except re.error as e:
+        raise ValueError(f"Invalid regular expression: {e}") from e
+
+    root = workspace_root.expanduser().resolve()
+    matches: list[str] = []
+    truncated = False
+
+    for candidate, relative_path in _iter_workspace_files(root, file_pattern):
+        if candidate.stat().st_size > _MAX_FILE_BYTES:
+            continue
+
+        for line_number, line in enumerate(
+            candidate.read_text(encoding="utf-8", errors="replace").splitlines(),
+            start=1,
+        ):
+            if regex.search(line):
+                matches.append(f"{relative_path.as_posix()}:{line_number}: {line}")
+                if len(matches) == max_matches:
+                    truncated = _has_more_text_matches(
+                        root,
+                        file_pattern,
+                        regex,
+                        max_matches,
+                    )
+                    output = "\n".join(matches)
+                    if truncated:
+                        output += f"\n[truncated after {max_matches} matches]"
+                    return output
+
+    if not matches:
+        return f"[No matches found for pattern: {pattern}]"
+
+    return "\n".join(matches)
+
+
+def _has_more_text_matches(
+    root: Path,
+    file_pattern: str,
+    regex: re.Pattern[str],
+    max_matches: int,
+) -> bool:
+    match_count = 0
+    for candidate, _ in _iter_workspace_files(root, file_pattern):
+        if candidate.stat().st_size > _MAX_FILE_BYTES:
+            continue
+
+        for line in candidate.read_text(encoding="utf-8", errors="replace").splitlines():
+            if regex.search(line):
+                match_count += 1
+                if match_count > max_matches:
+                    return True
+    return False
+
+
+# ==========================================
+# 4. read_file
 # ==========================================
 # We deliberately limit file size — don't blow up LLM's context window
 # by reading a 50MB log file.
@@ -88,10 +228,16 @@ def calculator(expression: str) -> str:
 _MAX_FILE_BYTES = 100_000  # ~25k tokens worst case
 
 
-def read_file(path: str, *, workspace_root: Path) -> str:
-    """Read the contents of a local text file.
+def read_file(
+    path: str,
+    *,
+    workspace_root: Path,
+    offset: int = 1,
+    limit: int = 200,
+) -> str:
+    """Read a range of lines from a local text file.
 
-    Limited to 100KB to avoid blowing up the context window.
+    Limited to 100KB and 500 lines to avoid blowing up the context window.
     """
     p = resolve_workspace_path(workspace_root, path)
     if not p.exists():
@@ -104,11 +250,21 @@ def read_file(path: str, *, workspace_root: Path) -> str:
             f"File too large: {size} bytes (limit: {_MAX_FILE_BYTES}). "
             f"Consider reading specific lines instead."
         )
-    return p.read_text(encoding="utf-8", errors="replace")
+    lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+    start_index = offset - 1
+    selected_lines = lines[start_index : start_index + limit]
+
+    if not selected_lines:
+        return f"[No lines found from line {offset}. File has {len(lines)} lines.]"
+
+    return "\n".join(
+        f"{line_number}: {line}"
+        for line_number, line in enumerate(selected_lines, start=offset)
+    )
 
 
 # ==========================================
-# 3. fetch_url
+# 5. fetch_url
 # ==========================================
 # Returns plain text. We don't parse HTML here — that's a separate concern.
 
@@ -134,7 +290,7 @@ def fetch_url(url: str) -> str:
 
 
 # ==========================================
-# 4. search_web (Tavily)
+# 6. search_web (Tavily)
 # ==========================================
 # Tavily Search API: https://tavily.com
 # - Free tier: 1000 queries/month, no credit card required

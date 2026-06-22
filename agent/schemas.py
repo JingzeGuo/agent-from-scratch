@@ -12,11 +12,54 @@ class CalculatorInput(BaseModel):
     )
 
 
+class GlobFilesInput(BaseModel):
+    """Input schema for the file globbing tool."""
+
+    pattern: str = Field(
+        description="A workspace-relative glob pattern, e.g., 'tests/test_*.py' or '**/*.py'."
+    )
+    max_results: int = Field(
+        default=50,
+        ge=1,
+        le=200,
+        description="The maximum number of matching files to return. Defaults to 50.",
+    )
+
+
+class SearchTextInput(BaseModel):
+    """Input schema for the content search tool."""
+
+    pattern: str = Field(
+        description="A Python regular expression to search for in workspace files."
+    )
+    file_pattern: str = Field(
+        default="**/*",
+        description="A workspace-relative glob pattern limiting which files to search. Defaults to all files.",
+    )
+    max_matches: int = Field(
+        default=50,
+        ge=1,
+        le=200,
+        description="The maximum number of matching lines to return. Defaults to 50.",
+    )
+
+
 class ReadFileInput(BaseModel):
     """Input schema for the file reading tool."""
 
     path: str = Field(
         description="A workspace-relative path or an absolute path inside the workspace, e.g., 'agent/agent.py'."
+    )
+    offset: int = Field(
+        default=1,
+        ge=1,
+        description="The 1-based line number to start reading from. Defaults to 1.",
+    )
+    limit: int = Field(
+        default=200,
+        ge=1,
+        le=500,
+        description="The maximum number of lines to read. Defaults to 200.",
     )
 
 

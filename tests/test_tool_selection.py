@@ -23,7 +23,7 @@ TOOL_SELECTION_CASES = [
     ToolSelectionCase(
         task="Read the local file README.md",
         expected_tool="read_file",
-        expected_arguments={"path": "README.md"},
+        expected_arguments={"path": "README.md", "offset": 1, "limit": 200},
     ),
     ToolSelectionCase(
         task="Read https://docs.python.org/3/library/asyncio-task.html",

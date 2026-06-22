@@ -15,6 +15,7 @@ MODEL = "claude-haiku-4-5"
 VAGUE_DESCRIPTIONS = {
     "calculator": "Process an input.",
     "read_file": "Get some content.",
+    "search_text": "Find some content.",
     "fetch_url": "Get some content.",
     "search_web": "Find something.",
 }

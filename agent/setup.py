@@ -1,10 +1,24 @@
 from functools import partial
 from pathlib import Path
 
-from .schemas import CalculatorInput, FetchUrlInput, ReadFileInput, SearchWebInput
+from .schemas import (
+    CalculatorInput,
+    FetchUrlInput,
+    GlobFilesInput,
+    ReadFileInput,
+    SearchTextInput,
+    SearchWebInput,
+)
 from .tool import Tool
 from .tool_registry import ToolRegistry
-from .tools import calculator, fetch_url, read_file, search_web
+from .tools import (
+    calculator,
+    fetch_url,
+    glob_files,
+    read_file,
+    search_text,
+    search_web,
+)
 
 
 def create_registry(workspace_root: Path) -> ToolRegistry:
@@ -21,6 +35,18 @@ def create_registry(workspace_root: Path) -> ToolRegistry:
             description="Read the contents of a local text file.",
             input_schema=ReadFileInput,
             fn=partial(read_file, workspace_root=workspace_root),
+        ),
+        Tool(
+            name="glob_files",
+            description="Find workspace files that match a glob pattern.",
+            input_schema=GlobFilesInput,
+            fn=partial(glob_files, workspace_root=workspace_root),
+        ),
+        Tool(
+            name="search_text",
+            description="Search workspace file contents with a regular expression.",
+            input_schema=SearchTextInput,
+            fn=partial(search_text, workspace_root=workspace_root),
         ),
         Tool(
             name="fetch_url",
