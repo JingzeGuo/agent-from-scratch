@@ -63,6 +63,45 @@ class ReadFileInput(BaseModel):
     )
 
 
+class EditFileInput(BaseModel):
+    """Input schema for the exact file editing tool."""
+
+    path: str = Field(
+        description="A workspace-relative path or an absolute path inside the workspace, e.g., 'agent/agent.py'."
+    )
+    old_text: str = Field(
+        min_length=1,
+        description="The exact text to replace. It must appear exactly once in the file.",
+    )
+    new_text: str = Field(
+        description="The replacement text.",
+    )
+
+
+class WriteFileInput(BaseModel):
+    """Input schema for creating or intentionally overwriting a file."""
+
+    path: str = Field(
+        description="A workspace-relative path or an absolute path inside the workspace, e.g., 'tests/test_new.py'."
+    )
+    content: str = Field(
+        description="The complete file content to write.",
+    )
+    overwrite: bool = Field(
+        default=False,
+        description="Whether to overwrite an existing file. Defaults to false.",
+    )
+
+
+class GetDiffInput(BaseModel):
+    """Input schema for retrieving session file changes."""
+
+    path: str | None = Field(
+        default=None,
+        description="Optional workspace-relative path to a changed file. If omitted, returns all session changes.",
+    )
+
+
 class SearchWebInput(BaseModel):
     """Input schema for the web search tool."""
 

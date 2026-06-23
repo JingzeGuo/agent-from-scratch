@@ -3,26 +3,31 @@ from pathlib import Path
 
 from .schemas import (
     CalculatorInput,
+    EditFileInput,
     FetchUrlInput,
+    GetDiffInput,
     GlobFilesInput,
     ReadFileInput,
     SearchTextInput,
     SearchWebInput,
+    WriteFileInput,
 )
 from .tool import Tool
 from .tool_registry import ToolRegistry
 from .tools import (
     calculator,
+    edit_file,
     fetch_url,
     glob_files,
     read_file,
     search_text,
     search_web,
+    write_file,
 )
 
 
 def create_registry(workspace_root: Path) -> ToolRegistry:
-    registry = ToolRegistry()
+    registry = ToolRegistry(workspace_root)
     tools = [
         Tool(
             name="calculator",
@@ -47,6 +52,24 @@ def create_registry(workspace_root: Path) -> ToolRegistry:
             description="Search workspace file contents with a regular expression.",
             input_schema=SearchTextInput,
             fn=partial(search_text, workspace_root=workspace_root),
+        ),
+        Tool(
+            name="edit_file",
+            description="Replace one exact text match in a workspace file and return a unified diff.",
+            input_schema=EditFileInput,
+            fn=partial(edit_file, workspace_root=workspace_root),
+        ),
+        Tool(
+            name="write_file",
+            description="Create a new file or intentionally overwrite a file and return a unified diff.",
+            input_schema=WriteFileInput,
+            fn=partial(write_file, workspace_root=workspace_root),
+        ),
+        Tool(
+            name="get_diff",
+            description="Return unified diffs for files changed during this session.",
+            input_schema=GetDiffInput,
+            fn=registry.get_diff,
         ),
         Tool(
             name="fetch_url",

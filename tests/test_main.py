@@ -35,6 +35,7 @@ def test_help_lists_available_commands(
         "Available commands:\n"
         "  /help   Show available commands.\n"
         "  /model  Show or switch provider and model.\n"
+        "  /diff   Show file changes from this session.\n"
         "  /exit   Exit the application.\n"
     )
 
@@ -88,3 +89,23 @@ def test_model_command_switches_provider(
     assert capsys.readouterr().out == (
         "Switched model: deepseek/deepseek-v4-flash\n"
     )
+
+
+def test_diff_command_shows_session_diff(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    agent = create_agent()
+
+    should_exit = handle_command("/diff", agent)
+
+    assert should_exit is False
+    assert capsys.readouterr().out == "[No files changed]\n"
+
+
+def test_diff_command_requires_agent(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    should_exit = handle_command("/diff")
+
+    assert should_exit is False
+    assert capsys.readouterr().out == "Diff command is unavailable.\n"

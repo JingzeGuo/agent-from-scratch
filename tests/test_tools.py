@@ -255,3 +255,416 @@ def test_read_file_rejects_file_outside_workspace(tmp_path: Path) -> None:
 
     assert "Path is outside the workspace" in output
     assert is_error is True
+
+
+def test_read_file_tracks_read_file(tmp_path: Path) -> None:
+    target = tmp_path / "notes.txt"
+    target.write_text("content\n", encoding="utf-8")
+    registry = create_registry(tmp_path)
+
+    output, is_error = registry.execute("read_file", {"path": "notes.txt"})
+
+    assert output == "1: content"
+    assert target.resolve() in registry.read_files
+    assert is_error is False
+
+
+def test_edit_file_replaces_unique_match_and_returns_diff(tmp_path: Path) -> None:
+    target = tmp_path / "notes.txt"
+    target.write_text("one\ntwo\nthree\n", encoding="utf-8")
+    registry = create_registry(tmp_path)
+    registry.execute("read_file", {"path": "notes.txt"})
+
+    output, is_error = registry.execute(
+        "edit_file",
+        {
+            "path": "notes.txt",
+            "old_text": "two",
+            "new_text": "TWO",
+        },
+    )
+
+    assert target.read_text(encoding="utf-8") == "one\nTWO\nthree\n"
+    assert output == (
+        "--- a/notes.txt\n"
+        "+++ b/notes.txt\n"
+        "@@ -1,3 +1,3 @@\n"
+        " one\n"
+        "-two\n"
+        "+TWO\n"
+        " three"
+    )
+    assert is_error is False
+
+
+def test_edit_file_rejects_missing_match(tmp_path: Path) -> None:
+    target = tmp_path / "notes.txt"
+    target.write_text("one\ntwo\nthree\n", encoding="utf-8")
+    registry = create_registry(tmp_path)
+    registry.execute("read_file", {"path": "notes.txt"})
+
+    output, is_error = registry.execute(
+        "edit_file",
+        {
+            "path": "notes.txt",
+            "old_text": "four",
+            "new_text": "FOUR",
+        },
+    )
+
+    assert target.read_text(encoding="utf-8") == "one\ntwo\nthree\n"
+    assert "Exact text was not found" in output
+    assert is_error is True
+
+
+def test_edit_file_rejects_duplicate_match(tmp_path: Path) -> None:
+    target = tmp_path / "notes.txt"
+    target.write_text("repeat\nmiddle\nrepeat\n", encoding="utf-8")
+    registry = create_registry(tmp_path)
+    registry.execute("read_file", {"path": "notes.txt"})
+
+    output, is_error = registry.execute(
+        "edit_file",
+        {
+            "path": "notes.txt",
+            "old_text": "repeat",
+            "new_text": "changed",
+        },
+    )
+
+    assert target.read_text(encoding="utf-8") == "repeat\nmiddle\nrepeat\n"
+    assert "Exact text matched 2 times" in output
+    assert is_error is True
+
+
+def test_edit_file_requires_read_before_edit(tmp_path: Path) -> None:
+    target = tmp_path / "notes.txt"
+    target.write_text("one\ntwo\nthree\n", encoding="utf-8")
+    registry = create_registry(tmp_path)
+
+    output, is_error = registry.execute(
+        "edit_file",
+        {
+            "path": "notes.txt",
+            "old_text": "two",
+            "new_text": "TWO",
+        },
+    )
+
+    assert target.read_text(encoding="utf-8") == "one\ntwo\nthree\n"
+    assert "File must be read before editing" in output
+    assert is_error is True
+
+
+def test_edit_file_tracks_changed_file(tmp_path: Path) -> None:
+    target = tmp_path / "notes.txt"
+    target.write_text("one\ntwo\nthree\n", encoding="utf-8")
+    registry = create_registry(tmp_path)
+    registry.execute("read_file", {"path": "notes.txt"})
+
+    output, is_error = registry.execute(
+        "edit_file",
+        {
+            "path": "notes.txt",
+            "old_text": "two",
+            "new_text": "TWO",
+        },
+    )
+
+    assert target.resolve() in registry.changed_files
+    assert "--- a/notes.txt" in output
+    assert is_error is False
+
+
+def test_edit_file_rejects_file_outside_workspace(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "project"
+    workspace_root.mkdir()
+    outside_file = tmp_path / "secret.txt"
+    outside_file.write_text("secret", encoding="utf-8")
+    registry = create_registry(workspace_root)
+
+    output, is_error = registry.execute(
+        "edit_file",
+        {
+            "path": "../secret.txt",
+            "old_text": "secret",
+            "new_text": "changed",
+        },
+    )
+
+    assert outside_file.read_text(encoding="utf-8") == "secret"
+    assert "Path is outside the workspace" in output
+    assert is_error is True
+
+
+def test_write_file_creates_new_file_and_returns_diff(tmp_path: Path) -> None:
+    target = tmp_path / "notes.txt"
+    registry = create_registry(tmp_path)
+
+    output, is_error = registry.execute(
+        "write_file",
+        {
+            "path": "notes.txt",
+            "content": "one\ntwo\n",
+        },
+    )
+
+    assert target.read_text(encoding="utf-8") == "one\ntwo\n"
+    assert output == (
+        "--- a/notes.txt\n"
+        "+++ b/notes.txt\n"
+        "@@ -0,0 +1,2 @@\n"
+        "+one\n"
+        "+two"
+    )
+    assert is_error is False
+
+
+def test_write_file_creates_parent_directories(tmp_path: Path) -> None:
+    target = tmp_path / "docs" / "notes.txt"
+    registry = create_registry(tmp_path)
+
+    output, is_error = registry.execute(
+        "write_file",
+        {
+            "path": "docs/notes.txt",
+            "content": "content\n",
+        },
+    )
+
+    assert target.read_text(encoding="utf-8") == "content\n"
+    assert "--- a/docs/notes.txt" in output
+    assert is_error is False
+
+
+def test_write_file_rejects_existing_file_without_overwrite(tmp_path: Path) -> None:
+    target = tmp_path / "notes.txt"
+    target.write_text("original\n", encoding="utf-8")
+    registry = create_registry(tmp_path)
+
+    output, is_error = registry.execute(
+        "write_file",
+        {
+            "path": "notes.txt",
+            "content": "replacement\n",
+        },
+    )
+
+    assert target.read_text(encoding="utf-8") == "original\n"
+    assert "File already exists" in output
+    assert is_error is True
+
+
+def test_write_file_requires_read_before_overwrite(tmp_path: Path) -> None:
+    target = tmp_path / "notes.txt"
+    target.write_text("original\n", encoding="utf-8")
+    registry = create_registry(tmp_path)
+
+    output, is_error = registry.execute(
+        "write_file",
+        {
+            "path": "notes.txt",
+            "content": "replacement\n",
+            "overwrite": True,
+        },
+    )
+
+    assert target.read_text(encoding="utf-8") == "original\n"
+    assert "File must be read before overwriting" in output
+    assert is_error is True
+
+
+def test_write_file_overwrites_after_read(tmp_path: Path) -> None:
+    target = tmp_path / "notes.txt"
+    target.write_text("original\n", encoding="utf-8")
+    registry = create_registry(tmp_path)
+    registry.execute("read_file", {"path": "notes.txt"})
+
+    output, is_error = registry.execute(
+        "write_file",
+        {
+            "path": "notes.txt",
+            "content": "replacement\n",
+            "overwrite": True,
+        },
+    )
+
+    assert target.read_text(encoding="utf-8") == "replacement\n"
+    assert output == (
+        "--- a/notes.txt\n"
+        "+++ b/notes.txt\n"
+        "@@ -1 +1 @@\n"
+        "-original\n"
+        "+replacement"
+    )
+    assert is_error is False
+
+
+def test_write_file_tracks_changed_file(tmp_path: Path) -> None:
+    target = tmp_path / "notes.txt"
+    registry = create_registry(tmp_path)
+
+    output, is_error = registry.execute(
+        "write_file",
+        {
+            "path": "notes.txt",
+            "content": "content\n",
+        },
+    )
+
+    assert target.resolve() in registry.changed_files
+    assert "+++ b/notes.txt" in output
+    assert is_error is False
+
+
+def test_write_file_rejects_file_outside_workspace(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "project"
+    workspace_root.mkdir()
+    outside_file = tmp_path / "secret.txt"
+    registry = create_registry(workspace_root)
+
+    output, is_error = registry.execute(
+        "write_file",
+        {
+            "path": "../secret.txt",
+            "content": "secret\n",
+        },
+    )
+
+    assert not outside_file.exists()
+    assert "Path is outside the workspace" in output
+    assert is_error is True
+
+
+def test_get_diff_returns_no_changes_message(tmp_path: Path) -> None:
+    registry = create_registry(tmp_path)
+
+    output, is_error = registry.execute("get_diff", {})
+
+    assert output == "[No files changed]"
+    assert is_error is False
+
+
+def test_get_diff_returns_changed_file_diff(tmp_path: Path) -> None:
+    target = tmp_path / "notes.txt"
+    target.write_text("one\ntwo\nthree\n", encoding="utf-8")
+    registry = create_registry(tmp_path)
+    registry.execute("read_file", {"path": "notes.txt"})
+    registry.execute(
+        "edit_file",
+        {
+            "path": "notes.txt",
+            "old_text": "two",
+            "new_text": "TWO",
+        },
+    )
+
+    output, is_error = registry.execute("get_diff", {})
+
+    assert output == (
+        "--- a/notes.txt\n"
+        "+++ b/notes.txt\n"
+        "@@ -1,3 +1,3 @@\n"
+        " one\n"
+        "-two\n"
+        "+TWO\n"
+        " three"
+    )
+    assert is_error is False
+
+
+def test_get_diff_filters_by_path(tmp_path: Path) -> None:
+    first = tmp_path / "first.txt"
+    second = tmp_path / "second.txt"
+    first.write_text("one\n", encoding="utf-8")
+    second.write_text("two\n", encoding="utf-8")
+    registry = create_registry(tmp_path)
+    registry.execute("read_file", {"path": "first.txt"})
+    registry.execute("read_file", {"path": "second.txt"})
+    registry.execute(
+        "edit_file",
+        {"path": "first.txt", "old_text": "one", "new_text": "ONE"},
+    )
+    registry.execute(
+        "edit_file",
+        {"path": "second.txt", "old_text": "two", "new_text": "TWO"},
+    )
+
+    output, is_error = registry.execute("get_diff", {"path": "second.txt"})
+
+    assert "--- a/second.txt" in output
+    assert "+TWO" in output
+    assert "first.txt" not in output
+    assert is_error is False
+
+
+def test_get_diff_tracks_new_file_from_write_file(tmp_path: Path) -> None:
+    registry = create_registry(tmp_path)
+    registry.execute(
+        "write_file",
+        {
+            "path": "notes.txt",
+            "content": "one\ntwo\n",
+        },
+    )
+
+    output, is_error = registry.execute("get_diff", {})
+
+    assert output == (
+        "--- a/notes.txt\n"
+        "+++ b/notes.txt\n"
+        "@@ -0,0 +1,2 @@\n"
+        "+one\n"
+        "+two"
+    )
+    assert is_error is False
+
+
+def test_get_diff_preserves_original_content_across_multiple_edits(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "notes.txt"
+    target.write_text("one\ntwo\nthree\n", encoding="utf-8")
+    registry = create_registry(tmp_path)
+    registry.execute("read_file", {"path": "notes.txt"})
+    registry.execute(
+        "edit_file",
+        {
+            "path": "notes.txt",
+            "old_text": "two",
+            "new_text": "TWO",
+        },
+    )
+    registry.execute(
+        "edit_file",
+        {
+            "path": "notes.txt",
+            "old_text": "three",
+            "new_text": "THREE",
+        },
+    )
+
+    output, is_error = registry.execute("get_diff", {})
+
+    assert output == (
+        "--- a/notes.txt\n"
+        "+++ b/notes.txt\n"
+        "@@ -1,3 +1,3 @@\n"
+        " one\n"
+        "-two\n"
+        "-three\n"
+        "+TWO\n"
+        "+THREE"
+    )
+    assert is_error is False
+
+
+def test_get_diff_rejects_unchanged_path(tmp_path: Path) -> None:
+    target = tmp_path / "notes.txt"
+    target.write_text("content\n", encoding="utf-8")
+    registry = create_registry(tmp_path)
+
+    output, is_error = registry.execute("get_diff", {"path": "notes.txt"})
+
+    assert "File has not changed in this session" in output
+    assert is_error is True

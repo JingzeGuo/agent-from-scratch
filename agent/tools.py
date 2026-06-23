@@ -11,6 +11,7 @@ tools with schema + validation.
 from __future__ import annotations
 
 import ast
+import difflib
 import json
 import operator
 import os
@@ -226,6 +227,7 @@ def _has_more_text_matches(
 # by reading a 50MB log file.
 
 _MAX_FILE_BYTES = 100_000  # ~25k tokens worst case
+_MAX_DIFF_CHARS = 20_000
 
 
 def read_file(
@@ -264,7 +266,110 @@ def read_file(
 
 
 # ==========================================
-# 5. fetch_url
+# 5. edit_file
+# ==========================================
+
+
+def edit_file(
+    path: str,
+    old_text: str,
+    new_text: str,
+    *,
+    workspace_root: Path,
+) -> str:
+    """Replace one exact text match in a workspace file and return a diff."""
+    p = resolve_workspace_path(workspace_root, path)
+    if not p.exists():
+        raise FileNotFoundError(f"File not found: {path}")
+    if not p.is_file():
+        raise IsADirectoryError(f"Path is not a file: {path}")
+    size = p.stat().st_size
+    if size > _MAX_FILE_BYTES:
+        raise ValueError(
+            f"File too large: {size} bytes (limit: {_MAX_FILE_BYTES}). "
+            "Use a smaller, targeted file."
+        )
+
+    original = p.read_text(encoding="utf-8")
+    match_count = original.count(old_text)
+    if match_count == 0:
+        raise ValueError("Exact text was not found in the file.")
+    if match_count > 1:
+        raise ValueError(
+            f"Exact text matched {match_count} times. Provide a more specific old_text."
+        )
+
+    updated = original.replace(old_text, new_text, 1)
+    p.write_text(updated, encoding="utf-8")
+    return _build_unified_diff(
+        path=p,
+        before=original,
+        after=updated,
+        workspace_root=workspace_root,
+    )
+
+
+def write_file(
+    path: str,
+    content: str,
+    *,
+    workspace_root: Path,
+    overwrite: bool = False,
+) -> str:
+    """Create a file or intentionally overwrite an existing workspace file."""
+    p = resolve_workspace_path(workspace_root, path)
+    if p.exists() and not p.is_file():
+        raise IsADirectoryError(f"Path is not a file: {path}")
+    if p.exists() and not overwrite:
+        raise FileExistsError(
+            f"File already exists: {path}. Set overwrite=true to replace it."
+        )
+
+    original = ""
+    if p.exists():
+        size = p.stat().st_size
+        if size > _MAX_FILE_BYTES:
+            raise ValueError(
+                f"File too large: {size} bytes (limit: {_MAX_FILE_BYTES}). "
+                "Use edit_file for a targeted change."
+            )
+        original = p.read_text(encoding="utf-8")
+
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content, encoding="utf-8")
+    return _build_unified_diff(
+        path=p,
+        before=original,
+        after=content,
+        workspace_root=workspace_root,
+    )
+
+
+def _build_unified_diff(
+    *,
+    path: Path,
+    before: str,
+    after: str,
+    workspace_root: Path,
+) -> str:
+    root = workspace_root.expanduser().resolve()
+    relative_path = path.relative_to(root).as_posix()
+    diff = "\n".join(
+        difflib.unified_diff(
+            before.splitlines(),
+            after.splitlines(),
+            fromfile=f"a/{relative_path}",
+            tofile=f"b/{relative_path}",
+            lineterm="",
+        )
+    )
+    if len(diff) > _MAX_DIFF_CHARS:
+        return diff[:_MAX_DIFF_CHARS] + f"\n[truncated after {_MAX_DIFF_CHARS} chars]"
+    return diff
+
+
+# ==========================================
+# 6. fetch_url
 # ==========================================
 # Returns plain text. We don't parse HTML here — that's a separate concern.
 

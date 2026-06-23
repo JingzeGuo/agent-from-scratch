@@ -10,6 +10,7 @@ from agent.setup import create_registry
 COMMANDS = {
     "/help": "Show available commands.",
     "/model": "Show or switch provider and model.",
+    "/diff": "Show file changes from this session.",
     "/exit": "Exit the application.",
 }
 
@@ -50,6 +51,18 @@ def handle_command(command: str, agent: Agent | None = None) -> bool:
             return False
 
         print(f"Switched model: {agent.provider}/{agent.model}")
+        return False
+    if command == "/diff" or command.startswith("/diff "):
+        if agent is None:
+            print("Diff command is unavailable.")
+            return False
+
+        parts = command.split(maxsplit=1)
+        path = parts[1] if len(parts) == 2 else None
+        try:
+            print(agent.registry.get_diff(path))
+        except ValueError as error:
+            print(f"Cannot show diff: {error}")
         return False
     if command == "/exit":
         print("Goodbye.")
