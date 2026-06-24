@@ -192,7 +192,14 @@ class VerificationEvidence(BaseModel):
 class AgentRun(BaseModel):
     objective: str
     steps: list[AgentStep]
-    termination: Literal["completed", "max_steps", "unexpected_stop"]
+    termination: Literal[
+        "completed",
+        "max_steps",
+        "interrupted",
+        "blocked",
+        "refused",
+        "protocol_error",
+    ]
     final_stop_reason: str | None
     verification: VerificationEvidence
     task_success: bool | None = None

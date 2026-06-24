@@ -7,10 +7,10 @@ from .schemas import (
     AgentStep,
     ToolCall,
     ToolResult,
-    VerificationEvidence,
 )
 from .token_tracker import TokenTracker
 from .tool_registry import ToolRegistry
+from .verification import extract_verification_evidence, infer_task_success
 
 
 def format_tool_activity(tool_call: ToolCall) -> str:
@@ -140,24 +140,26 @@ class Agent:
             self.steps.append(agent_step)
 
             if response.stop_reason == "end_turn":
+                verification = extract_verification_evidence(run_steps)
                 return AgentRun(
                     objective=user_task,
                     steps=run_steps,
                     termination="completed",
                     final_stop_reason=response.stop_reason,
-                    verification=VerificationEvidence(status="not_run"),
-                    task_success=None,
+                    verification=verification,
+                    task_success=infer_task_success(verification),
                 )
 
             if not tool_results:
-                print(f"Unexpected stop reason: {response.stop_reason}")
+                verification = extract_verification_evidence(run_steps)
+                print(f"Protocol error stop reason: {response.stop_reason}")
                 return AgentRun(
                     objective=user_task,
                     steps=run_steps,
-                    termination="unexpected_stop",
+                    termination="protocol_error",
                     final_stop_reason=response.stop_reason,
-                    verification=VerificationEvidence(status="not_run"),
-                    task_success=None,
+                    verification=verification,
+                    task_success=infer_task_success(verification),
                 )
 
             self.messages.append(
@@ -167,11 +169,12 @@ class Agent:
                 }
             )
         print(f"Agent reached the {self.max_steps}-step limit. Task stopped.")
+        verification = extract_verification_evidence(run_steps)
         return AgentRun(
             objective=user_task,
             steps=run_steps,
             termination="max_steps",
             final_stop_reason=response.stop_reason,
-            verification=VerificationEvidence(status="not_run"),
-            task_success=None,
+            verification=verification,
+            task_success=infer_task_success(verification),
         )

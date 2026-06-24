@@ -270,6 +270,10 @@ def test_agent_completes_read_search_edit_test_trajectory(
     ]
     assert target.read_text(encoding="utf-8") == "def answer() -> int:\n    return 2\n"
     assert "exit_code: 0" in agent_run.steps[3].tool_results[0].content
+    assert agent_run.verification.status == "passed"
+    assert agent_run.verification.command == f"{sys.executable} -m py_compile module.py"
+    assert agent_run.verification.exit_code == 0
+    assert agent_run.task_success is None
     assert agent_run.steps[-1].text == ["Verified the focused command."]
     assert capsys.readouterr().out == (
         "Reading module.py\n"
@@ -278,6 +282,108 @@ def test_agent_completes_read_search_edit_test_trajectory(
         "Running command\n"
         "Verified the focused command.\n"
     )
+
+
+def test_tool_success_does_not_prove_task_success() -> None:
+    tool_response = make_message(
+        content=[
+            ToolUseBlock(
+                id="toolu_test",
+                name="calculator",
+                input={"expression": "1 + 1"},
+                type="tool_use",
+            )
+        ],
+        stop_reason="tool_use",
+    )
+    incorrect_final_response = make_message(
+        content=[TextBlock(text="The answer is 3.", type="text")],
+        stop_reason="end_turn",
+    )
+    agent, _ = create_agent([tool_response, incorrect_final_response])
+
+    agent_run = asyncio.run(agent.run("Calculate 1 + 1"))
+
+    assert agent_run.termination == "completed"
+    assert agent_run.steps[0].tool_results[0].content == "2"
+    assert agent_run.steps[-1].text == ["The answer is 3."]
+    assert agent_run.verification.status == "not_run"
+    assert agent_run.task_success is None
+
+
+def test_failed_command_followed_by_repair_and_passing_command(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "module.py"
+    target.write_text("def answer()\n    return 1\n", encoding="utf-8")
+
+    command = f"{sys.executable} -m py_compile module.py"
+    registry = create_workspace_registry(tmp_path)
+    responses = [
+        make_message(
+            content=[
+                ToolUseBlock(
+                    id="toolu_read",
+                    name="read_file",
+                    input={"path": "module.py"},
+                    type="tool_use",
+                )
+            ],
+            stop_reason="tool_use",
+        ),
+        make_message(
+            content=[
+                ToolUseBlock(
+                    id="toolu_failed_test",
+                    name="run_command",
+                    input={"command": command},
+                    type="tool_use",
+                )
+            ],
+            stop_reason="tool_use",
+        ),
+        make_message(
+            content=[
+                ToolUseBlock(
+                    id="toolu_edit",
+                    name="edit_file",
+                    input={
+                        "path": "module.py",
+                        "old_text": "def answer()\n    return 1\n",
+                        "new_text": "def answer() -> int:\n    return 1\n",
+                    },
+                    type="tool_use",
+                )
+            ],
+            stop_reason="tool_use",
+        ),
+        make_message(
+            content=[
+                ToolUseBlock(
+                    id="toolu_passing_test",
+                    name="run_command",
+                    input={"command": command},
+                    type="tool_use",
+                )
+            ],
+            stop_reason="tool_use",
+        ),
+        make_message(
+            content=[TextBlock(text="The syntax check now passes.", type="text")],
+            stop_reason="end_turn",
+        ),
+    ]
+    agent, _ = create_agent(responses, registry=registry)
+
+    agent_run = asyncio.run(agent.run("Repair module.py"))
+
+    assert agent_run.steps[1].tool_results[0].is_error is False
+    assert "exit_code: 1" in agent_run.steps[1].tool_results[0].content
+    assert "exit_code: 0" in agent_run.steps[3].tool_results[0].content
+    assert agent_run.verification.status == "passed"
+    assert agent_run.verification.command == command
+    assert agent_run.verification.exit_code == 0
+    assert agent_run.task_success is None
 
 
 def test_agent_recovers_from_failed_edit(
@@ -396,7 +502,7 @@ def test_agent_stops_at_max_steps(
     )
 
 
-def test_agent_handles_unexpected_stop_reason(
+def test_agent_handles_protocol_error_stop_reason(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     response = make_message(
@@ -408,7 +514,7 @@ def test_agent_handles_unexpected_stop_reason(
     agent_run = asyncio.run(agent.run("Write a long response"))
 
     assert messages.call_count == 1
-    assert agent_run.termination == "unexpected_stop"
+    assert agent_run.termination == "protocol_error"
     assert agent_run.final_stop_reason == "max_tokens"
     assert agent_run.verification.status == "not_run"
     assert agent_run.task_success is None
@@ -417,7 +523,7 @@ def test_agent_handles_unexpected_stop_reason(
     assert agent.steps[0].stop_reason == "max_tokens"
     assert capsys.readouterr().out == (
         "Partial response\n"
-        "Unexpected stop reason: max_tokens\n"
+        "Protocol error stop reason: max_tokens\n"
     )
 
 
