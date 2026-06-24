@@ -1,3 +1,5 @@
+import shlex
+import sys
 from pathlib import Path
 
 from agent.setup import create_registry
@@ -667,4 +669,121 @@ def test_get_diff_rejects_unchanged_path(tmp_path: Path) -> None:
     output, is_error = registry.execute("get_diff", {"path": "notes.txt"})
 
     assert "File has not changed in this session" in output
+    assert is_error is True
+
+
+def test_run_command_returns_success_result(tmp_path: Path) -> None:
+    registry = create_registry(tmp_path)
+
+    output, is_error = registry.execute(
+        "run_command",
+        {"command": f"{shlex.quote(sys.executable)} -c \"print('ok')\""},
+    )
+
+    assert "exit_code: 0" in output
+    assert "timed_out: false" in output
+    assert "stdout:\nok" in output
+    assert "stderr:\n[empty]" in output
+    assert is_error is False
+
+
+def test_run_command_returns_failure_exit_code(tmp_path: Path) -> None:
+    registry = create_registry(tmp_path)
+
+    output, is_error = registry.execute(
+        "run_command",
+        {
+            "command": (
+                f"{shlex.quote(sys.executable)} -c "
+                "\"import sys; print('bad'); print('err', file=sys.stderr); sys.exit(3)\""
+            )
+        },
+    )
+
+    assert "exit_code: 3" in output
+    assert "timed_out: false" in output
+    assert "stdout:\nbad" in output
+    assert "stderr:\nerr" in output
+    assert is_error is False
+
+
+def test_run_command_times_out(tmp_path: Path) -> None:
+    registry = create_registry(tmp_path)
+
+    output, is_error = registry.execute(
+        "run_command",
+        {
+            "command": f"{shlex.quote(sys.executable)} -c \"import time; time.sleep(1)\"",
+            "timeout_seconds": 0.1,
+        },
+    )
+
+    assert "exit_code: null" in output
+    assert "timed_out: true" in output
+    assert is_error is False
+
+
+def test_run_command_truncates_long_output(tmp_path: Path) -> None:
+    registry = create_registry(tmp_path)
+
+    output, is_error = registry.execute(
+        "run_command",
+        {
+            "command": f"{shlex.quote(sys.executable)} -c \"print('x' * 250)\"",
+            "max_output_chars": 200,
+        },
+    )
+
+    assert "[... truncated" in output
+    assert "exit_code: 0" in output
+    assert is_error is False
+
+
+def test_run_command_rejects_dangerous_command(tmp_path: Path) -> None:
+    registry = create_registry(tmp_path)
+
+    output, is_error = registry.execute(
+        "run_command",
+        {"command": "rm -rf ."},
+    )
+
+    assert "Blocked dangerous command: rm" in output
+    assert is_error is True
+
+
+def test_run_command_uses_workspace_relative_cwd(tmp_path: Path) -> None:
+    subdir = tmp_path / "package"
+    subdir.mkdir()
+    registry = create_registry(tmp_path)
+
+    output, is_error = registry.execute(
+        "run_command",
+        {
+            "command": (
+                f"{shlex.quote(sys.executable)} -c "
+                "\"from pathlib import Path; print(Path.cwd().name)\""
+            ),
+            "cwd": "package",
+        },
+    )
+
+    assert "stdout:\npackage" in output
+    assert is_error is False
+
+
+def test_run_command_rejects_cwd_outside_workspace(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "project"
+    workspace_root.mkdir()
+    (tmp_path / "outside").mkdir()
+    registry = create_registry(workspace_root)
+
+    output, is_error = registry.execute(
+        "run_command",
+        {
+            "command": f"{shlex.quote(sys.executable)} -c \"print('nope')\"",
+            "cwd": "../outside",
+        },
+    )
+
+    assert "Path is outside the workspace" in output
     assert is_error is True

@@ -102,6 +102,31 @@ class GetDiffInput(BaseModel):
     )
 
 
+class RunCommandInput(BaseModel):
+    """Input schema for running a bounded workspace command."""
+
+    command: str = Field(
+        min_length=1,
+        description="Command to run without shell operators, e.g., '.venv/bin/python -m pytest tests/test_tools.py'.",
+    )
+    cwd: str | None = Field(
+        default=None,
+        description="Optional workspace-relative working directory. Defaults to the workspace root.",
+    )
+    timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        le=120,
+        description="Maximum command runtime in seconds. Defaults to 10.",
+    )
+    max_output_chars: int = Field(
+        default=8000,
+        ge=200,
+        le=20000,
+        description="Maximum characters to keep separately from stdout and stderr.",
+    )
+
+
 class SearchWebInput(BaseModel):
     """Input schema for the web search tool."""
 

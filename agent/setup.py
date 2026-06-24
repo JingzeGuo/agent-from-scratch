@@ -8,6 +8,7 @@ from .schemas import (
     GetDiffInput,
     GlobFilesInput,
     ReadFileInput,
+    RunCommandInput,
     SearchTextInput,
     SearchWebInput,
     WriteFileInput,
@@ -20,6 +21,7 @@ from .tools import (
     fetch_url,
     glob_files,
     read_file,
+    run_command,
     search_text,
     search_web,
     write_file,
@@ -70,6 +72,12 @@ def create_registry(workspace_root: Path) -> ToolRegistry:
             description="Return unified diffs for files changed during this session.",
             input_schema=GetDiffInput,
             fn=registry.get_diff,
+        ),
+        Tool(
+            name="run_command",
+            description="Run a bounded command inside the workspace and return exit code, output, duration, and timeout status.",
+            input_schema=RunCommandInput,
+            fn=partial(run_command, workspace_root=workspace_root),
         ),
         Tool(
             name="fetch_url",
