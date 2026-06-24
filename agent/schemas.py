@@ -3,6 +3,15 @@ from typing import Any, Literal
 from anthropic.types import ToolResultBlockParam
 from pydantic import BaseModel, Field
 
+RunOutcome = Literal[
+    "completed",
+    "max_steps",
+    "interrupted",
+    "blocked",
+    "refused",
+    "protocol_error",
+]
+
 
 class CalculatorInput(BaseModel):
     """Input schema for the calculator tool."""
@@ -192,14 +201,7 @@ class VerificationEvidence(BaseModel):
 class AgentRun(BaseModel):
     objective: str
     steps: list[AgentStep]
-    termination: Literal[
-        "completed",
-        "max_steps",
-        "interrupted",
-        "blocked",
-        "refused",
-        "protocol_error",
-    ]
+    termination: RunOutcome
     final_stop_reason: str | None
     verification: VerificationEvidence
     task_success: bool | None = None
