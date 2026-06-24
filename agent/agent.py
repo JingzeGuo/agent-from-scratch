@@ -1,6 +1,7 @@
 from anthropic import AsyncAnthropic
 from anthropic.types import MessageParam
 
+from .prompts import build_system_prompt
 from .schemas import (
     AgentRun,
     AgentStep,
@@ -10,6 +11,25 @@ from .schemas import (
 )
 from .token_tracker import TokenTracker
 from .tool_registry import ToolRegistry
+
+
+def format_tool_activity(tool_call: ToolCall) -> str:
+    tool_input = tool_call.input
+    if tool_call.name == "read_file" and isinstance(tool_input.get("path"), str):
+        return f"Reading {tool_input['path']}"
+    if tool_call.name == "edit_file" and isinstance(tool_input.get("path"), str):
+        return f"Editing {tool_input['path']}"
+    if tool_call.name == "write_file" and isinstance(tool_input.get("path"), str):
+        return f"Writing {tool_input['path']}"
+    if tool_call.name == "search_text":
+        return "Searching workspace text"
+    if tool_call.name == "glob_files":
+        return "Finding workspace files"
+    if tool_call.name == "run_command":
+        return "Running command"
+    if tool_call.name == "get_diff":
+        return "Checking session diff"
+    return f"Running {tool_call.name}"
 
 
 class Agent:
@@ -29,6 +49,10 @@ class Agent:
         self.messages: list[MessageParam] = []
         self.steps: list[AgentStep] = []
         self.token_tracker = TokenTracker(model=model)
+        self.system_prompt = build_system_prompt(
+            workspace_root=registry.workspace_root,
+            registry=registry,
+        )
 
     def switch_provider(
         self,
@@ -59,6 +83,7 @@ class Agent:
             async with self.client.messages.stream(
                 model=self.model,
                 max_tokens=1024,
+                system=self.system_prompt,
                 tools=self.registry.to_anthropic_schemas(),
                 messages=self.messages,
             ) as stream:
@@ -91,6 +116,7 @@ class Agent:
                         )
                         tool_calls.append(tool_call)
 
+                        print(format_tool_activity(tool_call))
                         output, is_error = self.registry.execute(
                             tool_call.name,
                             tool_call.input,

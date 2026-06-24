@@ -1,12 +1,32 @@
+import asyncio
+from typing import cast
+
 import pytest
 from anthropic import AsyncAnthropic
 
 from agent.agent import Agent
-from agent.schemas import CalculatorInput
+from agent.schemas import AgentRun, CalculatorInput, VerificationEvidence
 from agent.tool import Tool
 from agent.tool_registry import ToolRegistry
 from agent.tools import calculator
-from main import handle_command
+from main import handle_command, parse_one_shot_task, run_cli
+
+
+class FakeRunAgent:
+    def __init__(self) -> None:
+        self.tasks: list[str] = []
+
+    async def run(self, user_task: str) -> AgentRun:
+        self.tasks.append(user_task)
+        print("done")
+        return AgentRun(
+            objective=user_task,
+            steps=[],
+            termination="completed",
+            final_stop_reason="end_turn",
+            verification=VerificationEvidence(status="not_run"),
+            task_success=None,
+        )
 
 
 def create_agent() -> Agent:
@@ -72,6 +92,29 @@ def test_model_command_shows_current_model(
     assert capsys.readouterr().out == (
         "Current model: anthropic/claude-haiku-4-5\n"
     )
+
+
+def test_parse_one_shot_task() -> None:
+    assert parse_one_shot_task([]) is None
+    assert parse_one_shot_task(["Fix", "the", "bug"]) == "Fix the bug"
+    assert parse_one_shot_task(["  "]) == ""
+
+
+def test_run_cli_executes_one_shot_task(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fake_agent = FakeRunAgent()
+
+    def fail_input(prompt: str) -> str:
+        raise AssertionError(f"Unexpected prompt: {prompt}")
+
+    monkeypatch.setattr("builtins.input", fail_input)
+
+    asyncio.run(run_cli(cast(Agent, fake_agent), "Fix the bug"))
+
+    assert fake_agent.tasks == ["Fix the bug"]
+    assert capsys.readouterr().out == "\nAssistant: done\n"
 
 
 def test_model_command_switches_provider(

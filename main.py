@@ -1,4 +1,6 @@
 import asyncio
+import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -13,6 +15,12 @@ COMMANDS = {
     "/diff": "Show file changes from this session.",
     "/exit": "Exit the application.",
 }
+
+
+def parse_one_shot_task(argv: Sequence[str]) -> str | None:
+    if not argv:
+        return None
+    return " ".join(argv).strip()
 
 
 def handle_command(command: str, agent: Agent | None = None) -> bool:
@@ -73,19 +81,14 @@ def handle_command(command: str, agent: Agent | None = None) -> bool:
     return False
 
 
-async def main() -> None:
-    load_dotenv()
-    config = load_provider_config()
-
-    workspace_root = Path.cwd().resolve()
-    registry = create_registry(workspace_root)
-    agent = Agent(
-        client=create_client(config),
-        registry=registry,
-        model=config.model,
-        provider=config.provider,
-    )
-    print(f"Provider: {agent.provider} | Model: {agent.model}")
+async def run_cli(agent: Agent, one_shot_task: str | None = None) -> None:
+    if one_shot_task is not None:
+        if not one_shot_task:
+            print("Task cannot be empty.")
+            return
+        print("\nAssistant: ", end="", flush=True)
+        await agent.run(one_shot_task)
+        return
 
     while True:
         user_task = input("\nYou: ").strip()
@@ -99,6 +102,23 @@ async def main() -> None:
 
         print("\nAssistant: ", end="", flush=True)
         await agent.run(user_task)
+
+
+async def main(argv: Sequence[str] | None = None) -> None:
+    load_dotenv()
+    config = load_provider_config()
+    one_shot_task = parse_one_shot_task(sys.argv[1:] if argv is None else argv)
+
+    workspace_root = Path.cwd().resolve()
+    registry = create_registry(workspace_root)
+    agent = Agent(
+        client=create_client(config),
+        registry=registry,
+        model=config.model,
+        provider=config.provider,
+    )
+    print(f"Provider: {agent.provider} | Model: {agent.model}")
+    await run_cli(agent, one_shot_task)
 
 
 if __name__ == "__main__":

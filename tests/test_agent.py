@@ -1,5 +1,7 @@
 import asyncio
+import sys
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -14,6 +16,7 @@ from anthropic.types import (
 )
 
 from agent.agent import Agent
+from agent.prompts import build_system_prompt
 from agent.schemas import (
     AgentRun,
     CalculatorInput,
@@ -21,6 +24,7 @@ from agent.schemas import (
     SearchWebInput,
     VerificationEvidence,
 )
+from agent.setup import create_registry as create_workspace_registry
 from agent.tool import Tool
 from agent.tool_registry import ToolRegistry
 from agent.tools import calculator
@@ -154,7 +158,207 @@ def test_single_tool_call_completes(
     assert agent.steps[0].tool_results[0].content == "2"
     assert agent.steps[0].tool_results[0].is_error is False
     assert agent.steps[1].text == ["The answer is 2."]
-    assert capsys.readouterr().out == "The answer is 2.\n"
+    assert capsys.readouterr().out == "Running calculator\nThe answer is 2.\n"
+
+
+def test_agent_sends_coding_system_prompt() -> None:
+    response = make_message(
+        content=[TextBlock(text="Done.", type="text")],
+        stop_reason="end_turn",
+    )
+    agent, messages = create_agent([response])
+
+    asyncio.run(agent.run("Say done"))
+
+    system_prompt = messages.requests[0]["system"]
+    assert system_prompt == agent.system_prompt
+    assert "You are a coding agent operating inside a local workspace." in system_prompt
+    assert "`calculator`: Optional helper for math." in system_prompt
+    assert "Inspect before editing" in system_prompt
+    assert "Edit, then verify" in system_prompt
+
+
+def test_build_system_prompt_uses_workspace_and_registered_tools(
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path
+    registry = create_registry()
+
+    prompt = build_system_prompt(
+        workspace_root=workspace_root,
+        registry=registry,
+    )
+
+    assert workspace_root.as_posix() in prompt
+    assert "`calculator`: Optional helper for math." in prompt
+    assert "- `read_file`:" not in prompt
+
+
+def test_agent_completes_read_search_edit_test_trajectory(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    target = tmp_path / "module.py"
+    target.write_text("def answer() -> int:\n    return 1\n", encoding="utf-8")
+
+    registry = create_workspace_registry(tmp_path)
+    responses = [
+        make_message(
+            content=[
+                ToolUseBlock(
+                    id="toolu_read",
+                    name="read_file",
+                    input={"path": "module.py"},
+                    type="tool_use",
+                )
+            ],
+            stop_reason="tool_use",
+        ),
+        make_message(
+            content=[
+                ToolUseBlock(
+                    id="toolu_search",
+                    name="search_text",
+                    input={"pattern": "return 1", "file_pattern": "module.py"},
+                    type="tool_use",
+                )
+            ],
+            stop_reason="tool_use",
+        ),
+        make_message(
+            content=[
+                ToolUseBlock(
+                    id="toolu_edit",
+                    name="edit_file",
+                    input={
+                        "path": "module.py",
+                        "old_text": "def answer() -> int:\n    return 1\n",
+                        "new_text": "def answer() -> int:\n    return 2\n",
+                    },
+                    type="tool_use",
+                )
+            ],
+            stop_reason="tool_use",
+        ),
+        make_message(
+            content=[
+                ToolUseBlock(
+                    id="toolu_test",
+                    name="run_command",
+                    input={
+                        "command": f"{sys.executable} -m py_compile module.py",
+                    },
+                    type="tool_use",
+                )
+            ],
+            stop_reason="tool_use",
+        ),
+        make_message(
+            content=[TextBlock(text="Verified the focused command.", type="text")],
+            stop_reason="end_turn",
+        ),
+    ]
+    agent, _ = create_agent(responses, registry=registry)
+
+    agent_run = asyncio.run(agent.run("Fix module.py"))
+
+    assert [step.tool_calls[0].name for step in agent_run.steps[:-1]] == [
+        "read_file",
+        "search_text",
+        "edit_file",
+        "run_command",
+    ]
+    assert target.read_text(encoding="utf-8") == "def answer() -> int:\n    return 2\n"
+    assert "exit_code: 0" in agent_run.steps[3].tool_results[0].content
+    assert agent_run.steps[-1].text == ["Verified the focused command."]
+    assert capsys.readouterr().out == (
+        "Reading module.py\n"
+        "Searching workspace text\n"
+        "Editing module.py\n"
+        "Running command\n"
+        "Verified the focused command.\n"
+    )
+
+
+def test_agent_recovers_from_failed_edit(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "module.py"
+    target.write_text("def answer() -> int:\n    return 1\n", encoding="utf-8")
+
+    registry = create_workspace_registry(tmp_path)
+    responses = [
+        make_message(
+            content=[
+                ToolUseBlock(
+                    id="toolu_read",
+                    name="read_file",
+                    input={"path": "module.py"},
+                    type="tool_use",
+                )
+            ],
+            stop_reason="tool_use",
+        ),
+        make_message(
+            content=[
+                ToolUseBlock(
+                    id="toolu_bad_edit",
+                    name="edit_file",
+                    input={
+                        "path": "module.py",
+                        "old_text": "return 0",
+                        "new_text": "return 2",
+                    },
+                    type="tool_use",
+                )
+            ],
+            stop_reason="tool_use",
+        ),
+        make_message(
+            content=[
+                ToolUseBlock(
+                    id="toolu_reread",
+                    name="read_file",
+                    input={"path": "module.py"},
+                    type="tool_use",
+                )
+            ],
+            stop_reason="tool_use",
+        ),
+        make_message(
+            content=[
+                ToolUseBlock(
+                    id="toolu_good_edit",
+                    name="edit_file",
+                    input={
+                        "path": "module.py",
+                        "old_text": "def answer() -> int:\n    return 1\n",
+                        "new_text": "def answer() -> int:\n    return 2\n",
+                    },
+                    type="tool_use",
+                )
+            ],
+            stop_reason="tool_use",
+        ),
+        make_message(
+            content=[TextBlock(text="Recovered and applied the edit.", type="text")],
+            stop_reason="end_turn",
+        ),
+    ]
+    agent, messages = create_agent(responses, registry=registry)
+
+    agent_run = asyncio.run(agent.run("Fix module.py"))
+
+    failed_result = agent_run.steps[1].tool_results[0]
+    assert failed_result.is_error is True
+    assert "Exact text was not found" in failed_result.content
+    assert agent_run.steps[2].tool_calls[0].name == "read_file"
+    assert agent_run.steps[3].tool_results[0].is_error is False
+    assert target.read_text(encoding="utf-8") == "def answer() -> int:\n    return 2\n"
+
+    recovery_observation = messages.requests[2]["messages"][-1]["content"][0]
+    assert recovery_observation["tool_use_id"] == "toolu_bad_edit"
+    assert recovery_observation["is_error"] is True
 
 
 def test_agent_stops_at_max_steps(
@@ -186,6 +390,8 @@ def test_agent_stops_at_max_steps(
     assert len(agent_run.steps) == 2
     assert len(agent.steps) == 2
     assert capsys.readouterr().out == (
+        "Running calculator\n"
+        "Running calculator\n"
         "Agent reached the 2-step limit. Task stopped.\n"
     )
 
