@@ -8,11 +8,14 @@ from .prompts import build_system_prompt
 from .schemas import (
     AgentRun,
     AgentStep,
+    PendingAction,
     RunOutcome,
+    SessionEvent,
     SessionSnapshot,
     ToolCall,
     ToolResult,
 )
+from .session import SessionStore, utc_timestamp
 from .token_tracker import TokenTracker
 from .tool_registry import ToolRegistry
 from .verification import extract_verification_evidence, infer_task_success
@@ -55,6 +58,8 @@ class Agent:
         self.messages: list[MessageParam] = []
         self.steps: list[AgentStep] = []
         self.completed_runs: list[AgentRun] = []
+        self.session_store: SessionStore | None = None
+        self.session_id: str | None = None
         self.token_tracker = TokenTracker(model=model)
         self.system_prompt = build_system_prompt(
             workspace_root=registry.workspace_root,
@@ -71,6 +76,14 @@ class Agent:
         self.client = client
         self.provider = provider
         self.model = model
+
+    def configure_session_recording(
+        self,
+        session_store: SessionStore | None,
+        session_id: str | None,
+    ) -> None:
+        self.session_store = session_store
+        self.session_id = session_id
 
     def create_snapshot(
         self,
@@ -125,6 +138,7 @@ class Agent:
 
     async def run(self, user_task: str) -> AgentRun:
         run_steps: list[AgentStep] = []
+        self._record_run_started(user_task)
         self.messages.append(
             {
                 "role": "user",
@@ -174,10 +188,19 @@ class Agent:
                         )
                         tool_calls.append(tool_call)
 
+                        self._record_tool_started(
+                            step_number=step,
+                            tool_call=tool_call,
+                        )
                         print(format_tool_activity(tool_call))
                         output, is_error = self.registry.execute(
                             tool_call.name,
                             tool_call.input,
+                        )
+                        self._record_tool_finished(
+                            step_number=step,
+                            tool_call=tool_call,
+                            is_error=is_error,
                         )
                         tool_results.append(
                             ToolResult(
@@ -246,6 +269,68 @@ class Agent:
         )
         self.completed_runs.append(agent_run)
         return agent_run
+
+    def _record_run_started(self, objective: str) -> None:
+        self._append_session_event(
+            SessionEvent(
+                event_type="run_started",
+                session_id=self.session_id or "",
+                created_at=utc_timestamp(),
+                objective=objective,
+            )
+        )
+
+    def _record_tool_started(
+        self,
+        step_number: int,
+        tool_call: ToolCall,
+    ) -> None:
+        if self.session_store is None or self.session_id is None:
+            return
+        pending_action = PendingAction(
+            session_id=self.session_id,
+            step_number=step_number,
+            tool_name=tool_call.name,
+            tool_use_id=tool_call.tool_use_id,
+            tool_input=tool_call.input,
+            started_at=utc_timestamp(),
+        )
+        self.session_store.write_pending_action(pending_action)
+        self._append_session_event(
+            SessionEvent(
+                event_type="tool_started",
+                session_id=self.session_id,
+                created_at=pending_action.started_at,
+                step_number=step_number,
+                tool_name=tool_call.name,
+                tool_use_id=tool_call.tool_use_id,
+            )
+        )
+
+    def _record_tool_finished(
+        self,
+        step_number: int,
+        tool_call: ToolCall,
+        is_error: bool,
+    ) -> None:
+        self._append_session_event(
+            SessionEvent(
+                event_type="tool_finished",
+                session_id=self.session_id or "",
+                created_at=utc_timestamp(),
+                step_number=step_number,
+                tool_name=tool_call.name,
+                tool_use_id=tool_call.tool_use_id,
+                is_error=is_error,
+            )
+        )
+
+    def _append_session_event(self, event: SessionEvent) -> None:
+        if self.session_store is None or self.session_id is None:
+            return
+        self.session_store.append_event(
+            event.model_copy(update={"session_id": self.session_id})
+        )
 
     def _snapshot_paths(self, paths: set[Path]) -> list[str]:
         workspace_root = self.registry.workspace_root

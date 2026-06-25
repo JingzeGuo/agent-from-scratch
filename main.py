@@ -9,7 +9,8 @@ from pydantic import BaseModel
 
 from agent.agent import Agent
 from agent.provider import create_client, load_provider_config
-from agent.session import SessionStore
+from agent.schemas import SessionEvent
+from agent.session import SessionStore, utc_timestamp
 from agent.setup import create_registry
 
 COMMANDS = {
@@ -92,7 +93,43 @@ def checkpoint_session(
             session_name=session_state.session_name,
         )
     )
+    session_store.clear_pending_action(session_state.session_id)
+    session_store.append_event(
+        SessionEvent(
+            event_type="checkpoint_saved",
+            session_id=session_state.session_id,
+            session_name=session_state.session_name,
+            created_at=utc_timestamp(),
+        )
+    )
     print(f"Checkpoint saved: {session_state.session_id}")
+
+
+def report_interrupted_action(
+    session_store: SessionStore,
+    session_id: str,
+) -> None:
+    pending_action = session_store.read_pending_action(session_id)
+    if pending_action is None:
+        return
+
+    message = (
+        "Interrupted action detected: "
+        f"{pending_action.tool_name} ({pending_action.tool_use_id})"
+    )
+    session_store.append_event(
+        SessionEvent(
+            event_type="interrupted_action_detected",
+            session_id=session_id,
+            created_at=utc_timestamp(),
+            step_number=pending_action.step_number,
+            tool_name=pending_action.tool_name,
+            tool_use_id=pending_action.tool_use_id,
+            message=message,
+        )
+    )
+    session_store.clear_pending_action(session_id)
+    print(message)
 
 
 def handle_command(
@@ -168,6 +205,14 @@ def handle_command(
                 agent.create_snapshot(
                     session_id=session_state.session_id,
                     session_name=session_state.session_name,
+                )
+            )
+            session_store.append_event(
+                SessionEvent(
+                    event_type="session_renamed",
+                    session_id=session_state.session_id,
+                    session_name=session_state.session_name,
+                    created_at=utc_timestamp(),
                 )
             )
         except ValueError as error:
@@ -267,7 +312,25 @@ async def main(argv: Sequence[str] | None = None) -> None:
             session_id=snapshot.session_id,
             session_name=snapshot.session_name,
         )
+        report_interrupted_action(session_store, session_state.session_id)
+        session_store.append_event(
+            SessionEvent(
+                event_type="session_resumed",
+                session_id=session_state.session_id,
+                session_name=session_state.session_name,
+                created_at=utc_timestamp(),
+            )
+        )
         print(f"Resumed session: {snapshot.session_id}")
+    else:
+        session_store.append_event(
+            SessionEvent(
+                event_type="session_started",
+                session_id=session_state.session_id,
+                created_at=utc_timestamp(),
+            )
+        )
+    agent.configure_session_recording(session_store, session_state.session_id)
     print(f"Provider: {agent.provider} | Model: {agent.model}")
     await run_cli(agent, cli_args.one_shot_task, session_store, session_state)
 

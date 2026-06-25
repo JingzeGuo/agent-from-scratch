@@ -9,6 +9,7 @@ from agent.agent import Agent
 from agent.schemas import (
     AgentRun,
     CalculatorInput,
+    PendingAction,
     SessionSnapshot,
     VerificationEvidence,
 )
@@ -24,6 +25,7 @@ from main import (
     handle_command,
     parse_cli_args,
     parse_one_shot_task,
+    report_interrupted_action,
     run_cli,
 )
 
@@ -214,10 +216,13 @@ def test_run_cli_checkpoints_one_shot_task(
     )
 
     loaded = session_store.load("session-one")
+    events = session_store.read_events("session-one")
     assert fake_agent.tasks == ["Fix the bug"]
     assert fake_agent.snapshots == [("session-one", "day10")]
     assert loaded.session_id == "session-one"
     assert loaded.session_name == "day10"
+    assert session_store.read_pending_action("session-one") is None
+    assert [event.event_type for event in events] == ["checkpoint_saved"]
     assert capsys.readouterr().out == (
         "\nAssistant: done\n"
         "Checkpoint saved: session-one\n"
@@ -230,6 +235,57 @@ def test_checkpoint_session_does_nothing_without_store_or_state() -> None:
     checkpoint_session(cast(Agent, fake_agent), None, None)
 
     assert fake_agent.snapshots == []
+
+
+def test_checkpoint_session_clears_existing_pending_action(tmp_path: Path) -> None:
+    fake_agent = FakeCheckpointAgent()
+    session_store = SessionStore(tmp_path / "sessions")
+    session_state = CliSessionState(session_id="session-one")
+    session_store.write_pending_action(
+        PendingAction(
+            session_id="session-one",
+            step_number=1,
+            tool_name="calculator",
+            tool_use_id="toolu_calc",
+            tool_input={"expression": "1 + 1"},
+            started_at="2026-06-25T00:00:00+00:00",
+        )
+    )
+
+    checkpoint_session(cast(Agent, fake_agent), session_store, session_state)
+
+    assert session_store.read_pending_action("session-one") is None
+    assert [event.event_type for event in session_store.read_events("session-one")] == [
+        "checkpoint_saved"
+    ]
+
+
+def test_report_interrupted_action_warns_and_clears_marker(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    session_store = SessionStore(tmp_path / "sessions")
+    session_store.write_pending_action(
+        PendingAction(
+            session_id="session-one",
+            step_number=2,
+            tool_name="edit_file",
+            tool_use_id="toolu_edit",
+            tool_input={"path": "agent.py"},
+            started_at="2026-06-25T00:00:00+00:00",
+        )
+    )
+
+    report_interrupted_action(session_store, "session-one")
+
+    events = session_store.read_events("session-one")
+    assert session_store.read_pending_action("session-one") is None
+    assert len(events) == 1
+    assert events[0].event_type == "interrupted_action_detected"
+    assert events[0].tool_name == "edit_file"
+    assert capsys.readouterr().out == (
+        "Interrupted action detected: edit_file (toolu_edit)\n"
+    )
 
 
 def test_model_command_switches_provider(
@@ -282,9 +338,12 @@ def test_rename_command_updates_current_session_name(
     assert should_exit is False
     assert session_state.session_name == "day10"
     assert session_store.load("session-one").session_name == "day10"
+    events = session_store.read_events("session-one")
     assert list((tmp_path / "sessions").glob("*.json")) == [
         tmp_path / "sessions" / "session-one.json"
     ]
+    assert [event.event_type for event in events] == ["session_renamed"]
+    assert events[0].session_name == "day10"
     assert capsys.readouterr().out == "Renamed session: day10\n"
 
 

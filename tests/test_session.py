@@ -5,6 +5,8 @@ import pytest
 from agent.schemas import (
     AgentRun,
     AgentStep,
+    PendingAction,
+    SessionEvent,
     SessionSnapshot,
     ToolCall,
     ToolResult,
@@ -102,6 +104,63 @@ def test_session_store_lists_snapshots_sorted_by_id(tmp_path: Path) -> None:
     store.save(first)
 
     assert store.list_snapshots() == [first, second]
+
+
+def test_session_store_persists_pending_action(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    pending_action = PendingAction(
+        session_id="session-one",
+        step_number=2,
+        tool_name="edit_file",
+        tool_use_id="toolu_edit",
+        tool_input={"path": "agent.py"},
+        started_at="2026-06-25T00:00:00+00:00",
+    )
+
+    path = store.write_pending_action(pending_action)
+
+    assert path == tmp_path / "sessions" / "pending" / "session-one.json"
+    assert store.read_pending_action("session-one") == pending_action
+    assert store.list_snapshots() == []
+
+
+def test_session_store_clears_pending_action(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    pending_action = PendingAction(
+        session_id="session-one",
+        step_number=1,
+        tool_name="calculator",
+        tool_use_id="toolu_calc",
+        tool_input={"expression": "1 + 1"},
+        started_at="2026-06-25T00:00:00+00:00",
+    )
+    store.write_pending_action(pending_action)
+
+    store.clear_pending_action("session-one")
+
+    assert store.read_pending_action("session-one") is None
+
+
+def test_session_store_appends_and_reads_events(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    first = SessionEvent(
+        event_type="run_started",
+        session_id="session-one",
+        created_at="2026-06-25T00:00:00+00:00",
+        objective="Fix bug",
+    )
+    second = SessionEvent(
+        event_type="checkpoint_saved",
+        session_id="session-one",
+        created_at="2026-06-25T00:00:01+00:00",
+    )
+
+    path = store.append_event(first)
+    store.append_event(second)
+
+    assert path == tmp_path / "sessions" / "events" / "session-one.jsonl"
+    assert store.read_events("session-one") == [first, second]
+    assert store.list_snapshots() == []
 
 
 def test_session_store_creates_session_directory(tmp_path: Path) -> None:

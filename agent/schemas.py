@@ -207,6 +207,44 @@ class AgentRun(BaseModel):
     task_success: bool | None = None
 
 
+class PendingAction(BaseModel):
+    """Tool action that started before the latest durable checkpoint."""
+
+    session_id: str
+    step_number: int = Field(ge=1)
+    tool_name: str
+    tool_use_id: str
+    tool_input: dict[str, Any]
+    started_at: str
+
+
+SessionEventType = Literal[
+    "session_started",
+    "session_resumed",
+    "run_started",
+    "tool_started",
+    "tool_finished",
+    "checkpoint_saved",
+    "session_renamed",
+    "interrupted_action_detected",
+]
+
+
+class SessionEvent(BaseModel):
+    """Append-only session lifecycle event used for observability."""
+
+    event_type: SessionEventType
+    session_id: str
+    created_at: str
+    session_name: str | None = None
+    objective: str | None = None
+    step_number: int | None = Field(default=None, ge=1)
+    tool_name: str | None = None
+    tool_use_id: str | None = None
+    is_error: bool | None = None
+    message: str | None = None
+
+
 class SessionSnapshot(BaseModel):
     """Serializable state required to resume a coding-agent session."""
 

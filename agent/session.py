@@ -1,9 +1,14 @@
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 
-from .schemas import SessionSnapshot
+from .schemas import PendingAction, SessionEvent, SessionSnapshot
 
 SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+
+
+def utc_timestamp() -> str:
+    return datetime.now(UTC).isoformat()
 
 
 class SessionStore:
@@ -62,8 +67,66 @@ class SessionStore:
                 snapshots.append(self.load(session_id))
         return sorted(snapshots, key=lambda snapshot: snapshot.session_id)
 
+    def write_pending_action(self, pending_action: PendingAction) -> Path:
+        session_id = self._validate_session_id(pending_action.session_id)
+        pending_dir = self._pending_dir()
+        pending_dir.mkdir(parents=True, exist_ok=True)
+
+        path = self._pending_action_path(session_id)
+        temporary_path = path.with_suffix(".json.tmp")
+        temporary_path.write_text(
+            pending_action.model_dump_json(indent=2) + "\n",
+            encoding="utf-8",
+        )
+        temporary_path.replace(path)
+        return path
+
+    def read_pending_action(self, session_id: str) -> PendingAction | None:
+        safe_session_id = self._validate_session_id(session_id)
+        path = self._pending_action_path(safe_session_id)
+        if not path.exists():
+            return None
+        return PendingAction.model_validate_json(path.read_text(encoding="utf-8"))
+
+    def clear_pending_action(self, session_id: str) -> None:
+        safe_session_id = self._validate_session_id(session_id)
+        self._pending_action_path(safe_session_id).unlink(missing_ok=True)
+
+    def append_event(self, event: SessionEvent) -> Path:
+        session_id = self._validate_session_id(event.session_id)
+        events_dir = self._events_dir()
+        events_dir.mkdir(parents=True, exist_ok=True)
+
+        path = self._event_log_path(session_id)
+        with path.open("a", encoding="utf-8") as file:
+            file.write(event.model_dump_json() + "\n")
+        return path
+
+    def read_events(self, session_id: str) -> list[SessionEvent]:
+        safe_session_id = self._validate_session_id(session_id)
+        path = self._event_log_path(safe_session_id)
+        if not path.exists():
+            return []
+        return [
+            SessionEvent.model_validate_json(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line
+        ]
+
+    def _pending_dir(self) -> Path:
+        return self.sessions_dir / "pending"
+
+    def _events_dir(self) -> Path:
+        return self.sessions_dir / "events"
+
     def _snapshot_path(self, session_id: str) -> Path:
         return self.sessions_dir / f"{session_id}.json"
+
+    def _pending_action_path(self, session_id: str) -> Path:
+        return self._pending_dir() / f"{session_id}.json"
+
+    def _event_log_path(self, session_id: str) -> Path:
+        return self._events_dir() / f"{session_id}.jsonl"
 
     def _validate_session_id(self, session_id: str) -> str:
         if SESSION_ID_PATTERN.fullmatch(session_id) is None:

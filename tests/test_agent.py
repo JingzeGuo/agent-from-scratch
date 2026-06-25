@@ -28,6 +28,7 @@ from agent.schemas import (
     ToolResult,
     VerificationEvidence,
 )
+from agent.session import SessionStore
 from agent.setup import create_registry as create_workspace_registry
 from agent.tool import Tool
 from agent.tool_registry import ToolRegistry
@@ -704,6 +705,45 @@ def test_agent_rejects_snapshot_from_different_workspace(tmp_path: Path) -> None
 
     with pytest.raises(ValueError, match="does not match"):
         second_agent.restore_snapshot(snapshot)
+
+
+def test_agent_records_pending_action_and_tool_events(tmp_path: Path) -> None:
+    tool_response = make_message(
+        content=[
+            ToolUseBlock(
+                id="toolu_test",
+                name="calculator",
+                input={"expression": "1 + 1"},
+                type="tool_use",
+            )
+        ],
+        stop_reason="tool_use",
+    )
+    final_response = make_message(
+        content=[TextBlock(text="The answer is 2.", type="text")],
+        stop_reason="end_turn",
+    )
+    agent, _ = create_agent([tool_response, final_response])
+    session_store = SessionStore(tmp_path / "sessions")
+    agent.configure_session_recording(session_store, "session-one")
+
+    asyncio.run(agent.run("Calculate 1 + 1"))
+
+    pending_action = session_store.read_pending_action("session-one")
+    events = session_store.read_events("session-one")
+    assert pending_action is not None
+    assert pending_action.step_number == 1
+    assert pending_action.tool_name == "calculator"
+    assert pending_action.tool_use_id == "toolu_test"
+    assert pending_action.tool_input == {"expression": "1 + 1"}
+    assert [event.event_type for event in events] == [
+        "run_started",
+        "tool_started",
+        "tool_finished",
+    ]
+    assert events[0].objective == "Calculate 1 + 1"
+    assert events[1].tool_name == "calculator"
+    assert events[2].is_error is False
 
 
 def test_agent_recovers_from_invalid_tool_arguments() -> None:
