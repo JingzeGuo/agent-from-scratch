@@ -205,3 +205,23 @@ class AgentRun(BaseModel):
     final_stop_reason: str | None
     verification: VerificationEvidence
     task_success: bool | None = None
+
+
+class SessionSnapshot(BaseModel):
+    """Serializable state required to resume a coding-agent session."""
+
+    session_id: str
+    session_name: str | None = None
+    workspace_root: str
+    provider: str
+    model: str
+    max_steps: int = Field(ge=1)
+    messages: list[dict[str, Any]] = Field(default_factory=list)
+    steps: list[AgentStep] = Field(default_factory=list)
+    completed_runs: list[AgentRun] = Field(default_factory=list)
+    read_files: list[str] = Field(default_factory=list)
+    changed_files: list[str] = Field(default_factory=list)
+    original_file_contents: dict[str, str | None] = Field(default_factory=dict)
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    estimated_cost: float = Field(default=0.0, ge=0.0)

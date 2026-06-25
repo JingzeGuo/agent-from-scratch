@@ -1,3 +1,6 @@
+from pathlib import Path
+from typing import Any, cast
+
 from anthropic import AsyncAnthropic
 from anthropic.types import MessageParam
 
@@ -5,12 +8,15 @@ from .prompts import build_system_prompt
 from .schemas import (
     AgentRun,
     AgentStep,
+    RunOutcome,
+    SessionSnapshot,
     ToolCall,
     ToolResult,
 )
 from .token_tracker import TokenTracker
 from .tool_registry import ToolRegistry
 from .verification import extract_verification_evidence, infer_task_success
+from .workspace import resolve_workspace_path
 
 
 def format_tool_activity(tool_call: ToolCall) -> str:
@@ -48,6 +54,7 @@ class Agent:
         self.max_steps = max_steps
         self.messages: list[MessageParam] = []
         self.steps: list[AgentStep] = []
+        self.completed_runs: list[AgentRun] = []
         self.token_tracker = TokenTracker(model=model)
         self.system_prompt = build_system_prompt(
             workspace_root=registry.workspace_root,
@@ -64,6 +71,57 @@ class Agent:
         self.client = client
         self.provider = provider
         self.model = model
+
+    def create_snapshot(
+        self,
+        session_id: str,
+        session_name: str | None = None,
+    ) -> SessionSnapshot:
+        workspace_root = self.registry.workspace_root
+        return SessionSnapshot(
+            session_id=session_id,
+            session_name=session_name,
+            workspace_root="" if workspace_root is None else workspace_root.as_posix(),
+            provider=self.provider,
+            model=self.model,
+            max_steps=self.max_steps,
+            messages=cast(list[dict[str, Any]], self.messages),
+            steps=self.steps,
+            completed_runs=self.completed_runs,
+            read_files=self._snapshot_paths(self.registry.read_files),
+            changed_files=self._snapshot_paths(self.registry.changed_files),
+            original_file_contents=self._snapshot_original_file_contents(),
+            input_tokens=self.token_tracker.input_tokens,
+            output_tokens=self.token_tracker.output_tokens,
+            estimated_cost=self.token_tracker.estimated_cost,
+        )
+
+    def restore_snapshot(self, snapshot: SessionSnapshot) -> None:
+        self._validate_snapshot_workspace(snapshot)
+        self.provider = snapshot.provider
+        self.model = snapshot.model
+        self.max_steps = snapshot.max_steps
+        self.messages = cast(list[MessageParam], list(snapshot.messages))
+        self.steps = list(snapshot.steps)
+        self.completed_runs = list(snapshot.completed_runs)
+        self.registry.read_files = {
+            self._restore_snapshot_path(path) for path in snapshot.read_files
+        }
+        self.registry.changed_files = {
+            self._restore_snapshot_path(path) for path in snapshot.changed_files
+        }
+        self.registry.original_file_contents = {
+            self._restore_snapshot_path(path): content
+            for path, content in snapshot.original_file_contents.items()
+        }
+        self.token_tracker = TokenTracker(model=snapshot.model)
+        self.token_tracker.input_tokens = snapshot.input_tokens
+        self.token_tracker.output_tokens = snapshot.output_tokens
+        self.token_tracker._estimated_cost = snapshot.estimated_cost
+        self.system_prompt = build_system_prompt(
+            workspace_root=self.registry.workspace_root,
+            registry=self.registry,
+        )
 
     async def run(self, user_task: str) -> AgentRun:
         run_steps: list[AgentStep] = []
@@ -140,26 +198,20 @@ class Agent:
             self.steps.append(agent_step)
 
             if response.stop_reason == "end_turn":
-                verification = extract_verification_evidence(run_steps)
-                return AgentRun(
+                return self._finish_run(
                     objective=user_task,
                     steps=run_steps,
                     termination="completed",
                     final_stop_reason=response.stop_reason,
-                    verification=verification,
-                    task_success=infer_task_success(verification),
                 )
 
             if not tool_results:
-                verification = extract_verification_evidence(run_steps)
                 print(f"Protocol error stop reason: {response.stop_reason}")
-                return AgentRun(
+                return self._finish_run(
                     objective=user_task,
                     steps=run_steps,
                     termination="protocol_error",
                     final_stop_reason=response.stop_reason,
-                    verification=verification,
-                    task_success=infer_task_success(verification),
                 )
 
             self.messages.append(
@@ -169,12 +221,68 @@ class Agent:
                 }
             )
         print(f"Agent reached the {self.max_steps}-step limit. Task stopped.")
-        verification = extract_verification_evidence(run_steps)
-        return AgentRun(
+        return self._finish_run(
             objective=user_task,
             steps=run_steps,
             termination="max_steps",
             final_stop_reason=response.stop_reason,
+        )
+
+    def _finish_run(
+        self,
+        objective: str,
+        steps: list[AgentStep],
+        termination: RunOutcome,
+        final_stop_reason: str | None,
+    ) -> AgentRun:
+        verification = extract_verification_evidence(steps)
+        agent_run = AgentRun(
+            objective=objective,
+            steps=steps,
+            termination=termination,
+            final_stop_reason=final_stop_reason,
             verification=verification,
             task_success=infer_task_success(verification),
         )
+        self.completed_runs.append(agent_run)
+        return agent_run
+
+    def _snapshot_paths(self, paths: set[Path]) -> list[str]:
+        workspace_root = self.registry.workspace_root
+        if workspace_root is None:
+            return sorted(path.as_posix() for path in paths)
+
+        root = workspace_root.resolve()
+        return sorted(path.resolve().relative_to(root).as_posix() for path in paths)
+
+    def _snapshot_original_file_contents(self) -> dict[str, str | None]:
+        workspace_root = self.registry.workspace_root
+        if workspace_root is None:
+            return {
+                path.as_posix(): content
+                for path, content in self.registry.original_file_contents.items()
+            }
+
+        root = workspace_root.resolve()
+        return {
+            path.resolve().relative_to(root).as_posix(): content
+            for path, content in self.registry.original_file_contents.items()
+        }
+
+    def _restore_snapshot_path(self, path: str) -> Path:
+        workspace_root = self.registry.workspace_root
+        if workspace_root is None:
+            return Path(path)
+        return resolve_workspace_path(workspace_root, path)
+
+    def _validate_snapshot_workspace(self, snapshot: SessionSnapshot) -> None:
+        workspace_root = self.registry.workspace_root
+        if workspace_root is None:
+            return
+        if not snapshot.workspace_root:
+            raise ValueError("Snapshot workspace root is missing.")
+        snapshot_root = Path(snapshot.workspace_root).expanduser().resolve()
+        if snapshot_root != workspace_root.expanduser().resolve():
+            raise ValueError(
+                "Snapshot workspace root does not match the current agent workspace."
+            )

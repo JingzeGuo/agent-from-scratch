@@ -9,6 +9,7 @@ from anthropic import AsyncAnthropic
 from anthropic.types import (
     ContentBlock,
     Message,
+    MessageParam,
     StopReason,
     TextBlock,
     ToolUseBlock,
@@ -19,9 +20,12 @@ from agent.agent import Agent
 from agent.prompts import build_system_prompt
 from agent.schemas import (
     AgentRun,
+    AgentStep,
     CalculatorInput,
     ReadFileInput,
     SearchWebInput,
+    ToolCall,
+    ToolResult,
     VerificationEvidence,
 )
 from agent.setup import create_registry as create_workspace_registry
@@ -569,6 +573,137 @@ def test_agent_run_contains_only_current_task_steps() -> None:
     assert second_run.objective == "Second task"
     assert len(second_run.steps) == 1
     assert len(agent.steps) == 2
+    assert agent.completed_runs == [first_run, second_run]
+
+
+def test_agent_creates_snapshot_from_current_state(tmp_path: Path) -> None:
+    target = tmp_path / "module.py"
+    target.write_text("def answer() -> int:\n    return 1\n", encoding="utf-8")
+    registry = create_workspace_registry(tmp_path)
+    agent, _ = create_agent([], registry=registry)
+
+    read_output, read_is_error = registry.execute("read_file", {"path": "module.py"})
+    edit_output, edit_is_error = registry.execute(
+        "edit_file",
+        {
+            "path": "module.py",
+            "old_text": "def answer() -> int:\n    return 1\n",
+            "new_text": "def answer() -> int:\n    return 2\n",
+        },
+    )
+    step = AgentStep(
+        step_number=1,
+        stop_reason="tool_use",
+        tool_calls=[
+            ToolCall(
+                name="edit_file",
+                input={"path": "module.py"},
+                tool_use_id="toolu_edit",
+            )
+        ],
+        tool_results=[
+            ToolResult(
+                tool_use_id="toolu_edit",
+                content=edit_output,
+            )
+        ],
+    )
+    run = AgentRun(
+        objective="Fix module.py",
+        steps=[step],
+        termination="completed",
+        final_stop_reason="end_turn",
+        verification=VerificationEvidence(status="not_run"),
+    )
+    agent.messages = cast(
+        list[MessageParam],
+        [{"role": "user", "content": "Fix module.py"}],
+    )
+    agent.steps = [step]
+    agent.completed_runs = [run]
+    agent.token_tracker.add(Usage(input_tokens=12, output_tokens=8))
+
+    snapshot = agent.create_snapshot("demo-session")
+
+    assert read_is_error is False
+    assert "return 1" in read_output
+    assert edit_is_error is False
+    assert snapshot.session_id == "demo-session"
+    assert snapshot.workspace_root == tmp_path.as_posix()
+    assert snapshot.provider == "anthropic"
+    assert snapshot.model == "claude-haiku-4-5"
+    assert snapshot.max_steps == 10
+    assert snapshot.messages == [{"role": "user", "content": "Fix module.py"}]
+    assert snapshot.steps == [step]
+    assert snapshot.completed_runs == [run]
+    assert snapshot.read_files == ["module.py"]
+    assert snapshot.changed_files == ["module.py"]
+    assert snapshot.original_file_contents == {
+        "module.py": "def answer() -> int:\n    return 1\n"
+    }
+    assert snapshot.input_tokens == 12
+    assert snapshot.output_tokens == 8
+    assert snapshot.estimated_cost > 0
+
+
+def test_agent_restores_snapshot_into_current_state(tmp_path: Path) -> None:
+    target = tmp_path / "module.py"
+    target.write_text("def answer() -> int:\n    return 1\n", encoding="utf-8")
+    registry = create_workspace_registry(tmp_path)
+    agent, _ = create_agent([], registry=registry)
+    registry.execute("read_file", {"path": "module.py"})
+    registry.execute(
+        "edit_file",
+        {
+            "path": "module.py",
+            "old_text": "def answer() -> int:\n    return 1\n",
+            "new_text": "def answer() -> int:\n    return 2\n",
+        },
+    )
+    agent.messages = cast(
+        list[MessageParam],
+        [{"role": "user", "content": "Fix module.py"}],
+    )
+    agent.token_tracker.add(Usage(input_tokens=12, output_tokens=8))
+    snapshot = agent.create_snapshot("demo-session")
+
+    restored_registry = create_workspace_registry(tmp_path)
+    restored_agent, _ = create_agent([], registry=restored_registry)
+    restored_agent.restore_snapshot(snapshot)
+
+    assert restored_agent.provider == snapshot.provider
+    assert restored_agent.model == snapshot.model
+    assert restored_agent.max_steps == snapshot.max_steps
+    assert restored_agent.messages == snapshot.messages
+    assert restored_agent.steps == snapshot.steps
+    assert restored_agent.completed_runs == snapshot.completed_runs
+    assert restored_agent.registry.read_files == {target.resolve()}
+    assert restored_agent.registry.changed_files == {target.resolve()}
+    assert restored_agent.registry.original_file_contents == {
+        target.resolve(): "def answer() -> int:\n    return 1\n"
+    }
+    assert restored_agent.token_tracker.input_tokens == 12
+    assert restored_agent.token_tracker.output_tokens == 8
+    assert restored_agent.token_tracker.estimated_cost == snapshot.estimated_cost
+
+
+def test_agent_rejects_snapshot_from_different_workspace(tmp_path: Path) -> None:
+    first_workspace = tmp_path / "first"
+    second_workspace = tmp_path / "second"
+    first_workspace.mkdir()
+    second_workspace.mkdir()
+    first_agent, _ = create_agent(
+        [],
+        registry=create_workspace_registry(first_workspace),
+    )
+    second_agent, _ = create_agent(
+        [],
+        registry=create_workspace_registry(second_workspace),
+    )
+    snapshot = first_agent.create_snapshot("demo-session")
+
+    with pytest.raises(ValueError, match="does not match"):
+        second_agent.restore_snapshot(snapshot)
 
 
 def test_agent_recovers_from_invalid_tool_arguments() -> None:
