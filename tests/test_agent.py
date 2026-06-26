@@ -23,6 +23,7 @@ from agent.schemas import (
     AgentRun,
     AgentStep,
     CalculatorInput,
+    PendingAction,
     ReadFileInput,
     SearchWebInput,
     ToolCall,
@@ -91,9 +92,21 @@ class FakeContextBuilder(ContextBuilder):
     def __init__(self, context: list[MessageParam]) -> None:
         self.context = context
         self.calls: list[list[MessageParam]] = []
+        self.step_calls: list[list[AgentStep]] = []
+        self.objective_calls: list[str | None] = []
+        self.pending_action_calls: list[PendingAction | None] = []
 
-    def build(self, messages: list[MessageParam]) -> list[MessageParam]:
+    def build(
+        self,
+        messages: list[MessageParam],
+        steps: list[AgentStep] | None = None,
+        objective: str | None = None,
+        pending_action: PendingAction | None = None,
+    ) -> list[MessageParam]:
         self.calls.append(list(messages))
+        self.step_calls.append(list(steps or []))
+        self.objective_calls.append(objective)
+        self.pending_action_calls.append(pending_action)
         return self.context
 
 
@@ -219,6 +232,9 @@ def test_agent_uses_context_builder_for_model_messages() -> None:
             }
         ]
     ]
+    assert context_builder.step_calls == [[]]
+    assert context_builder.objective_calls == ["Original task"]
+    assert context_builder.pending_action_calls == [None]
     assert messages.requests[0]["messages"] == built_context
 
 

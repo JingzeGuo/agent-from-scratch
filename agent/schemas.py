@@ -207,6 +207,25 @@ class AgentRun(BaseModel):
     task_success: bool | None = None
 
 
+class CommandSummary(BaseModel):
+    command: str
+    status: Literal["passed", "failed", "error", "unknown"]
+    exit_code: int | None = None
+
+
+class EditSummary(BaseModel):
+    step_number: int
+    tool_name: Literal["edit_file", "write_file"]
+    path: str
+    status: Literal["applied", "error"]
+
+
+class ToolErrorSummary(BaseModel):
+    step_number: int
+    tool_name: str
+    message: str
+
+
 class PendingAction(BaseModel):
     """Tool action that started before the latest durable checkpoint."""
 
@@ -216,6 +235,35 @@ class PendingAction(BaseModel):
     tool_use_id: str
     tool_input: dict[str, Any]
     started_at: str
+
+
+class ContextCheckpoint(BaseModel):
+    """Structured facts retained when older raw context is compacted."""
+
+    goal: str | None = None
+    files_read: list[str] = Field(default_factory=list)
+    files_changed: list[str] = Field(default_factory=list)
+    edits: list[EditSummary] = Field(default_factory=list)
+    decisions: list[str] = Field(default_factory=list)
+    commands_run: list[CommandSummary] = Field(default_factory=list)
+    tool_errors: list[ToolErrorSummary] = Field(default_factory=list)
+    pending_action: PendingAction | None = None
+    latest_verification: VerificationEvidence = Field(
+        default_factory=lambda: VerificationEvidence(status="not_run")
+    )
+
+
+class ContextBuildResult(BaseModel):
+    """Working context plus deterministic compaction measurements."""
+
+    messages: list[dict[str, Any]]
+    original_message_count: int = Field(ge=0)
+    final_message_count: int = Field(ge=0)
+    original_context_chars: int = Field(ge=0)
+    final_context_chars: int = Field(ge=0)
+    snipped_tool_results: int = Field(ge=0)
+    hard_collapsed: bool
+    checkpoint_included: bool
 
 
 SessionEventType = Literal[

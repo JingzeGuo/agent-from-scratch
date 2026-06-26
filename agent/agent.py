@@ -9,6 +9,7 @@ from .prompts import build_system_prompt
 from .schemas import (
     AgentRun,
     AgentStep,
+    ContextBuildResult,
     PendingAction,
     RunOutcome,
     SessionEvent,
@@ -87,6 +88,14 @@ class Agent:
         self.session_store = session_store
         self.session_id = session_id
 
+    def build_context_result(self, objective: str | None = None) -> ContextBuildResult:
+        return self.context_builder.build_with_metadata(
+            self.messages,
+            steps=self.steps,
+            objective=objective,
+            pending_action=self._current_pending_action(),
+        )
+
     def create_snapshot(
         self,
         session_id: str,
@@ -159,7 +168,12 @@ class Agent:
                 max_tokens=1024,
                 system=self.system_prompt,
                 tools=self.registry.to_anthropic_schemas(),
-                messages=self.context_builder.build(self.messages),
+                messages=self.context_builder.build(
+                    self.messages,
+                    self.steps,
+                    objective=user_task,
+                    pending_action=self._current_pending_action(),
+                ),
             ) as stream:
                 async for text in stream.text_stream:
                     print(text, end="", flush=True)
@@ -333,6 +347,11 @@ class Agent:
         self.session_store.append_event(
             event.model_copy(update={"session_id": self.session_id})
         )
+
+    def _current_pending_action(self) -> PendingAction | None:
+        if self.session_store is None or self.session_id is None:
+            return None
+        return self.session_store.read_pending_action(self.session_id)
 
     def _snapshot_paths(self, paths: set[Path]) -> list[str]:
         workspace_root = self.registry.workspace_root

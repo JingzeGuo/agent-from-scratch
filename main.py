@@ -17,6 +17,7 @@ COMMANDS = {
     "/help": "Show available commands.",
     "/model": "Show or switch provider and model.",
     "/diff": "Show file changes from this session.",
+    "/compact": "Show compacted context metrics.",
     "/rename": "Rename the current session.",
     "/sessions": "List saved sessions.",
     "/exit": "Exit the application.",
@@ -186,6 +187,21 @@ def handle_command(
             print(agent.registry.get_diff(path))
         except ValueError as error:
             print(f"Cannot show diff: {error}")
+        return False
+    if command == "/compact":
+        if agent is None:
+            print("Compact command is unavailable.")
+            return False
+
+        result = agent.build_context_result()
+        print("Context compaction:")
+        print(f"  original messages: {result.original_message_count}")
+        print(f"  final messages: {result.final_message_count}")
+        print(f"  original chars: {result.original_context_chars}")
+        print(f"  final chars: {result.final_context_chars}")
+        print(f"  snipped tool results: {result.snipped_tool_results}")
+        print(f"  checkpoint included: {result.checkpoint_included}")
+        print(f"  hard collapsed: {result.hard_collapsed}")
         return False
     if command == "/rename" or command.startswith("/rename "):
         if agent is None or session_store is None or session_state is None:

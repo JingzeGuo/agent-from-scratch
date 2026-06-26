@@ -95,6 +95,7 @@ def test_help_lists_available_commands(
         "  /help     Show available commands.\n"
         "  /model    Show or switch provider and model.\n"
         "  /diff     Show file changes from this session.\n"
+        "  /compact  Show compacted context metrics.\n"
         "  /rename   Rename the current session.\n"
         "  /sessions List saved sessions.\n"
         "  /exit     Exit the application.\n"
@@ -323,6 +324,36 @@ def test_diff_command_requires_agent(
 
     assert should_exit is False
     assert capsys.readouterr().out == "Diff command is unavailable.\n"
+
+
+def test_compact_command_shows_context_metrics(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    agent = create_agent()
+    agent.messages.append({"role": "user", "content": "Fix the bug"})
+
+    should_exit = handle_command("/compact", agent)
+
+    assert should_exit is False
+    assert capsys.readouterr().out == (
+        "Context compaction:\n"
+        "  original messages: 1\n"
+        "  final messages: 1\n"
+        "  original chars: 11\n"
+        "  final chars: 11\n"
+        "  snipped tool results: 0\n"
+        "  checkpoint included: False\n"
+        "  hard collapsed: False\n"
+    )
+
+
+def test_compact_command_requires_agent(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    should_exit = handle_command("/compact")
+
+    assert should_exit is False
+    assert capsys.readouterr().out == "Compact command is unavailable.\n"
 
 
 def test_rename_command_updates_current_session_name(
