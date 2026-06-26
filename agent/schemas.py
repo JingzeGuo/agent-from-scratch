@@ -1,6 +1,5 @@
 from typing import Any, Literal
 
-from anthropic.types import ToolResultBlockParam
 from pydantic import BaseModel, Field
 
 RunOutcome = Literal[
@@ -166,6 +165,14 @@ class ToolCall(BaseModel):
     tool_use_id: str
 
 
+class ToolDefinition(BaseModel):
+    """Provider-neutral description of one callable tool."""
+
+    name: str
+    description: str
+    input_schema: dict[str, Any]
+
+
 class ToolResult(BaseModel):
     """Represents the execution result returned by a tool to the Agent."""
 
@@ -174,13 +181,31 @@ class ToolResult(BaseModel):
     content: str
     is_error: bool = False
 
-    def to_anthropic_block(self) -> ToolResultBlockParam:
-        return {
-            "type": self.type,
-            "tool_use_id": self.tool_use_id,
-            "content": self.content,
-            "is_error": self.is_error,
-        }
+
+class TokenUsage(BaseModel):
+    """Provider-neutral token usage for one model response."""
+
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+
+
+class ProviderResponse(BaseModel):
+    """Provider-neutral model response consumed by the agent controller."""
+
+    message: dict[str, Any]
+    stop_reason: str | None
+    text: list[str] = Field(default_factory=list)
+    tool_calls: list[ToolCall] = Field(default_factory=list)
+    usage: TokenUsage
+    native_metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProviderCapabilities(BaseModel):
+    """Provider features that affect whether an agent run is valid."""
+
+    supports_tools: bool = True
+    supports_streaming: bool = True
+    supports_parallel_tool_calls: bool = True
 
 
 class AgentStep(BaseModel):

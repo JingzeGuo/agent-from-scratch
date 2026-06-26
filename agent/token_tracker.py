@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from types import TracebackType
 
-from anthropic.types import Usage
+from .schemas import TokenUsage
 
 
 @dataclass(frozen=True)
@@ -35,6 +35,10 @@ MODEL_PRICING = {
         input_per_million=0.14,
         output_per_million=0.28,
     ),
+    "gpt-4o-mini": ModelPricing(
+        input_per_million=0.15,
+        output_per_million=0.60,
+    ),
 }
 
 
@@ -54,7 +58,7 @@ class TokenTracker:
         self._estimated_cost = 0.0
         return self
 
-    def add(self, usage: Usage) -> None:
+    def add(self, usage: TokenUsage) -> None:
         self.input_tokens += usage.input_tokens
         self.output_tokens += usage.output_tokens
         input_cost = usage.input_tokens * self.pricing.input_per_million

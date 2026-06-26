@@ -6,6 +6,7 @@ from anthropic.types import ToolParam
 from pydantic import BaseModel, ValidationError
 
 from .retry import retry
+from .schemas import ToolDefinition
 
 
 @dataclass
@@ -15,15 +16,23 @@ class Tool:
     input_schema: type[BaseModel]
     fn: Callable[..., Any]
 
+    def to_definition(self) -> ToolDefinition:
+        """Build a provider-neutral tool definition."""
+        json_schema = self.input_schema.model_json_schema()
+        json_schema.pop("title", None)
+        return ToolDefinition(
+            name=self.name,
+            description=self.description,
+            input_schema=json_schema,
+        )
+
     def to_anthropic_schema(self) -> ToolParam:
         """Build the tool definition expected by the Anthropic Messages API."""
-        json_schema = self.input_schema.model_json_schema()
-        # Anthropic doesn't need Pydantic's "title" field; strip it for cleanliness.
-        json_schema.pop("title", None)
+        definition = self.to_definition()
         return {
-            "name": self.name,
-            "description": self.description,
-            "input_schema": json_schema,
+            "name": definition.name,
+            "description": definition.description,
+            "input_schema": definition.input_schema,
         }
 
     @retry(max_attempts=3, backoff=2)

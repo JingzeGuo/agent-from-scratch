@@ -1,11 +1,9 @@
 from pathlib import Path
 from typing import Any, cast
 
-from anthropic import AsyncAnthropic
-from anthropic.types import MessageParam
-
 from .context import ContextBuilder
 from .prompts import build_system_prompt
+from .provider import ProviderAdapter
 from .schemas import (
     AgentRun,
     AgentStep,
@@ -46,39 +44,41 @@ def format_tool_activity(tool_call: ToolCall) -> str:
 class Agent:
     def __init__(
         self,
-        client: AsyncAnthropic,
+        provider_adapter: ProviderAdapter,
         registry: ToolRegistry,
-        model: str = "claude-haiku-4-5",
-        provider: str = "anthropic",
+        model: str | None = None,
+        provider: str | None = None,
         max_steps: int = 10,
     ) -> None:
-        self.client = client
+        self.provider_adapter = provider_adapter
         self.registry = registry
-        self.model = model
-        self.provider = provider
+        self.model = provider_adapter.model if model is None else model
+        self.provider = provider_adapter.provider if provider is None else provider
         self.max_steps = max_steps
-        self.messages: list[MessageParam] = []
+        self.messages: list[dict[str, Any]] = []
         self.steps: list[AgentStep] = []
         self.completed_runs: list[AgentRun] = []
         self.session_store: SessionStore | None = None
         self.session_id: str | None = None
         self.context_builder = ContextBuilder()
-        self.token_tracker = TokenTracker(model=model)
+        self.token_tracker = TokenTracker(model=self.model)
         self.system_prompt = build_system_prompt(
             workspace_root=registry.workspace_root,
             registry=registry,
         )
+        self._validate_provider_capabilities(provider_adapter)
 
     def switch_provider(
         self,
-        client: AsyncAnthropic,
-        provider: str,
-        model: str,
+        provider_adapter: ProviderAdapter,
     ) -> None:
-        self.token_tracker.switch_model(model)
-        self.client = client
-        self.provider = provider
-        self.model = model
+        if not self._provider_switch_is_safe():
+            raise ValueError("Cannot switch provider during an incomplete tool exchange.")
+        self._validate_provider_capabilities(provider_adapter)
+        self.token_tracker.switch_model(provider_adapter.model)
+        self.provider_adapter = provider_adapter
+        self.provider = provider_adapter.provider
+        self.model = provider_adapter.model
 
     def configure_session_recording(
         self,
@@ -90,7 +90,7 @@ class Agent:
 
     def build_context_result(self, objective: str | None = None) -> ContextBuildResult:
         return self.context_builder.build_with_metadata(
-            self.messages,
+            cast(Any, self.messages),
             steps=self.steps,
             objective=objective,
             pending_action=self._current_pending_action(),
@@ -125,7 +125,7 @@ class Agent:
         self.provider = snapshot.provider
         self.model = snapshot.model
         self.max_steps = snapshot.max_steps
-        self.messages = cast(list[MessageParam], list(snapshot.messages))
+        self.messages = list(snapshot.messages)
         self.steps = list(snapshot.steps)
         self.completed_runs = list(snapshot.completed_runs)
         self.registry.read_files = {
@@ -163,68 +163,82 @@ class Agent:
             tool_results: list[ToolResult] = []
 
             streamed_text = False
-            async with self.client.messages.stream(
-                model=self.model,
-                max_tokens=1024,
-                system=self.system_prompt,
-                tools=self.registry.to_anthropic_schemas(),
-                messages=self.context_builder.build(
-                    self.messages,
+
+            def print_text_delta(text: str) -> None:
+                nonlocal streamed_text
+                print(text, end="", flush=True)
+                streamed_text = True
+
+            model_messages = cast(
+                list[dict[str, Any]],
+                self.context_builder.build(
+                    cast(Any, self.messages),
                     self.steps,
                     objective=user_task,
                     pending_action=self._current_pending_action(),
                 ),
-            ) as stream:
-                async for text in stream.text_stream:
-                    print(text, end="", flush=True)
-                    streamed_text = True
-                response = await stream.get_final_message()
+            )
+            response = await self.provider_adapter.stream_response(
+                system=self.system_prompt,
+                tools=self.registry.to_tool_definitions(),
+                messages=model_messages,
+                on_text_delta=print_text_delta,
+            )
 
             if streamed_text:
                 print()
             self.token_tracker.add(response.usage)
 
-            self.messages.append(
-                {
-                    "role": "assistant",
-                    "content": response.content,
-                }
-            )
-            for block in response.content:
-                if block.type == "text":
-                    text_blocks.append(block.text)
+            self.messages.append(response.message)
+            text_blocks.extend(response.text)
+
+            if self._has_unsupported_parallel_tool_calls(response.tool_calls):
+                tool_calls.extend(response.tool_calls)
+                agent_step = AgentStep(
+                    step_number=step,
+                    stop_reason=response.stop_reason,
+                    text=text_blocks,
+                    tool_calls=tool_calls,
+                    tool_results=tool_results,
+                )
+                run_steps.append(agent_step)
+                self.steps.append(agent_step)
+                print(
+                    "Protocol error: provider returned parallel tool calls "
+                    "but does not support them."
+                )
+                return self._finish_run(
+                    objective=user_task,
+                    steps=run_steps,
+                    termination="protocol_error",
+                    final_stop_reason=response.stop_reason,
+                )
 
             if response.stop_reason != "end_turn":
-                for block in response.content:
-                    if block.type == "tool_use":
-                        tool_call = ToolCall(
-                            name=block.name,
-                            input=block.input,
-                            tool_use_id=block.id,
-                        )
-                        tool_calls.append(tool_call)
+                for tool_call in response.tool_calls:
+                    tool_calls.append(tool_call)
 
-                        self._record_tool_started(
-                            step_number=step,
-                            tool_call=tool_call,
-                        )
-                        print(format_tool_activity(tool_call))
-                        output, is_error = self.registry.execute(
-                            tool_call.name,
-                            tool_call.input,
-                        )
-                        self._record_tool_finished(
-                            step_number=step,
-                            tool_call=tool_call,
+                    self._record_tool_started(
+                        step_number=step,
+                        tool_call=tool_call,
+                    )
+                    print(format_tool_activity(tool_call))
+                    output, is_error = self.registry.execute(
+                        tool_call.name,
+                        tool_call.input,
+                    )
+                    self._record_tool_finished(
+                        step_number=step,
+                        tool_call=tool_call,
+                        is_error=is_error,
+                    )
+                    tool_results.append(
+                        ToolResult(
+                            tool_use_id=tool_call.tool_use_id,
+                            content=output,
                             is_error=is_error,
                         )
-                        tool_results.append(
-                            ToolResult(
-                                tool_use_id=tool_call.tool_use_id,
-                                content=output,
-                                is_error=is_error,
-                            )
-                        )
+                    )
 
             agent_step = AgentStep(
                 step_number=step,
@@ -253,12 +267,7 @@ class Agent:
                     final_stop_reason=response.stop_reason,
                 )
 
-            self.messages.append(
-                {
-                    "role": "user",
-                    "content": [result.to_anthropic_block() for result in tool_results],
-                }
-            )
+            self.messages.append(self.provider_adapter.tool_result_message(tool_results))
         print(f"Agent reached the {self.max_steps}-step limit. Task stopped.")
         return self._finish_run(
             objective=user_task,
@@ -352,6 +361,37 @@ class Agent:
         if self.session_store is None or self.session_id is None:
             return None
         return self.session_store.read_pending_action(self.session_id)
+
+    def _provider_switch_is_safe(self) -> bool:
+        if self._current_pending_action() is not None:
+            return False
+        if not self.steps:
+            return True
+        return self.steps[-1].stop_reason == "end_turn"
+
+    def _validate_provider_capabilities(
+        self,
+        provider_adapter: ProviderAdapter,
+    ) -> None:
+        if not provider_adapter.capabilities.supports_streaming:
+            raise ValueError(
+                "Provider does not support streaming: "
+                f"{provider_adapter.provider}/{provider_adapter.model}"
+            )
+        if self.registry.tools and not provider_adapter.capabilities.supports_tools:
+            raise ValueError(
+                "Provider does not support tools, but tools are registered: "
+                f"{provider_adapter.provider}/{provider_adapter.model}"
+            )
+
+    def _has_unsupported_parallel_tool_calls(
+        self,
+        tool_calls: list[ToolCall],
+    ) -> bool:
+        return (
+            len(tool_calls) > 1
+            and not self.provider_adapter.capabilities.supports_parallel_tool_calls
+        )
 
     def _snapshot_paths(self, paths: set[Path]) -> list[str]:
         workspace_root = self.registry.workspace_root

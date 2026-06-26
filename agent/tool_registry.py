@@ -3,6 +3,7 @@ from typing import Any
 
 from anthropic.types import ToolParam
 
+from .schemas import ToolDefinition
 from .tool import Tool
 from .tools import _build_unified_diff
 from .workspace import resolve_workspace_path
@@ -21,6 +22,9 @@ class ToolRegistry:
 
     def to_anthropic_schemas(self) -> list[ToolParam]:
         return [tool.to_anthropic_schema() for tool in self.tools.values()]
+
+    def to_tool_definitions(self) -> list[ToolDefinition]:
+        return [tool.to_definition() for tool in self.tools.values()]
 
     def execute(
         self,

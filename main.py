@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel
 
 from agent.agent import Agent
-from agent.provider import create_client, load_provider_config
+from agent.provider import create_provider_adapter, load_provider_config
 from agent.schemas import SessionEvent
 from agent.session import SessionStore, utc_timestamp
 from agent.setup import create_registry
@@ -158,18 +158,14 @@ def handle_command(
 
         parts = command.split()
         if len(parts) > 3:
-            print("Usage: /model <anthropic|deepseek> [model]")
+            print("Usage: /model <anthropic|deepseek|openai> [model]")
             return False
 
         provider = parts[1]
         model = parts[2] if len(parts) == 3 else None
         try:
             config = load_provider_config(provider=provider, model=model)
-            agent.switch_provider(
-                client=create_client(config),
-                provider=config.provider,
-                model=config.model,
-            )
+            agent.switch_provider(create_provider_adapter(config))
         except ValueError as error:
             print(f"Cannot switch model: {error}")
             return False
@@ -306,7 +302,7 @@ async def main(argv: Sequence[str] | None = None) -> None:
     config = load_provider_config()
     registry = create_registry(workspace_root)
     agent = Agent(
-        client=create_client(config),
+        provider_adapter=create_provider_adapter(config),
         registry=registry,
         model=config.model,
         provider=config.provider,
@@ -318,11 +314,7 @@ async def main(argv: Sequence[str] | None = None) -> None:
             provider=snapshot.provider,
             model=snapshot.model,
         )
-        agent.switch_provider(
-            client=create_client(resumed_config),
-            provider=resumed_config.provider,
-            model=resumed_config.model,
-        )
+        agent.switch_provider(create_provider_adapter(resumed_config))
         agent.restore_snapshot(snapshot)
         session_state = CliSessionState(
             session_id=snapshot.session_id,

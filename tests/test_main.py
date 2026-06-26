@@ -6,6 +6,7 @@ import pytest
 from anthropic import AsyncAnthropic
 
 from agent.agent import Agent
+from agent.provider import AnthropicProviderAdapter
 from agent.schemas import (
     AgentRun,
     CalculatorInput,
@@ -79,7 +80,11 @@ def create_agent() -> Agent:
         )
     )
     return Agent(
-        client=AsyncAnthropic(api_key="test-key"),
+        provider_adapter=AnthropicProviderAdapter(
+            provider="anthropic",
+            model="claude-haiku-4-5",
+            client=AsyncAnthropic(api_key="test-key"),
+        ),
         registry=registry,
     )
 

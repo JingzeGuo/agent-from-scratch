@@ -1,9 +1,11 @@
 import asyncio
+import json
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, cast
 
+import httpx
 import pytest
 from anthropic import AsyncAnthropic
 from anthropic.types import (
@@ -19,14 +21,19 @@ from anthropic.types import (
 from agent.agent import Agent
 from agent.context import ContextBuilder
 from agent.prompts import build_system_prompt
+from agent.provider import AnthropicProviderAdapter, OpenAICompatibleProviderAdapter
 from agent.schemas import (
     AgentRun,
     AgentStep,
     CalculatorInput,
     PendingAction,
+    ProviderCapabilities,
+    ProviderResponse,
     ReadFileInput,
     SearchWebInput,
+    TokenUsage,
     ToolCall,
+    ToolDefinition,
     ToolResult,
     VerificationEvidence,
 )
@@ -88,6 +95,63 @@ class FakeClient:
         self.messages = FakeMessages(responses)
 
 
+class FakeOpenAIHttpClient:
+    def __init__(self, stream_responses: list[list[dict[str, Any]]]) -> None:
+        self.stream_responses = stream_responses
+        self.call_count = 0
+        self.requests: list[dict[str, Any]] = []
+
+    def stream(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str],
+        json: dict[str, Any],
+    ) -> "FakeOpenAIStreamManager":
+        self.requests.append(
+            {
+                "method": method,
+                "url": url,
+                "headers": headers,
+                "json": json,
+            }
+        )
+        chunks = self.stream_responses[self.call_count]
+        self.call_count += 1
+        return FakeOpenAIStreamManager(chunks, url)
+
+
+class FakeOpenAIStreamManager:
+    def __init__(self, chunks: list[dict[str, Any]], url: str) -> None:
+        self.response = FakeOpenAIStreamResponse(chunks, url)
+
+    async def __aenter__(self) -> "FakeOpenAIStreamResponse":
+        return self.response
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: object,
+    ) -> None:
+        return None
+
+
+class FakeOpenAIStreamResponse:
+    def __init__(self, chunks: list[dict[str, Any]], url: str) -> None:
+        self.chunks = chunks
+        self.request = httpx.Request("POST", url)
+
+    def raise_for_status(self) -> None:
+        return None
+
+    async def aiter_lines(self) -> Any:
+        for chunk in self.chunks:
+            yield f"data: {json.dumps(chunk)}"
+        yield "data: [DONE]"
+
+
 class FakeContextBuilder(ContextBuilder):
     def __init__(self, context: list[MessageParam]) -> None:
         self.context = context
@@ -108,6 +172,46 @@ class FakeContextBuilder(ContextBuilder):
         self.objective_calls.append(objective)
         self.pending_action_calls.append(pending_action)
         return self.context
+
+
+class FakeProviderAdapter:
+    def __init__(
+        self,
+        responses: list[ProviderResponse] | None = None,
+        capabilities: ProviderCapabilities | None = None,
+    ) -> None:
+        self.provider = "fake"
+        self.model = "claude-haiku-4-5"
+        self.capabilities = capabilities or ProviderCapabilities()
+        self.responses = responses or []
+
+    async def stream_response(
+        self,
+        *,
+        system: str,
+        tools: list[ToolDefinition],
+        messages: list[dict[str, Any]],
+        on_text_delta: Callable[[str], None] | None = None,
+    ) -> ProviderResponse:
+        response = self.responses.pop(0)
+        for text in response.text:
+            if on_text_delta is not None:
+                on_text_delta(text)
+        return response
+
+    def tool_result_message(self, tool_results: list[ToolResult]) -> dict[str, Any]:
+        return {
+            "role": "user",
+            "content": [
+                {
+                    "type": result.type,
+                    "tool_use_id": result.tool_use_id,
+                    "content": result.content,
+                    "is_error": result.is_error,
+                }
+                for result in tool_results
+            ],
+        }
 
 
 def make_message(
@@ -146,11 +250,144 @@ def create_agent(
 ) -> tuple[Agent, FakeMessages]:
     fake_client = FakeClient(responses)
     agent = Agent(
-        client=cast(AsyncAnthropic, fake_client),
+        provider_adapter=AnthropicProviderAdapter(
+            provider="anthropic",
+            model="claude-haiku-4-5",
+            client=cast(AsyncAnthropic, fake_client),
+        ),
         registry=registry or create_registry(),
         max_steps=max_steps,
     )
     return agent, fake_client.messages
+
+
+def create_openai_scripted_adapter() -> OpenAICompatibleProviderAdapter:
+    fake_client = FakeOpenAIHttpClient(
+        [
+            [
+                {
+                    "id": "chatcmpl_tool",
+                    "model": "gpt-4o-mini",
+                    "choices": [
+                        {
+                            "delta": {
+                                "role": "assistant",
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_calc",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "calculator",
+                                            "arguments": '{"expression": ',
+                                        },
+                                    }
+                                ],
+                            },
+                            "finish_reason": None,
+                        }
+                    ],
+                },
+                {
+                    "id": "chatcmpl_tool",
+                    "model": "gpt-4o-mini",
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "function": {"arguments": '"1 + 1"}'},
+                                    }
+                                ]
+                            },
+                            "finish_reason": None,
+                        }
+                    ],
+                },
+                {
+                    "id": "chatcmpl_tool",
+                    "model": "gpt-4o-mini",
+                    "choices": [{"delta": {}, "finish_reason": "tool_calls"}],
+                },
+                {
+                    "id": "chatcmpl_tool",
+                    "model": "gpt-4o-mini",
+                    "choices": [],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+                },
+            ],
+            [
+                {
+                    "id": "chatcmpl_final",
+                    "model": "gpt-4o-mini",
+                    "choices": [
+                        {
+                            "delta": {
+                                "role": "assistant",
+                                "content": "The answer ",
+                            },
+                            "finish_reason": None,
+                        }
+                    ],
+                },
+                {
+                    "id": "chatcmpl_final",
+                    "model": "gpt-4o-mini",
+                    "choices": [
+                        {
+                            "delta": {"content": "is 2."},
+                            "finish_reason": None,
+                        }
+                    ],
+                },
+                {
+                    "id": "chatcmpl_final",
+                    "model": "gpt-4o-mini",
+                    "choices": [{"delta": {}, "finish_reason": "stop"}],
+                },
+                {
+                    "id": "chatcmpl_final",
+                    "model": "gpt-4o-mini",
+                    "choices": [],
+                    "usage": {"prompt_tokens": 15, "completion_tokens": 6},
+                },
+            ],
+        ]
+    )
+    return OpenAICompatibleProviderAdapter(
+        provider="openai",
+        model="gpt-4o-mini",
+        api_key="openai-key",
+        base_url="https://api.openai.com/v1",
+        http_client=cast(httpx.AsyncClient, fake_client),
+    )
+
+
+def normalize_run_trajectory(agent_run: AgentRun) -> list[dict[str, Any]]:
+    return [
+        {
+            "stop_reason": step.stop_reason,
+            "text": step.text,
+            "tool_calls": [
+                {
+                    "name": tool_call.name,
+                    "input": tool_call.input,
+                    "tool_use_id": tool_call.tool_use_id,
+                }
+                for tool_call in step.tool_calls
+            ],
+            "tool_results": [
+                {
+                    "tool_use_id": tool_result.tool_use_id,
+                    "content": tool_result.content,
+                    "is_error": tool_result.is_error,
+                }
+                for tool_result in step.tool_results
+            ],
+        }
+        for step in agent_run.steps
+    ]
 
 
 def test_single_tool_call_completes(
@@ -188,6 +425,43 @@ def test_single_tool_call_completes(
     assert agent.steps[0].tool_results[0].is_error is False
     assert agent.steps[1].text == ["The answer is 2."]
     assert capsys.readouterr().out == "Running calculator\nThe answer is 2.\n"
+
+
+def test_anthropic_and_openai_adapters_produce_same_agent_trajectory(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    anthropic_tool_response = make_message(
+        content=[
+            ToolUseBlock(
+                id="call_calc",
+                name="calculator",
+                input={"expression": "1 + 1"},
+                type="tool_use",
+            )
+        ],
+        stop_reason="tool_use",
+    )
+    anthropic_final_response = make_message(
+        content=[TextBlock(text="The answer is 2.", type="text")],
+        stop_reason="end_turn",
+    )
+    anthropic_agent, _ = create_agent(
+        [anthropic_tool_response, anthropic_final_response]
+    )
+    openai_agent = Agent(
+        provider_adapter=create_openai_scripted_adapter(),
+        registry=create_registry(),
+    )
+
+    anthropic_run = asyncio.run(anthropic_agent.run("Calculate 1 + 1"))
+    openai_run = asyncio.run(openai_agent.run("Calculate 1 + 1"))
+
+    assert anthropic_run.termination == "completed"
+    assert openai_run.termination == "completed"
+    assert normalize_run_trajectory(anthropic_run) == normalize_run_trajectory(
+        openai_run
+    )
+    capsys.readouterr()
 
 
 def test_agent_sends_coding_system_prompt() -> None:
@@ -632,6 +906,143 @@ def test_agent_run_contains_only_current_task_steps() -> None:
     assert agent.completed_runs == [first_run, second_run]
 
 
+def test_agent_switches_provider_after_complete_turn() -> None:
+    agent, _ = create_agent([])
+    replacement = AnthropicProviderAdapter(
+        provider="deepseek",
+        model="deepseek-v4-flash",
+        client=cast(AsyncAnthropic, FakeClient([])),
+    )
+
+    agent.steps = [
+        AgentStep(
+            step_number=1,
+            stop_reason="end_turn",
+            text=["Done."],
+        )
+    ]
+    agent.switch_provider(replacement)
+
+    assert agent.provider == "deepseek"
+    assert agent.model == "deepseek-v4-flash"
+
+
+def test_agent_rejects_provider_switch_during_incomplete_tool_exchange() -> None:
+    agent, _ = create_agent([])
+    replacement = AnthropicProviderAdapter(
+        provider="deepseek",
+        model="deepseek-v4-flash",
+        client=cast(AsyncAnthropic, FakeClient([])),
+    )
+    agent.steps = [
+        AgentStep(
+            step_number=1,
+            stop_reason="tool_use",
+            tool_calls=[
+                ToolCall(
+                    name="calculator",
+                    input={"expression": "1 + 1"},
+                    tool_use_id="toolu_calc",
+                )
+            ],
+        )
+    ]
+
+    with pytest.raises(ValueError, match="incomplete tool exchange"):
+        agent.switch_provider(replacement)
+
+
+def test_agent_rejects_provider_without_tool_support() -> None:
+    adapter = FakeProviderAdapter(
+        capabilities=ProviderCapabilities(supports_tools=False)
+    )
+
+    with pytest.raises(ValueError, match="does not support tools"):
+        Agent(
+            provider_adapter=adapter,
+            registry=create_registry(),
+        )
+
+
+def test_agent_rejects_provider_without_streaming_support() -> None:
+    adapter = FakeProviderAdapter(
+        capabilities=ProviderCapabilities(supports_streaming=False)
+    )
+
+    with pytest.raises(ValueError, match="does not support streaming"):
+        Agent(
+            provider_adapter=adapter,
+            registry=ToolRegistry(),
+        )
+
+
+def test_agent_rejects_switch_to_provider_without_tool_support() -> None:
+    agent, _ = create_agent([])
+    replacement = FakeProviderAdapter(
+        capabilities=ProviderCapabilities(supports_tools=False)
+    )
+
+    with pytest.raises(ValueError, match="does not support tools"):
+        agent.switch_provider(replacement)
+
+
+def test_agent_rejects_parallel_tool_calls_when_provider_does_not_support_them(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    first_call = ToolCall(
+        name="calculator",
+        input={"expression": "1 + 1"},
+        tool_use_id="call_one",
+    )
+    second_call = ToolCall(
+        name="calculator",
+        input={"expression": "2 + 2"},
+        tool_use_id="call_two",
+    )
+    adapter = FakeProviderAdapter(
+        responses=[
+            ProviderResponse(
+                message={
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": first_call.tool_use_id,
+                            "name": first_call.name,
+                            "input": first_call.input,
+                        },
+                        {
+                            "type": "tool_use",
+                            "id": second_call.tool_use_id,
+                            "name": second_call.name,
+                            "input": second_call.input,
+                        },
+                    ],
+                },
+                stop_reason="tool_use",
+                tool_calls=[first_call, second_call],
+                usage=TokenUsage(input_tokens=10, output_tokens=5),
+            )
+        ],
+        capabilities=ProviderCapabilities(supports_parallel_tool_calls=False),
+    )
+    agent = Agent(
+        provider_adapter=adapter,
+        registry=create_registry(),
+    )
+
+    agent_run = asyncio.run(agent.run("Calculate two expressions"))
+
+    assert agent_run.termination == "protocol_error"
+    assert agent_run.final_stop_reason == "tool_use"
+    assert agent_run.steps[0].tool_calls == [first_call, second_call]
+    assert agent_run.steps[0].tool_results == []
+    assert capsys.readouterr().out == (
+        "Protocol error: provider returned parallel tool calls "
+        "but does not support them.\n"
+    )
+
+
 def test_agent_creates_snapshot_from_current_state(tmp_path: Path) -> None:
     target = tmp_path / "module.py"
     target.write_text("def answer() -> int:\n    return 1\n", encoding="utf-8")
@@ -672,12 +1083,12 @@ def test_agent_creates_snapshot_from_current_state(tmp_path: Path) -> None:
         verification=VerificationEvidence(status="not_run"),
     )
     agent.messages = cast(
-        list[MessageParam],
+        list[dict[str, Any]],
         [{"role": "user", "content": "Fix module.py"}],
     )
     agent.steps = [step]
     agent.completed_runs = [run]
-    agent.token_tracker.add(Usage(input_tokens=12, output_tokens=8))
+    agent.token_tracker.add(TokenUsage(input_tokens=12, output_tokens=8))
 
     snapshot = agent.create_snapshot("demo-session")
 
@@ -717,10 +1128,10 @@ def test_agent_restores_snapshot_into_current_state(tmp_path: Path) -> None:
         },
     )
     agent.messages = cast(
-        list[MessageParam],
+        list[dict[str, Any]],
         [{"role": "user", "content": "Fix module.py"}],
     )
-    agent.token_tracker.add(Usage(input_tokens=12, output_tokens=8))
+    agent.token_tracker.add(TokenUsage(input_tokens=12, output_tokens=8))
     snapshot = agent.create_snapshot("demo-session")
 
     restored_registry = create_workspace_registry(tmp_path)
