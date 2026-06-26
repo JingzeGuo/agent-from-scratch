@@ -17,6 +17,7 @@ from anthropic.types import (
 )
 
 from agent.agent import Agent
+from agent.context import ContextBuilder
 from agent.prompts import build_system_prompt
 from agent.schemas import (
     AgentRun,
@@ -84,6 +85,16 @@ class FakeStreamManager:
 class FakeClient:
     def __init__(self, responses: list[Message]) -> None:
         self.messages = FakeMessages(responses)
+
+
+class FakeContextBuilder(ContextBuilder):
+    def __init__(self, context: list[MessageParam]) -> None:
+        self.context = context
+        self.calls: list[list[MessageParam]] = []
+
+    def build(self, messages: list[MessageParam]) -> list[MessageParam]:
+        self.calls.append(list(messages))
+        return self.context
 
 
 def make_message(
@@ -181,6 +192,34 @@ def test_agent_sends_coding_system_prompt() -> None:
     assert "`calculator`: Optional helper for math." in system_prompt
     assert "Inspect before editing" in system_prompt
     assert "Edit, then verify" in system_prompt
+
+
+def test_agent_uses_context_builder_for_model_messages() -> None:
+    response = make_message(
+        content=[TextBlock(text="Done.", type="text")],
+        stop_reason="end_turn",
+    )
+    agent, messages = create_agent([response])
+    built_context: list[MessageParam] = [
+        {
+            "role": "user",
+            "content": "Built context",
+        }
+    ]
+    context_builder = FakeContextBuilder(built_context)
+    agent.context_builder = context_builder
+
+    asyncio.run(agent.run("Original task"))
+
+    assert context_builder.calls == [
+        [
+            {
+                "role": "user",
+                "content": "Original task",
+            }
+        ]
+    ]
+    assert messages.requests[0]["messages"] == built_context
 
 
 def test_build_system_prompt_uses_workspace_and_registered_tools(

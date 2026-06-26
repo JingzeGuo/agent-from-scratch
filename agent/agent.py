@@ -4,6 +4,7 @@ from typing import Any, cast
 from anthropic import AsyncAnthropic
 from anthropic.types import MessageParam
 
+from .context import ContextBuilder
 from .prompts import build_system_prompt
 from .schemas import (
     AgentRun,
@@ -60,6 +61,7 @@ class Agent:
         self.completed_runs: list[AgentRun] = []
         self.session_store: SessionStore | None = None
         self.session_id: str | None = None
+        self.context_builder = ContextBuilder()
         self.token_tracker = TokenTracker(model=model)
         self.system_prompt = build_system_prompt(
             workspace_root=registry.workspace_root,
@@ -157,7 +159,7 @@ class Agent:
                 max_tokens=1024,
                 system=self.system_prompt,
                 tools=self.registry.to_anthropic_schemas(),
-                messages=self.messages,
+                messages=self.context_builder.build(self.messages),
             ) as stream:
                 async for text in stream.text_stream:
                     print(text, end="", flush=True)
