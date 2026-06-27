@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 from pathlib import Path
@@ -26,6 +27,13 @@ from .verification import extract_verification_evidence, infer_task_success
 from .workspace import resolve_workspace_path
 
 TRACE_PREVIEW_CHARS = 500
+PARALLEL_READ_ONLY_TOOLS = {
+    "calculator",
+    "read_file",
+    "glob_files",
+    "search_text",
+    "get_diff",
+}
 SECRET_PATTERNS = [
     (
         re.compile(r"(?i)\b(api[_-]?key|token|secret|password)\s*=\s*([^\s]+)"),
@@ -257,36 +265,14 @@ class Agent:
                 )
 
             if response.stop_reason != "end_turn":
-                for tool_call in response.tool_calls:
-                    tool_calls.append(tool_call)
-
-                    self._record_tool_started(
+                tool_calls.extend(response.tool_calls)
+                tool_results.extend(
+                    await self._execute_tool_calls(
                         run_id=run_id,
                         step_number=step,
-                        tool_call=tool_call,
+                        tool_calls=response.tool_calls,
                     )
-                    print(format_tool_activity(tool_call))
-                    tool_started = perf_counter()
-                    output, is_error = self.registry.execute(
-                        tool_call.name,
-                        tool_call.input,
-                    )
-                    tool_latency_ms = (perf_counter() - tool_started) * 1000
-                    self._record_tool_finished(
-                        run_id=run_id,
-                        step_number=step,
-                        tool_call=tool_call,
-                        is_error=is_error,
-                        output=output,
-                        latency_ms=tool_latency_ms,
-                    )
-                    tool_results.append(
-                        ToolResult(
-                            tool_use_id=tool_call.tool_use_id,
-                            content=output,
-                            is_error=is_error,
-                        )
-                    )
+                )
 
             agent_step = AgentStep(
                 step_number=step,
@@ -449,6 +435,161 @@ class Agent:
                 step_number=step_number,
                 tool_name=tool_call.name,
                 tool_use_id=tool_call.tool_use_id,
+            )
+        )
+
+    async def _execute_tool_calls(
+        self,
+        run_id: str,
+        step_number: int,
+        tool_calls: list[ToolCall],
+    ) -> list[ToolResult]:
+        if self._can_execute_tool_calls_concurrently(tool_calls):
+            self._record_tool_schedule_decided(
+                run_id=run_id,
+                step_number=step_number,
+                tool_calls=tool_calls,
+                mode="parallel",
+                reason="all tool calls are read-only",
+            )
+            return await self._execute_tool_calls_concurrently(
+                run_id=run_id,
+                step_number=step_number,
+                tool_calls=tool_calls,
+            )
+
+        if len(tool_calls) > 1:
+            self._record_tool_schedule_decided(
+                run_id=run_id,
+                step_number=step_number,
+                tool_calls=tool_calls,
+                mode="serial",
+                reason="one or more tool calls may mutate state or depend on ordering",
+            )
+        return self._execute_tool_calls_serially(
+            run_id=run_id,
+            step_number=step_number,
+            tool_calls=tool_calls,
+        )
+
+    def _execute_tool_calls_serially(
+        self,
+        run_id: str,
+        step_number: int,
+        tool_calls: list[ToolCall],
+    ) -> list[ToolResult]:
+        tool_results: list[ToolResult] = []
+        for tool_call in tool_calls:
+            tool_results.append(
+                self._execute_one_tool_call(
+                    run_id=run_id,
+                    step_number=step_number,
+                    tool_call=tool_call,
+                )
+            )
+        return tool_results
+
+    async def _execute_tool_calls_concurrently(
+        self,
+        run_id: str,
+        step_number: int,
+        tool_calls: list[ToolCall],
+    ) -> list[ToolResult]:
+        for tool_call in tool_calls:
+            self._record_tool_started(
+                run_id=run_id,
+                step_number=step_number,
+                tool_call=tool_call,
+            )
+            print(format_tool_activity(tool_call))
+
+        tasks = [
+            asyncio.to_thread(self._run_tool_call, tool_call)
+            for tool_call in tool_calls
+        ]
+        completed = await asyncio.gather(*tasks)
+
+        tool_results: list[ToolResult] = []
+        for tool_call, output, is_error, latency_ms in completed:
+            self._record_tool_finished(
+                run_id=run_id,
+                step_number=step_number,
+                tool_call=tool_call,
+                is_error=is_error,
+                output=output,
+                latency_ms=latency_ms,
+            )
+            tool_results.append(
+                ToolResult(
+                    tool_use_id=tool_call.tool_use_id,
+                    content=output,
+                    is_error=is_error,
+                )
+            )
+        return tool_results
+
+    def _execute_one_tool_call(
+        self,
+        run_id: str,
+        step_number: int,
+        tool_call: ToolCall,
+    ) -> ToolResult:
+        self._record_tool_started(
+            run_id=run_id,
+            step_number=step_number,
+            tool_call=tool_call,
+        )
+        print(format_tool_activity(tool_call))
+        _, output, is_error, latency_ms = self._run_tool_call(tool_call)
+        self._record_tool_finished(
+            run_id=run_id,
+            step_number=step_number,
+            tool_call=tool_call,
+            is_error=is_error,
+            output=output,
+            latency_ms=latency_ms,
+        )
+        return ToolResult(
+            tool_use_id=tool_call.tool_use_id,
+            content=output,
+            is_error=is_error,
+        )
+
+    def _run_tool_call(self, tool_call: ToolCall) -> tuple[ToolCall, str, bool, float]:
+        tool_started = perf_counter()
+        output, is_error = self.registry.execute(
+            tool_call.name,
+            tool_call.input,
+        )
+        tool_latency_ms = (perf_counter() - tool_started) * 1000
+        return tool_call, output, is_error, tool_latency_ms
+
+    def _can_execute_tool_calls_concurrently(
+        self,
+        tool_calls: list[ToolCall],
+    ) -> bool:
+        return len(tool_calls) > 1 and all(
+            tool_call.name in PARALLEL_READ_ONLY_TOOLS for tool_call in tool_calls
+        )
+
+    def _record_tool_schedule_decided(
+        self,
+        run_id: str,
+        step_number: int,
+        tool_calls: list[ToolCall],
+        mode: str,
+        reason: str,
+    ) -> None:
+        tool_names = ", ".join(tool_call.name for tool_call in tool_calls)
+        self._append_session_event(
+            SessionEvent(
+                event_type="tool_schedule_decided",
+                session_id=self.session_id or "",
+                created_at=utc_timestamp(),
+                run_id=run_id,
+                step_number=step_number,
+                tool_call_count=len(tool_calls),
+                message=f"{mode}: {reason}; tools: {tool_names}",
             )
         )
 

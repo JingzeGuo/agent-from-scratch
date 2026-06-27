@@ -3,6 +3,7 @@ import json
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from threading import Event
 from typing import Any, cast
 
 import httpx
@@ -1041,6 +1042,278 @@ def test_agent_rejects_parallel_tool_calls_when_provider_does_not_support_them(
         "Protocol error: provider returned parallel tool calls "
         "but does not support them.\n"
     )
+
+
+def test_agent_executes_multiple_tool_calls_serially() -> None:
+    events: list[str] = []
+
+    def first_probe(expression: str) -> str:
+        events.append("first:start")
+        events.append("first:end")
+        return f"first result: {expression}"
+
+    def second_probe(expression: str) -> str:
+        events.append("second:start")
+        events.append("second:end")
+        return f"second result: {expression}"
+
+    first_call = ToolCall(
+        name="first_probe",
+        input={"expression": "1 + 1"},
+        tool_use_id="call_first",
+    )
+    second_call = ToolCall(
+        name="second_probe",
+        input={"expression": "2 + 2"},
+        tool_use_id="call_second",
+    )
+    registry = ToolRegistry()
+    registry.register(
+        Tool(
+            name="first_probe",
+            description="Record the first probe execution.",
+            input_schema=CalculatorInput,
+            fn=first_probe,
+        )
+    )
+    registry.register(
+        Tool(
+            name="second_probe",
+            description="Record the second probe execution.",
+            input_schema=CalculatorInput,
+            fn=second_probe,
+        )
+    )
+    adapter = FakeProviderAdapter(
+        responses=[
+            ProviderResponse(
+                message={
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": first_call.tool_use_id,
+                            "name": first_call.name,
+                            "input": first_call.input,
+                        },
+                        {
+                            "type": "tool_use",
+                            "id": second_call.tool_use_id,
+                            "name": second_call.name,
+                            "input": second_call.input,
+                        },
+                    ],
+                },
+                stop_reason="tool_use",
+                tool_calls=[first_call, second_call],
+                usage=TokenUsage(input_tokens=10, output_tokens=5),
+            ),
+            ProviderResponse(
+                message={
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "Done."}],
+                },
+                stop_reason="end_turn",
+                text=["Done."],
+                usage=TokenUsage(input_tokens=10, output_tokens=5),
+            ),
+        ]
+    )
+    agent = Agent(provider_adapter=adapter, registry=registry)
+
+    agent_run = asyncio.run(agent.run("Run two probes"))
+
+    assert events == [
+        "first:start",
+        "first:end",
+        "second:start",
+        "second:end",
+    ]
+    assert agent_run.termination == "completed"
+    assert [result.tool_use_id for result in agent_run.steps[0].tool_results] == [
+        "call_first",
+        "call_second",
+    ]
+    assert [result.content for result in agent_run.steps[0].tool_results] == [
+        "first result: 1 + 1",
+        "second result: 2 + 2",
+    ]
+
+
+def test_agent_executes_read_only_tool_calls_concurrently_preserving_order(
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    first_started = Event()
+    second_started = Event()
+
+    def probe_calculator(expression: str) -> str:
+        if expression == "first":
+            events.append("first:start")
+            first_started.set()
+            if not second_started.wait(timeout=1):
+                raise RuntimeError("second call did not start concurrently")
+            events.append("first:end")
+            return "first result"
+
+        events.append("second:start")
+        second_started.set()
+        if not first_started.wait(timeout=1):
+            raise RuntimeError("first call did not start concurrently")
+        events.append("second:end")
+        return "second result"
+
+    first_call = ToolCall(
+        name="calculator",
+        input={"expression": "first"},
+        tool_use_id="call_first",
+    )
+    second_call = ToolCall(
+        name="calculator",
+        input={"expression": "second"},
+        tool_use_id="call_second",
+    )
+    registry = ToolRegistry()
+    registry.register(
+        Tool(
+            name="calculator",
+            description="Record overlapping read-only execution.",
+            input_schema=CalculatorInput,
+            fn=probe_calculator,
+        )
+    )
+    adapter = FakeProviderAdapter(
+        responses=[
+            ProviderResponse(
+                message={
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": first_call.tool_use_id,
+                            "name": first_call.name,
+                            "input": first_call.input,
+                        },
+                        {
+                            "type": "tool_use",
+                            "id": second_call.tool_use_id,
+                            "name": second_call.name,
+                            "input": second_call.input,
+                        },
+                    ],
+                },
+                stop_reason="tool_use",
+                tool_calls=[first_call, second_call],
+                usage=TokenUsage(input_tokens=10, output_tokens=5),
+            ),
+            ProviderResponse(
+                message={
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "Done."}],
+                },
+                stop_reason="end_turn",
+                text=["Done."],
+                usage=TokenUsage(input_tokens=10, output_tokens=5),
+            ),
+        ]
+    )
+    agent = Agent(provider_adapter=adapter, registry=registry)
+    session_store = SessionStore(tmp_path / "sessions")
+    agent.configure_session_recording(session_store, "session-one")
+
+    agent_run = asyncio.run(agent.run("Run two read-only probes"))
+
+    assert events.index("second:start") < events.index("first:end")
+    assert events.index("first:start") < events.index("second:end")
+    assert [result.tool_use_id for result in agent_run.steps[0].tool_results] == [
+        "call_first",
+        "call_second",
+    ]
+    assert [result.content for result in agent_run.steps[0].tool_results] == [
+        "first result",
+        "second result",
+    ]
+    schedule_events = [
+        event
+        for event in session_store.read_events("session-one")
+        if event.event_type == "tool_schedule_decided"
+    ]
+    assert len(schedule_events) == 1
+    assert schedule_events[0].message == (
+        "parallel: all tool calls are read-only; tools: calculator, calculator"
+    )
+
+
+def test_agent_preserves_result_order_when_parallel_tool_call_fails() -> None:
+    def probe_calculator(expression: str) -> str:
+        if expression == "bad":
+            raise ValueError("bad expression")
+        return f"{expression} result"
+
+    first_call = ToolCall(
+        name="calculator",
+        input={"expression": "good"},
+        tool_use_id="call_good",
+    )
+    second_call = ToolCall(
+        name="calculator",
+        input={"expression": "bad"},
+        tool_use_id="call_bad",
+    )
+    registry = ToolRegistry()
+    registry.register(
+        Tool(
+            name="calculator",
+            description="Return one result and one error.",
+            input_schema=CalculatorInput,
+            fn=probe_calculator,
+        )
+    )
+    adapter = FakeProviderAdapter(
+        responses=[
+            ProviderResponse(
+                message={
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": first_call.tool_use_id,
+                            "name": first_call.name,
+                            "input": first_call.input,
+                        },
+                        {
+                            "type": "tool_use",
+                            "id": second_call.tool_use_id,
+                            "name": second_call.name,
+                            "input": second_call.input,
+                        },
+                    ],
+                },
+                stop_reason="tool_use",
+                tool_calls=[first_call, second_call],
+                usage=TokenUsage(input_tokens=10, output_tokens=5),
+            ),
+            ProviderResponse(
+                message={
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "Done."}],
+                },
+                stop_reason="end_turn",
+                text=["Done."],
+                usage=TokenUsage(input_tokens=10, output_tokens=5),
+            ),
+        ]
+    )
+    agent = Agent(provider_adapter=adapter, registry=registry)
+
+    agent_run = asyncio.run(agent.run("Run two read-only probes"))
+
+    results = agent_run.steps[0].tool_results
+    assert [result.tool_use_id for result in results] == ["call_good", "call_bad"]
+    assert results[0].content == "good result"
+    assert results[0].is_error is False
+    assert "ValueError: bad expression" in results[1].content
+    assert results[1].is_error is True
 
 
 def test_agent_creates_snapshot_from_current_state(tmp_path: Path) -> None:

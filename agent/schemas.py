@@ -301,6 +301,7 @@ SessionEventType = Literal[
     "step_finished",
     "run_finished",
     "compaction_reported",
+    "tool_schedule_decided",
     "tool_started",
     "tool_finished",
     "checkpoint_saved",
