@@ -18,6 +18,7 @@ COMMANDS = {
     "/model": "Show or switch provider and model.",
     "/diff": "Show file changes from this session.",
     "/compact": "Show compacted context metrics.",
+    "/trace": "Show structured trace events.",
     "/rename": "Rename the current session.",
     "/sessions": "List saved sessions.",
     "/exit": "Exit the application.",
@@ -198,6 +199,19 @@ def handle_command(
         print(f"  snipped tool results: {result.snipped_tool_results}")
         print(f"  checkpoint included: {result.checkpoint_included}")
         print(f"  hard collapsed: {result.hard_collapsed}")
+        return False
+    if command == "/trace":
+        if session_store is None or session_state is None:
+            print("Trace command is unavailable.")
+            return False
+
+        events = session_store.read_events(session_state.session_id)
+        if not events:
+            print("[No trace events]")
+            return False
+
+        for event in events:
+            print(event.model_dump_json())
         return False
     if command == "/rename" or command.startswith("/rename "):
         if agent is None or session_store is None or session_state is None:

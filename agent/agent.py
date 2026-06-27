@@ -1,5 +1,8 @@
+import re
 from pathlib import Path
+from time import perf_counter
 from typing import Any, cast
+from uuid import uuid4
 
 from .context import ContextBuilder
 from .prompts import build_system_prompt
@@ -20,6 +23,13 @@ from .token_tracker import TokenTracker
 from .tool_registry import ToolRegistry
 from .verification import extract_verification_evidence, infer_task_success
 from .workspace import resolve_workspace_path
+
+TRACE_PREVIEW_CHARS = 500
+SECRET_PATTERNS = [
+    re.compile(r"(?i)\b(api[_-]?key|token|secret|password)\s*=\s*([^\s]+)"),
+    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}"),
+    re.compile(r"\bsk-[A-Za-z0-9_-]{8,}"),
+]
 
 
 def format_tool_activity(tool_call: ToolCall) -> str:
@@ -149,7 +159,8 @@ class Agent:
 
     async def run(self, user_task: str) -> AgentRun:
         run_steps: list[AgentStep] = []
-        self._record_run_started(user_task)
+        run_id = self._new_run_id()
+        self._record_run_started(run_id, user_task)
         self.messages.append(
             {
                 "role": "user",
@@ -178,6 +189,11 @@ class Agent:
                     pending_action=self._current_pending_action(),
                 ),
             )
+            model_request_started = perf_counter()
+            self._record_model_request_started(
+                run_id=run_id,
+                step_number=step,
+            )
             response = await self.provider_adapter.stream_response(
                 system=self.system_prompt,
                 tools=self.registry.to_tool_definitions(),
@@ -187,7 +203,24 @@ class Agent:
 
             if streamed_text:
                 print()
+            model_latency_ms = (perf_counter() - model_request_started) * 1000
+            estimated_cost_before = self.token_tracker.estimated_cost
             self.token_tracker.add(response.usage)
+            estimated_cost_delta = (
+                self.token_tracker.estimated_cost - estimated_cost_before
+            )
+            self._record_model_response_finished(
+                run_id=run_id,
+                step_number=step,
+                stop_reason=response.stop_reason,
+                input_tokens=response.usage.input_tokens,
+                output_tokens=response.usage.output_tokens,
+                estimated_cost_delta=estimated_cost_delta,
+                latency_ms=model_latency_ms,
+                tool_call_count=len(response.tool_calls),
+                text=response.text,
+                native_metadata=response.native_metadata,
+            )
 
             self.messages.append(response.message)
             text_blocks.extend(response.text)
@@ -203,11 +236,16 @@ class Agent:
                 )
                 run_steps.append(agent_step)
                 self.steps.append(agent_step)
+                self._record_step_finished(
+                    run_id=run_id,
+                    agent_step=agent_step,
+                )
                 print(
                     "Protocol error: provider returned parallel tool calls "
                     "but does not support them."
                 )
                 return self._finish_run(
+                    run_id=run_id,
                     objective=user_task,
                     steps=run_steps,
                     termination="protocol_error",
@@ -219,18 +257,24 @@ class Agent:
                     tool_calls.append(tool_call)
 
                     self._record_tool_started(
+                        run_id=run_id,
                         step_number=step,
                         tool_call=tool_call,
                     )
                     print(format_tool_activity(tool_call))
+                    tool_started = perf_counter()
                     output, is_error = self.registry.execute(
                         tool_call.name,
                         tool_call.input,
                     )
+                    tool_latency_ms = (perf_counter() - tool_started) * 1000
                     self._record_tool_finished(
+                        run_id=run_id,
                         step_number=step,
                         tool_call=tool_call,
                         is_error=is_error,
+                        output=output,
+                        latency_ms=tool_latency_ms,
                     )
                     tool_results.append(
                         ToolResult(
@@ -249,9 +293,14 @@ class Agent:
             )
             run_steps.append(agent_step)
             self.steps.append(agent_step)
+            self._record_step_finished(
+                run_id=run_id,
+                agent_step=agent_step,
+            )
 
             if response.stop_reason == "end_turn":
                 return self._finish_run(
+                    run_id=run_id,
                     objective=user_task,
                     steps=run_steps,
                     termination="completed",
@@ -261,6 +310,7 @@ class Agent:
             if not tool_results:
                 print(f"Protocol error stop reason: {response.stop_reason}")
                 return self._finish_run(
+                    run_id=run_id,
                     objective=user_task,
                     steps=run_steps,
                     termination="protocol_error",
@@ -270,6 +320,7 @@ class Agent:
             self.messages.append(self.provider_adapter.tool_result_message(tool_results))
         print(f"Agent reached the {self.max_steps}-step limit. Task stopped.")
         return self._finish_run(
+            run_id=run_id,
             objective=user_task,
             steps=run_steps,
             termination="max_steps",
@@ -278,6 +329,7 @@ class Agent:
 
     def _finish_run(
         self,
+        run_id: str,
         objective: str,
         steps: list[AgentStep],
         termination: RunOutcome,
@@ -285,6 +337,7 @@ class Agent:
     ) -> AgentRun:
         verification = extract_verification_evidence(steps)
         agent_run = AgentRun(
+            run_id=run_id,
             objective=objective,
             steps=steps,
             termination=termination,
@@ -293,20 +346,82 @@ class Agent:
             task_success=infer_task_success(verification),
         )
         self.completed_runs.append(agent_run)
+        self._record_run_finished(
+            run_id=run_id,
+            objective=objective,
+            agent_run=agent_run,
+        )
         return agent_run
 
-    def _record_run_started(self, objective: str) -> None:
+    def _new_run_id(self) -> str:
+        return f"run-{uuid4().hex}"
+
+    def _record_run_started(self, run_id: str, objective: str) -> None:
         self._append_session_event(
             SessionEvent(
                 event_type="run_started",
                 session_id=self.session_id or "",
                 created_at=utc_timestamp(),
+                run_id=run_id,
                 objective=objective,
+                provider=self.provider,
+                model=self.model,
+            )
+        )
+
+    def _record_model_request_started(
+        self,
+        run_id: str,
+        step_number: int,
+    ) -> None:
+        self._append_session_event(
+            SessionEvent(
+                event_type="model_request_started",
+                session_id=self.session_id or "",
+                created_at=utc_timestamp(),
+                run_id=run_id,
+                step_number=step_number,
+                provider=self.provider,
+                model=self.model,
+            )
+        )
+
+    def _record_model_response_finished(
+        self,
+        run_id: str,
+        step_number: int,
+        stop_reason: str | None,
+        input_tokens: int,
+        output_tokens: int,
+        estimated_cost_delta: float,
+        latency_ms: float,
+        tool_call_count: int,
+        text: list[str],
+        native_metadata: dict[str, Any],
+    ) -> None:
+        self._append_session_event(
+            SessionEvent(
+                event_type="model_response_finished",
+                session_id=self.session_id or "",
+                created_at=utc_timestamp(),
+                run_id=run_id,
+                step_number=step_number,
+                provider=self.provider,
+                model=self.model,
+                stop_reason=stop_reason,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                estimated_cost=estimated_cost_delta,
+                latency_ms=latency_ms,
+                tool_call_count=tool_call_count,
+                text_preview=self._preview_text("\n".join(text)),
+                native_metadata=native_metadata,
             )
         )
 
     def _record_tool_started(
         self,
+        run_id: str,
         step_number: int,
         tool_call: ToolCall,
     ) -> None:
@@ -326,6 +441,7 @@ class Agent:
                 event_type="tool_started",
                 session_id=self.session_id,
                 created_at=pending_action.started_at,
+                run_id=run_id,
                 step_number=step_number,
                 tool_name=tool_call.name,
                 tool_use_id=tool_call.tool_use_id,
@@ -334,19 +450,69 @@ class Agent:
 
     def _record_tool_finished(
         self,
+        run_id: str,
         step_number: int,
         tool_call: ToolCall,
         is_error: bool,
+        output: str,
+        latency_ms: float,
     ) -> None:
         self._append_session_event(
             SessionEvent(
                 event_type="tool_finished",
                 session_id=self.session_id or "",
                 created_at=utc_timestamp(),
+                run_id=run_id,
                 step_number=step_number,
                 tool_name=tool_call.name,
                 tool_use_id=tool_call.tool_use_id,
                 is_error=is_error,
+                latency_ms=latency_ms,
+                output_preview=self._preview_text(output),
+                output_chars=len(output),
+                error_type="tool_error" if is_error else None,
+            )
+        )
+
+    def _record_step_finished(
+        self,
+        run_id: str,
+        agent_step: AgentStep,
+    ) -> None:
+        self._append_session_event(
+            SessionEvent(
+                event_type="step_finished",
+                session_id=self.session_id or "",
+                created_at=utc_timestamp(),
+                run_id=run_id,
+                step_number=agent_step.step_number,
+                stop_reason=agent_step.stop_reason,
+                tool_call_count=len(agent_step.tool_calls),
+                text_preview=self._preview_text("\n".join(agent_step.text)),
+            )
+        )
+
+    def _record_run_finished(
+        self,
+        run_id: str,
+        objective: str,
+        agent_run: AgentRun,
+    ) -> None:
+        self._append_session_event(
+            SessionEvent(
+                event_type="run_finished",
+                session_id=self.session_id or "",
+                created_at=utc_timestamp(),
+                run_id=run_id,
+                objective=objective,
+                termination=agent_run.termination,
+                final_stop_reason=agent_run.final_stop_reason,
+                task_success=agent_run.task_success,
+                verification_status=agent_run.verification.status,
+                step_count=len(agent_run.steps),
+                input_tokens=self.token_tracker.input_tokens,
+                output_tokens=self.token_tracker.output_tokens,
+                estimated_cost=self.token_tracker.estimated_cost,
             )
         )
 
@@ -361,6 +527,19 @@ class Agent:
         if self.session_store is None or self.session_id is None:
             return None
         return self.session_store.read_pending_action(self.session_id)
+
+    def _preview_text(self, text: str) -> str:
+        redacted = self._redact_text(text)
+        if len(redacted) <= TRACE_PREVIEW_CHARS:
+            return redacted
+        return redacted[:TRACE_PREVIEW_CHARS] + "... [truncated]"
+
+    def _redact_text(self, text: str) -> str:
+        redacted = text
+        redacted = SECRET_PATTERNS[0].sub(r"\1=[REDACTED]", redacted)
+        redacted = SECRET_PATTERNS[1].sub("Bearer [REDACTED]", redacted)
+        redacted = SECRET_PATTERNS[2].sub("[REDACTED_SECRET]", redacted)
+        return redacted
 
     def _provider_switch_is_safe(self) -> bool:
         if self._current_pending_action() is not None:

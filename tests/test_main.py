@@ -11,10 +11,11 @@ from agent.schemas import (
     AgentRun,
     CalculatorInput,
     PendingAction,
+    SessionEvent,
     SessionSnapshot,
     VerificationEvidence,
 )
-from agent.session import SessionStore
+from agent.session import SessionStore, utc_timestamp
 from agent.tool import Tool
 from agent.tool_registry import ToolRegistry
 from agent.tools import calculator
@@ -101,6 +102,7 @@ def test_help_lists_available_commands(
         "  /model    Show or switch provider and model.\n"
         "  /diff     Show file changes from this session.\n"
         "  /compact  Show compacted context metrics.\n"
+        "  /trace    Show structured trace events.\n"
         "  /rename   Rename the current session.\n"
         "  /sessions List saved sessions.\n"
         "  /exit     Exit the application.\n"
@@ -139,6 +141,48 @@ def test_model_command_shows_current_model(
     assert capsys.readouterr().out == (
         "Current model: anthropic/claude-haiku-4-5\n"
     )
+
+
+def test_trace_command_prints_current_session_events(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    session_store = SessionStore(tmp_path / "sessions")
+    session_state = CliSessionState(session_id="session-one")
+    event = SessionEvent(
+        event_type="run_started",
+        session_id="session-one",
+        created_at=utc_timestamp(),
+        run_id="run-one",
+        objective="Fix bug",
+    )
+    session_store.append_event(event)
+
+    should_exit = handle_command(
+        "/trace",
+        session_store=session_store,
+        session_state=session_state,
+    )
+
+    assert should_exit is False
+    assert capsys.readouterr().out == event.model_dump_json() + "\n"
+
+
+def test_trace_command_reports_empty_trace(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    session_store = SessionStore(tmp_path / "sessions")
+    session_state = CliSessionState(session_id="session-one")
+
+    should_exit = handle_command(
+        "/trace",
+        session_store=session_store,
+        session_state=session_state,
+    )
+
+    assert should_exit is False
+    assert capsys.readouterr().out == "[No trace events]\n"
 
 
 def test_parse_one_shot_task() -> None:

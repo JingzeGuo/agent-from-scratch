@@ -1193,10 +1193,12 @@ def test_agent_records_pending_action_and_tool_events(tmp_path: Path) -> None:
     session_store = SessionStore(tmp_path / "sessions")
     agent.configure_session_recording(session_store, "session-one")
 
-    asyncio.run(agent.run("Calculate 1 + 1"))
+    agent_run = asyncio.run(agent.run("Calculate 1 + 1"))
 
     pending_action = session_store.read_pending_action("session-one")
     events = session_store.read_events("session-one")
+    run_id = agent_run.run_id
+    assert run_id is not None
     assert pending_action is not None
     assert pending_action.step_number == 1
     assert pending_action.tool_name == "calculator"
@@ -1204,12 +1206,87 @@ def test_agent_records_pending_action_and_tool_events(tmp_path: Path) -> None:
     assert pending_action.tool_input == {"expression": "1 + 1"}
     assert [event.event_type for event in events] == [
         "run_started",
+        "model_request_started",
+        "model_response_finished",
         "tool_started",
         "tool_finished",
+        "step_finished",
+        "model_request_started",
+        "model_response_finished",
+        "step_finished",
+        "run_finished",
     ]
+    assert {event.run_id for event in events} == {run_id}
     assert events[0].objective == "Calculate 1 + 1"
-    assert events[1].tool_name == "calculator"
-    assert events[2].is_error is False
+    assert events[0].provider == "anthropic"
+    assert events[0].model == "claude-haiku-4-5"
+    assert events[2].step_number == 1
+    assert events[2].stop_reason == "tool_use"
+    assert events[2].input_tokens == 10
+    assert events[2].output_tokens == 5
+    assert events[2].tool_call_count == 1
+    assert events[2].latency_ms is not None
+    assert events[3].tool_name == "calculator"
+    assert events[4].is_error is False
+    assert events[4].output_preview == "2"
+    assert events[4].output_chars == 1
+    assert events[5].stop_reason == "tool_use"
+    assert events[-1].termination == "completed"
+    assert events[-1].final_stop_reason == "end_turn"
+    assert events[-1].verification_status == "not_run"
+    assert events[-1].step_count == 2
+    assert events[-1].input_tokens == 20
+    assert events[-1].output_tokens == 10
+    assert events[-1].estimated_cost is not None
+
+
+def test_agent_redacts_secret_like_tool_output_in_trace(tmp_path: Path) -> None:
+    def secret_tool(expression: str) -> str:
+        return f"{expression} api_key=sk-secret123456 token=plain-secret"
+
+    registry = ToolRegistry()
+    registry.register(
+        Tool(
+            name="secret_tool",
+            description="Return a secret-like value.",
+            input_schema=CalculatorInput,
+            fn=secret_tool,
+        )
+    )
+    tool_response = make_message(
+        content=[
+            ToolUseBlock(
+                id="toolu_secret",
+                name="secret_tool",
+                input={"expression": "result"},
+                type="tool_use",
+            )
+        ],
+        stop_reason="tool_use",
+    )
+    final_response = make_message(
+        content=[TextBlock(text="Done.", type="text")],
+        stop_reason="end_turn",
+    )
+    agent, _ = create_agent([tool_response, final_response], registry=registry)
+    session_store = SessionStore(tmp_path / "sessions")
+    agent.configure_session_recording(session_store, "session-one")
+
+    asyncio.run(agent.run("Run secret tool"))
+
+    tool_finished = [
+        event
+        for event in session_store.read_events("session-one")
+        if event.event_type == "tool_finished"
+    ][0]
+    assert tool_finished.output_chars == len(
+        "result api_key=sk-secret123456 token=plain-secret"
+    )
+    assert tool_finished.output_preview == (
+        "result api_key=[REDACTED] token=[REDACTED]"
+    )
+    assert "sk-secret123456" not in tool_finished.output_preview
+    assert "plain-secret" not in tool_finished.output_preview
 
 
 def test_agent_recovers_from_invalid_tool_arguments() -> None:

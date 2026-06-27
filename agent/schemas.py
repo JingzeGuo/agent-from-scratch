@@ -224,6 +224,7 @@ class VerificationEvidence(BaseModel):
 
 
 class AgentRun(BaseModel):
+    run_id: str | None = None
     objective: str
     steps: list[AgentStep]
     termination: RunOutcome
@@ -295,6 +296,10 @@ SessionEventType = Literal[
     "session_started",
     "session_resumed",
     "run_started",
+    "model_request_started",
+    "model_response_finished",
+    "step_finished",
+    "run_finished",
     "tool_started",
     "tool_finished",
     "checkpoint_saved",
@@ -309,12 +314,31 @@ class SessionEvent(BaseModel):
     event_type: SessionEventType
     session_id: str
     created_at: str
+    run_id: str | None = None
     session_name: str | None = None
     objective: str | None = None
     step_number: int | None = Field(default=None, ge=1)
+    provider: str | None = None
+    model: str | None = None
+    stop_reason: str | None = None
+    termination: RunOutcome | None = None
+    final_stop_reason: str | None = None
+    task_success: bool | None = None
+    verification_status: str | None = None
+    step_count: int | None = Field(default=None, ge=0)
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    estimated_cost: float | None = Field(default=None, ge=0.0)
+    latency_ms: float | None = Field(default=None, ge=0.0)
+    tool_call_count: int | None = Field(default=None, ge=0)
     tool_name: str | None = None
     tool_use_id: str | None = None
     is_error: bool | None = None
+    text_preview: str | None = None
+    output_preview: str | None = None
+    output_chars: int | None = Field(default=None, ge=0)
+    error_type: str | None = None
+    native_metadata: dict[str, Any] | None = None
     message: str | None = None
 
 
