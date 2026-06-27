@@ -12,13 +12,14 @@ from agent.provider import create_provider_adapter, load_provider_config
 from agent.schemas import SessionEvent
 from agent.session import SessionStore, utc_timestamp
 from agent.setup import create_registry
+from agent.workspace import resolve_workspace_path
 
 COMMANDS = {
     "/help": "Show available commands.",
     "/model": "Show or switch provider and model.",
     "/diff": "Show file changes from this session.",
     "/compact": "Show compacted context metrics.",
-    "/trace": "Show structured trace events.",
+    "/trace": "Show or export structured trace events.",
     "/rename": "Rename the current session.",
     "/sessions": "List saved sessions.",
     "/exit": "Exit the application.",
@@ -191,6 +192,21 @@ def handle_command(
             return False
 
         result = agent.build_context_result()
+        if session_store is not None and session_state is not None:
+            session_store.append_event(
+                SessionEvent(
+                    event_type="compaction_reported",
+                    session_id=session_state.session_id,
+                    created_at=utc_timestamp(),
+                    original_message_count=result.original_message_count,
+                    final_message_count=result.final_message_count,
+                    original_context_chars=result.original_context_chars,
+                    final_context_chars=result.final_context_chars,
+                    snipped_tool_results=result.snipped_tool_results,
+                    checkpoint_included=result.checkpoint_included,
+                    hard_collapsed=result.hard_collapsed,
+                )
+            )
         print("Context compaction:")
         print(f"  original messages: {result.original_message_count}")
         print(f"  final messages: {result.final_message_count}")
@@ -200,7 +216,7 @@ def handle_command(
         print(f"  checkpoint included: {result.checkpoint_included}")
         print(f"  hard collapsed: {result.hard_collapsed}")
         return False
-    if command == "/trace":
+    if command == "/trace" or command.startswith("/trace "):
         if session_store is None or session_state is None:
             print("Trace command is unavailable.")
             return False
@@ -208,6 +224,27 @@ def handle_command(
         events = session_store.read_events(session_state.session_id)
         if not events:
             print("[No trace events]")
+            return False
+
+        parts = command.split(maxsplit=1)
+        if len(parts) == 2:
+            if agent is None or agent.registry.workspace_root is None:
+                print("Trace export is unavailable.")
+                return False
+            try:
+                export_path = resolve_workspace_path(
+                    agent.registry.workspace_root,
+                    parts[1],
+                )
+            except ValueError as error:
+                print(f"Cannot export trace: {error}")
+                return False
+            export_path.parent.mkdir(parents=True, exist_ok=True)
+            export_path.write_text(
+                "\n".join(event.model_dump_json() for event in events) + "\n",
+                encoding="utf-8",
+            )
+            print(f"Trace exported: {export_path}")
             return False
 
         for event in events:

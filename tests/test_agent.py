@@ -1240,9 +1240,17 @@ def test_agent_records_pending_action_and_tool_events(tmp_path: Path) -> None:
     assert events[-1].estimated_cost is not None
 
 
-def test_agent_redacts_secret_like_tool_output_in_trace(tmp_path: Path) -> None:
+def test_agent_redacts_secret_like_tool_output_in_trace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENT_TRACE_REDACT_PATTERNS", r"CUSTOM-\d+")
+
     def secret_tool(expression: str) -> str:
-        return f"{expression} api_key=sk-secret123456 token=plain-secret"
+        return (
+            f"{expression} api_key=sk-secret123456 "
+            "token=plain-secret CUSTOM-12345"
+        )
 
     registry = ToolRegistry()
     registry.register(
@@ -1280,13 +1288,49 @@ def test_agent_redacts_secret_like_tool_output_in_trace(tmp_path: Path) -> None:
         if event.event_type == "tool_finished"
     ][0]
     assert tool_finished.output_chars == len(
-        "result api_key=sk-secret123456 token=plain-secret"
+        "result api_key=sk-secret123456 token=plain-secret CUSTOM-12345"
     )
     assert tool_finished.output_preview == (
-        "result api_key=[REDACTED] token=[REDACTED]"
+        "result api_key=[REDACTED] token=[REDACTED] [REDACTED]"
     )
     assert "sk-secret123456" not in tool_finished.output_preview
     assert "plain-secret" not in tool_finished.output_preview
+    assert "CUSTOM-12345" not in tool_finished.output_preview
+
+
+def test_agent_records_tool_failure_evidence_in_trace(tmp_path: Path) -> None:
+    invalid_tool_response = make_message(
+        content=[
+            ToolUseBlock(
+                id="toolu_invalid",
+                name="calculator",
+                input={"number": "1 + 1"},
+                type="tool_use",
+            )
+        ],
+        stop_reason="tool_use",
+    )
+    final_response = make_message(
+        content=[TextBlock(text="Done.", type="text")],
+        stop_reason="end_turn",
+    )
+    agent, _ = create_agent([invalid_tool_response, final_response])
+    session_store = SessionStore(tmp_path / "sessions")
+    agent.configure_session_recording(session_store, "session-one")
+
+    asyncio.run(agent.run("Calculate 1 + 1"))
+
+    tool_finished = [
+        event
+        for event in session_store.read_events("session-one")
+        if event.event_type == "tool_finished"
+    ][0]
+    assert tool_finished.is_error is True
+    assert tool_finished.error_type == "tool_error"
+    assert tool_finished.output_chars is not None
+    assert tool_finished.output_chars > 0
+    assert tool_finished.output_preview is not None
+    assert "Validation error for tool 'calculator'" in tool_finished.output_preview
 
 
 def test_agent_recovers_from_invalid_tool_arguments() -> None:

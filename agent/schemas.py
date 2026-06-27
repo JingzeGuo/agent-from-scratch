@@ -300,6 +300,7 @@ SessionEventType = Literal[
     "model_response_finished",
     "step_finished",
     "run_finished",
+    "compaction_reported",
     "tool_started",
     "tool_finished",
     "checkpoint_saved",
@@ -331,6 +332,13 @@ class SessionEvent(BaseModel):
     estimated_cost: float | None = Field(default=None, ge=0.0)
     latency_ms: float | None = Field(default=None, ge=0.0)
     tool_call_count: int | None = Field(default=None, ge=0)
+    original_message_count: int | None = Field(default=None, ge=0)
+    final_message_count: int | None = Field(default=None, ge=0)
+    original_context_chars: int | None = Field(default=None, ge=0)
+    final_context_chars: int | None = Field(default=None, ge=0)
+    snipped_tool_results: int | None = Field(default=None, ge=0)
+    hard_collapsed: bool | None = None
+    checkpoint_included: bool | None = None
     tool_name: str | None = None
     tool_use_id: str | None = None
     is_error: bool | None = None

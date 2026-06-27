@@ -70,8 +70,8 @@ class FakeCheckpointAgent(FakeRunAgent):
         )
 
 
-def create_agent() -> Agent:
-    registry = ToolRegistry()
+def create_agent(workspace_root: Path | None = None) -> Agent:
+    registry = ToolRegistry(workspace_root)
     registry.register(
         Tool(
             name="calculator",
@@ -102,7 +102,7 @@ def test_help_lists_available_commands(
         "  /model    Show or switch provider and model.\n"
         "  /diff     Show file changes from this session.\n"
         "  /compact  Show compacted context metrics.\n"
-        "  /trace    Show structured trace events.\n"
+        "  /trace    Show or export structured trace events.\n"
         "  /rename   Rename the current session.\n"
         "  /sessions List saved sessions.\n"
         "  /exit     Exit the application.\n"
@@ -157,6 +157,15 @@ def test_trace_command_prints_current_session_events(
         objective="Fix bug",
     )
     session_store.append_event(event)
+    pending_action = PendingAction(
+        session_id="session-one",
+        step_number=1,
+        tool_name="calculator",
+        tool_use_id="toolu_one",
+        tool_input={"expression": "1 + 1"},
+        started_at=utc_timestamp(),
+    )
+    session_store.write_pending_action(pending_action)
 
     should_exit = handle_command(
         "/trace",
@@ -166,6 +175,36 @@ def test_trace_command_prints_current_session_events(
 
     assert should_exit is False
     assert capsys.readouterr().out == event.model_dump_json() + "\n"
+    assert session_store.read_pending_action("session-one") == pending_action
+
+
+def test_trace_command_exports_current_session_events(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    agent = create_agent(tmp_path)
+    session_store = SessionStore(tmp_path / "sessions")
+    session_state = CliSessionState(session_id="session-one")
+    event = SessionEvent(
+        event_type="run_started",
+        session_id="session-one",
+        created_at=utc_timestamp(),
+        run_id="run-one",
+        objective="Fix bug",
+    )
+    session_store.append_event(event)
+
+    should_exit = handle_command(
+        "/trace traces/session-one.jsonl",
+        agent=agent,
+        session_store=session_store,
+        session_state=session_state,
+    )
+
+    export_path = tmp_path / "traces" / "session-one.jsonl"
+    assert should_exit is False
+    assert export_path.read_text(encoding="utf-8") == event.model_dump_json() + "\n"
+    assert capsys.readouterr().out == f"Trace exported: {export_path}\n"
 
 
 def test_trace_command_reports_empty_trace(
@@ -394,6 +433,31 @@ def test_compact_command_shows_context_metrics(
         "  checkpoint included: False\n"
         "  hard collapsed: False\n"
     )
+
+
+def test_compact_command_records_compaction_event(tmp_path: Path) -> None:
+    agent = create_agent()
+    agent.messages.append({"role": "user", "content": "Fix the bug"})
+    session_store = SessionStore(tmp_path / "sessions")
+    session_state = CliSessionState(session_id="session-one")
+
+    should_exit = handle_command(
+        "/compact",
+        agent,
+        session_store,
+        session_state,
+    )
+
+    events = session_store.read_events("session-one")
+    assert should_exit is False
+    assert events[0].event_type == "compaction_reported"
+    assert events[0].original_message_count == 1
+    assert events[0].final_message_count == 1
+    assert events[0].original_context_chars == 11
+    assert events[0].final_context_chars == 11
+    assert events[0].snipped_tool_results == 0
+    assert events[0].checkpoint_included is False
+    assert events[0].hard_collapsed is False
 
 
 def test_compact_command_requires_agent(

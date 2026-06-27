@@ -1,3 +1,4 @@
+import os
 import re
 from pathlib import Path
 from time import perf_counter
@@ -26,9 +27,12 @@ from .workspace import resolve_workspace_path
 
 TRACE_PREVIEW_CHARS = 500
 SECRET_PATTERNS = [
-    re.compile(r"(?i)\b(api[_-]?key|token|secret|password)\s*=\s*([^\s]+)"),
-    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}"),
-    re.compile(r"\bsk-[A-Za-z0-9_-]{8,}"),
+    (
+        re.compile(r"(?i)\b(api[_-]?key|token|secret|password)\s*=\s*([^\s]+)"),
+        r"\1=[REDACTED]",
+    ),
+    (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}"), "Bearer [REDACTED]"),
+    (re.compile(r"\bsk-[A-Za-z0-9_-]{8,}"), "[REDACTED_SECRET]"),
 ]
 
 
@@ -536,10 +540,21 @@ class Agent:
 
     def _redact_text(self, text: str) -> str:
         redacted = text
-        redacted = SECRET_PATTERNS[0].sub(r"\1=[REDACTED]", redacted)
-        redacted = SECRET_PATTERNS[1].sub("Bearer [REDACTED]", redacted)
-        redacted = SECRET_PATTERNS[2].sub("[REDACTED_SECRET]", redacted)
+        for pattern, replacement in SECRET_PATTERNS:
+            redacted = pattern.sub(replacement, redacted)
+        for pattern in self._configured_secret_patterns():
+            redacted = pattern.sub("[REDACTED]", redacted)
         return redacted
+
+    def _configured_secret_patterns(self) -> list[re.Pattern[str]]:
+        raw_patterns = os.getenv("AGENT_TRACE_REDACT_PATTERNS", "")
+        patterns: list[re.Pattern[str]] = []
+        for raw_pattern in raw_patterns.splitlines():
+            pattern = raw_pattern.strip()
+            if not pattern:
+                continue
+            patterns.append(re.compile(pattern))
+        return patterns
 
     def _provider_switch_is_safe(self) -> bool:
         if self._current_pending_action() is not None:
