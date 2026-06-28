@@ -17,6 +17,7 @@ from anthropic.types import (
 from agent.provider import (
     AnthropicProviderAdapter,
     OpenAICompatibleProviderAdapter,
+    create_provider_adapter,
     load_provider_config,
 )
 from agent.schemas import ProviderCapabilities, ToolDefinition, ToolResult
@@ -165,7 +166,7 @@ def test_loads_deepseek_provider_config(
     assert config.provider == "deepseek"
     assert config.model == "deepseek-v4-flash"
     assert config.api_key == "deepseek-key"
-    assert config.base_url == "https://api.deepseek.com/anthropic"
+    assert config.base_url == "https://api.deepseek.com"
 
 
 def test_loads_openai_provider_config(
@@ -201,6 +202,21 @@ def test_provider_config_requires_matching_api_key(
 
     with pytest.raises(ValueError, match="DEEPSEEK_API_KEY is not set"):
         load_provider_config(provider="deepseek")
+
+
+def test_deepseek_uses_openai_compatible_adapter() -> None:
+    config = load_provider_config(
+        provider="deepseek",
+        model="deepseek-v4-flash",
+        api_key="deepseek-key",
+    )
+
+    adapter = create_provider_adapter(config)
+
+    assert isinstance(adapter, OpenAICompatibleProviderAdapter)
+    assert adapter.provider == "deepseek"
+    assert adapter.base_url == "https://api.deepseek.com"
+    assert adapter.capabilities.supports_parallel_tool_calls is False
 
 
 def test_anthropic_adapter_normalizes_tool_response() -> None:
@@ -554,6 +570,60 @@ def test_openai_adapter_sends_parallel_tool_call_capability() -> None:
     )
 
     assert fake_client.requests[0]["json"]["parallel_tool_calls"] is False
+
+
+def test_deepseek_adapter_omits_openai_parallel_tool_call_parameter() -> None:
+    fake_client = FakeOpenAIHttpClient(
+        [
+            {
+                "id": "deepseek_test",
+                "model": "deepseek-v4-flash",
+                "choices": [
+                    {
+                        "delta": {"role": "assistant", "content": "Done."},
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "id": "deepseek_test",
+                "model": "deepseek-v4-flash",
+                "choices": [{"delta": {}, "finish_reason": "stop"}],
+            },
+            {
+                "id": "deepseek_test",
+                "model": "deepseek-v4-flash",
+                "choices": [],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 4},
+            },
+        ]
+    )
+    adapter = OpenAICompatibleProviderAdapter(
+        provider="deepseek",
+        model="deepseek-v4-flash",
+        api_key="deepseek-key",
+        base_url="https://api.deepseek.com",
+        http_client=cast(httpx.AsyncClient, fake_client),
+        capabilities=ProviderCapabilities(supports_parallel_tool_calls=False),
+    )
+
+    asyncio.run(
+        adapter.stream_response(
+            system="system prompt",
+            tools=[
+                ToolDefinition(
+                    name="calculator",
+                    description="Calculate.",
+                    input_schema={"type": "object"},
+                )
+            ],
+            messages=[{"role": "user", "content": "Calculate 1 + 1"}],
+        )
+    )
+
+    request = fake_client.requests[0]
+    assert request["url"] == "https://api.deepseek.com/chat/completions"
+    assert "parallel_tool_calls" not in request["json"]
 
 
 def test_openai_adapter_rejects_tools_when_capability_is_disabled() -> None:

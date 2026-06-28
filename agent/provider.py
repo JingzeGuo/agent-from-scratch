@@ -27,7 +27,7 @@ DEFAULT_MODELS: dict[ProviderName, str] = {
 
 DEFAULT_BASE_URLS: dict[ProviderName, str | None] = {
     "anthropic": None,
-    "deepseek": "https://api.deepseek.com/anthropic",
+    "deepseek": "https://api.deepseek.com",
     "openai": "https://api.openai.com/v1",
 }
 
@@ -63,7 +63,7 @@ class ProviderAdapter(Protocol):
 
 
 class AnthropicProviderAdapter:
-    """Adapter for Anthropic-compatible Messages API providers."""
+    """Adapter for Anthropic Messages API."""
 
     def __init__(
         self,
@@ -210,9 +210,10 @@ class OpenAICompatibleProviderAdapter:
         if tools:
             payload["tools"] = self._openai_tools(tools)
             payload["tool_choice"] = "auto"
-            payload["parallel_tool_calls"] = (
-                self.capabilities.supports_parallel_tool_calls
-            )
+            if self.provider == "openai":
+                payload["parallel_tool_calls"] = (
+                    self.capabilities.supports_parallel_tool_calls
+                )
 
         response_data = await self._stream_chat_completions(payload, on_text_delta)
         choice = response_data["choices"][0]
@@ -582,14 +583,17 @@ def create_client(config: ProviderConfig) -> AsyncAnthropic:
 
 
 def create_provider_adapter(config: ProviderConfig) -> ProviderAdapter:
-    if config.provider == "openai":
+    if config.provider in {"deepseek", "openai"}:
         if config.base_url is None:
-            raise ValueError("OPENAI_BASE_URL is not configured")
+            raise ValueError(f"{config.provider.upper()}_BASE_URL is not configured")
         return OpenAICompatibleProviderAdapter(
             provider=config.provider,
             model=config.model,
             api_key=config.api_key,
             base_url=config.base_url,
+            capabilities=ProviderCapabilities(
+                supports_parallel_tool_calls=config.provider == "openai"
+            ),
         )
     return AnthropicProviderAdapter(
         provider=config.provider,
