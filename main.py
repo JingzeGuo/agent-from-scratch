@@ -17,6 +17,8 @@ from agent.workspace import resolve_workspace_path
 COMMANDS = {
     "/help": "Show available commands.",
     "/model": "Show or switch provider and model.",
+    "/tokens": "Show token usage and estimated cost.",
+    "/status": "Show current session and agent state.",
     "/diff": "Show file changes from this session.",
     "/compact": "Show compacted context metrics.",
     "/trace": "Show or export structured trace events.",
@@ -173,6 +175,60 @@ def handle_command(
             return False
 
         print(f"Switched model: {agent.provider}/{agent.model}")
+        return False
+    if command == "/tokens":
+        if agent is None:
+            print("Tokens command is unavailable.")
+            return False
+
+        input_tokens = agent.token_tracker.input_tokens
+        output_tokens = agent.token_tracker.output_tokens
+        total_tokens = input_tokens + output_tokens
+        print(f"Input tokens: {input_tokens}")
+        print(f"Output tokens: {output_tokens}")
+        print(f"Total tokens: {total_tokens}")
+        print(f"Estimated cost: ${agent.token_tracker.estimated_cost:.6f}")
+        return False
+    if command == "/status":
+        if agent is None:
+            print("Status command is unavailable.")
+            return False
+
+        session_id = "[none]" if session_state is None else session_state.session_id
+        session_name = (
+            "[none]"
+            if session_state is None or session_state.session_name is None
+            else session_state.session_name
+        )
+        workspace = (
+            "[none]"
+            if agent.registry.workspace_root is None
+            else agent.registry.workspace_root.as_posix()
+        )
+        pending_action = "[unavailable]"
+        if session_store is not None and session_state is not None:
+            pending = session_store.read_pending_action(session_state.session_id)
+            pending_action = (
+                "none"
+                if pending is None
+                else f"{pending.tool_name} ({pending.tool_use_id})"
+            )
+
+        print("Status:")
+        print(f"  Session: {session_id}")
+        print(f"  Name: {session_name}")
+        print(f"  Workspace: {workspace}")
+        print(f"  Provider: {agent.provider}")
+        print(f"  Model: {agent.model}")
+        print(f"  Max steps: {agent.max_steps}")
+        print(f"  Messages: {len(agent.messages)}")
+        print(f"  Completed runs: {len(agent.completed_runs)}")
+        print(f"  Files read: {len(agent.registry.read_files)}")
+        print(f"  Files changed: {len(agent.registry.changed_files)}")
+        print(f"  Pending action: {pending_action}")
+        print(f"  Input tokens: {agent.token_tracker.input_tokens}")
+        print(f"  Output tokens: {agent.token_tracker.output_tokens}")
+        print(f"  Estimated cost: ${agent.token_tracker.estimated_cost:.6f}")
         return False
     if command == "/diff" or command.startswith("/diff "):
         if agent is None:

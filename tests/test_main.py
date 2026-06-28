@@ -13,6 +13,7 @@ from agent.schemas import (
     PendingAction,
     SessionEvent,
     SessionSnapshot,
+    TokenUsage,
     VerificationEvidence,
 )
 from agent.session import SessionStore, utc_timestamp
@@ -100,6 +101,8 @@ def test_help_lists_available_commands(
         "Available commands:\n"
         "  /help     Show available commands.\n"
         "  /model    Show or switch provider and model.\n"
+        "  /tokens   Show token usage and estimated cost.\n"
+        "  /status   Show current session and agent state.\n"
         "  /diff     Show file changes from this session.\n"
         "  /compact  Show compacted context metrics.\n"
         "  /trace    Show or export structured trace events.\n"
@@ -392,6 +395,102 @@ def test_model_command_switches_provider(
     assert capsys.readouterr().out == (
         "Switched model: deepseek/deepseek-v4-flash\n"
     )
+
+
+def test_tokens_command_shows_usage_and_cost(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    agent = create_agent()
+    agent.token_tracker.add(TokenUsage(input_tokens=1000, output_tokens=200))
+
+    should_exit = handle_command("/tokens", agent)
+
+    assert should_exit is False
+    assert capsys.readouterr().out == (
+        "Input tokens: 1000\n"
+        "Output tokens: 200\n"
+        "Total tokens: 1200\n"
+        "Estimated cost: $0.002000\n"
+    )
+
+
+def test_tokens_command_requires_agent(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    should_exit = handle_command("/tokens")
+
+    assert should_exit is False
+    assert capsys.readouterr().out == "Tokens command is unavailable.\n"
+
+
+def test_status_command_shows_current_agent_state(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    agent = create_agent(tmp_path)
+    session_store = SessionStore(tmp_path / "sessions")
+    session_state = CliSessionState(session_id="session-one", session_name="day16")
+    read_file = tmp_path / "agent.py"
+    changed_file = tmp_path / "tests.py"
+    agent.messages.append({"role": "user", "content": "Fix the bug"})
+    agent.completed_runs.append(
+        AgentRun(
+            objective="Fix the bug",
+            steps=[],
+            termination="completed",
+            final_stop_reason="end_turn",
+            verification=VerificationEvidence(status="not_run"),
+            task_success=None,
+        )
+    )
+    agent.registry.read_files.add(read_file)
+    agent.registry.changed_files.add(changed_file)
+    agent.token_tracker.add(TokenUsage(input_tokens=1000, output_tokens=200))
+    session_store.write_pending_action(
+        PendingAction(
+            session_id="session-one",
+            step_number=1,
+            tool_name="read_file",
+            tool_use_id="toolu_read",
+            tool_input={"path": "agent.py"},
+            started_at="2026-06-28T00:00:00+00:00",
+        )
+    )
+
+    should_exit = handle_command(
+        "/status",
+        agent,
+        session_store,
+        session_state,
+    )
+
+    assert should_exit is False
+    assert capsys.readouterr().out == (
+        "Status:\n"
+        "  Session: session-one\n"
+        "  Name: day16\n"
+        f"  Workspace: {tmp_path.as_posix()}\n"
+        "  Provider: anthropic\n"
+        "  Model: claude-haiku-4-5\n"
+        "  Max steps: 10\n"
+        "  Messages: 1\n"
+        "  Completed runs: 1\n"
+        "  Files read: 1\n"
+        "  Files changed: 1\n"
+        "  Pending action: read_file (toolu_read)\n"
+        "  Input tokens: 1000\n"
+        "  Output tokens: 200\n"
+        "  Estimated cost: $0.002000\n"
+    )
+
+
+def test_status_command_requires_agent(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    should_exit = handle_command("/status")
+
+    assert should_exit is False
+    assert capsys.readouterr().out == "Status command is unavailable.\n"
 
 
 def test_diff_command_shows_session_diff(
