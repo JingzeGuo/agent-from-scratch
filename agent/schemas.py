@@ -10,6 +10,7 @@ RunOutcome = Literal[
     "refused",
     "protocol_error",
 ]
+ToolKind = Literal["pure", "read_only", "write", "command", "network", "delegated"]
 
 
 class CalculatorInput(BaseModel):
@@ -190,6 +191,7 @@ class ToolDefinition(BaseModel):
     name: str
     description: str
     input_schema: dict[str, Any]
+    kind: ToolKind = "read_only"
 
 
 class ToolResult(BaseModel):
@@ -321,6 +323,9 @@ SessionEventType = Literal[
     "run_finished",
     "compaction_reported",
     "tool_schedule_decided",
+    "tool_approval_requested",
+    "tool_approval_granted",
+    "tool_approval_denied",
     "tool_started",
     "tool_finished",
     "sub_agent_started",

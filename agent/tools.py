@@ -16,7 +16,6 @@ import json
 import operator
 import os
 import re
-import shlex
 import subprocess
 import time
 from collections.abc import Callable, Iterator
@@ -24,6 +23,7 @@ from pathlib import Path
 
 import httpx
 
+from .security import classify_command
 from .workspace import resolve_workspace_path
 
 _SKIPPED_DIRS = {".git", ".venv", "node_modules", "build", "dist"}
@@ -231,8 +231,6 @@ def _has_more_text_matches(
 
 _MAX_FILE_BYTES = 100_000  # ~25k tokens worst case
 _MAX_DIFF_CHARS = 20_000
-_BLOCKED_COMMANDS = {"rm", "sudo", "shutdown", "reboot", "halt", "mkfs", "dd"}
-_SHELL_OPERATORS = {"|", "&&", "||", ";", ">", ">>", "<"}
 
 
 def read_file(
@@ -385,9 +383,10 @@ def run_command(
     cwd: str | None = None,
     timeout_seconds: float = 10.0,
     max_output_chars: int = 8000,
+    approval_granted: bool = False,
 ) -> str:
     """Run a bounded command inside the workspace and return its observation."""
-    args = _parse_safe_command(command)
+    args = _parse_safe_command(command, approval_granted)
     command_cwd = _resolve_command_cwd(workspace_root, cwd)
 
     start = time.monotonic()
@@ -421,25 +420,13 @@ def run_command(
         )
 
 
-def _parse_safe_command(command: str) -> list[str]:
-    try:
-        args = shlex.split(command)
-    except ValueError as e:
-        raise ValueError(f"Invalid command syntax: {e}") from e
-
-    if not args:
-        raise ValueError("Command cannot be empty.")
-    if any(operator in args for operator in _SHELL_OPERATORS):
-        raise ValueError("Shell operators are not supported by run_command.")
-    if "$(" in command or "`" in command:
-        raise ValueError("Shell command substitution is not supported by run_command.")
-    if args[0] in _BLOCKED_COMMANDS:
-        raise ValueError(f"Blocked dangerous command: {args[0]}")
-    if args[:3] == ["git", "reset", "--hard"]:
-        raise ValueError("Blocked dangerous command: git reset --hard")
-    if args[:2] == ["git", "clean"]:
-        raise ValueError("Blocked dangerous command: git clean")
-    return args
+def _parse_safe_command(command: str, approval_granted: bool = False) -> list[str]:
+    policy = classify_command(command)
+    if policy.decision == "blocked":
+        raise ValueError(policy.reason)
+    if policy.decision == "requires_approval" and not approval_granted:
+        raise ValueError(policy.reason)
+    return policy.args
 
 
 def _resolve_command_cwd(workspace_root: Path, cwd: str | None) -> Path:

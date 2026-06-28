@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from .schemas import PendingAction, SessionEvent, SessionSnapshot
+from .security import redact_text
 
 SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
@@ -98,8 +99,9 @@ class SessionStore:
         events_dir.mkdir(parents=True, exist_ok=True)
 
         path = self._event_log_path(session_id)
+        safe_event = self._redact_event(event)
         with path.open("a", encoding="utf-8") as file:
-            file.write(event.model_dump_json() + "\n")
+            file.write(safe_event.model_dump_json() + "\n")
         return path
 
     def read_events(self, session_id: str) -> list[SessionEvent]:
@@ -143,3 +145,24 @@ class SessionStore:
                 "letters, numbers, dots, underscores, and hyphens."
             )
         return session_name
+
+    def _redact_event(self, event: SessionEvent) -> SessionEvent:
+        updates: dict[str, object] = {}
+        for field_name in ("text_preview", "output_preview", "message", "objective"):
+            value = getattr(event, field_name)
+            if isinstance(value, str):
+                updates[field_name] = redact_text(value)
+        if event.native_metadata is not None:
+            updates["native_metadata"] = self._redact_value(event.native_metadata)
+        if not updates:
+            return event
+        return event.model_copy(update=updates)
+
+    def _redact_value(self, value: object) -> object:
+        if isinstance(value, str):
+            return redact_text(value)
+        if isinstance(value, list):
+            return [self._redact_value(item) for item in value]
+        if isinstance(value, dict):
+            return {key: self._redact_value(item) for key, item in value.items()}
+        return value

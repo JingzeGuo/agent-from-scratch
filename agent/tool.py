@@ -6,7 +6,7 @@ from anthropic.types import ToolParam
 from pydantic import BaseModel, ValidationError
 
 from .retry import retry
-from .schemas import ToolDefinition
+from .schemas import ToolDefinition, ToolKind
 
 
 @dataclass
@@ -15,6 +15,7 @@ class Tool:
     description: str
     input_schema: type[BaseModel]
     fn: Callable[..., Any]
+    kind: ToolKind = "read_only"
 
     def to_definition(self) -> ToolDefinition:
         """Build a provider-neutral tool definition."""
@@ -24,6 +25,7 @@ class Tool:
             name=self.name,
             description=self.description,
             input_schema=json_schema,
+            kind=self.kind,
         )
 
     def to_anthropic_schema(self) -> ToolParam:
@@ -36,10 +38,21 @@ class Tool:
         }
 
     @retry(max_attempts=3, backoff=2)
-    def _run(self, parsed_input: BaseModel) -> Any:
-        return self.fn(**parsed_input.model_dump())
+    def _run(
+        self,
+        parsed_input: BaseModel,
+        extra_kwargs: dict[str, Any] | None = None,
+    ) -> Any:
+        kwargs = parsed_input.model_dump()
+        if extra_kwargs is not None:
+            kwargs.update(extra_kwargs)
+        return self.fn(**kwargs)
 
-    def execute(self, raw_input: dict[str, Any]) -> tuple[str, bool]:
+    def execute(
+        self,
+        raw_input: dict[str, Any],
+        extra_kwargs: dict[str, Any] | None = None,
+    ) -> tuple[str, bool]:
         try:
             parsed = self.input_schema(**raw_input)
         except ValidationError as e:
@@ -49,7 +62,7 @@ class Tool:
                 error_lines.append(f"  - field '{field}': {err['msg']}")
             return "\n".join(error_lines), True
         try:
-            result = self._run(parsed)
+            result = self._run(parsed, extra_kwargs)
             return str(result), False
         except Exception as e:
             return f"Tool '{self.name}' raised {type(e).__name__}: {e}", True

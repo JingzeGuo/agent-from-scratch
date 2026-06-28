@@ -544,6 +544,12 @@ def test_sub_agent_is_registered_with_read_only_profile(tmp_path: Path) -> None:
     definitions = {tool.name: tool for tool in registry.to_tool_definitions()}
 
     assert "sub_agent" in definitions
+    assert definitions["calculator"].kind == "pure"
+    assert definitions["read_file"].kind == "read_only"
+    assert definitions["edit_file"].kind == "write"
+    assert definitions["run_command"].kind == "command"
+    assert definitions["sub_agent"].kind == "delegated"
+    assert definitions["fetch_url"].kind == "network"
     assert definitions["sub_agent"].input_schema["properties"]["profile"] == {
         "const": "read_only_explorer",
         "default": "read_only_explorer",
@@ -758,47 +764,52 @@ def test_get_diff_rejects_unchanged_path(tmp_path: Path) -> None:
 
 
 def test_run_command_returns_success_result(tmp_path: Path) -> None:
+    target = tmp_path / "module.py"
+    target.write_text("print('ok')\n", encoding="utf-8")
     registry = create_registry(tmp_path)
 
     output, is_error = registry.execute(
         "run_command",
-        {"command": f"{shlex.quote(sys.executable)} -c \"print('ok')\""},
+        {"command": f"{shlex.quote(sys.executable)} -m py_compile module.py"},
     )
 
     assert "exit_code: 0" in output
     assert "timed_out: false" in output
-    assert "stdout:\nok" in output
+    assert "stdout:\n[empty]" in output
     assert "stderr:\n[empty]" in output
     assert is_error is False
 
 
 def test_run_command_returns_failure_exit_code(tmp_path: Path) -> None:
+    target = tmp_path / "module.py"
+    target.write_text("def broken(:\n", encoding="utf-8")
     registry = create_registry(tmp_path)
 
     output, is_error = registry.execute(
         "run_command",
-        {
-            "command": (
-                f"{shlex.quote(sys.executable)} -c "
-                "\"import sys; print('bad'); print('err', file=sys.stderr); sys.exit(3)\""
-            )
-        },
+        {"command": f"{shlex.quote(sys.executable)} -m py_compile module.py"},
     )
 
-    assert "exit_code: 3" in output
+    assert "exit_code: 1" in output
     assert "timed_out: false" in output
-    assert "stdout:\nbad" in output
-    assert "stderr:\nerr" in output
+    assert "SyntaxError" in output
     assert is_error is False
 
 
 def test_run_command_times_out(tmp_path: Path) -> None:
+    test_file = tmp_path / "test_slow.py"
+    test_file.write_text(
+        "import time\n\n"
+        "def test_slow():\n"
+        "    time.sleep(5)\n",
+        encoding="utf-8",
+    )
     registry = create_registry(tmp_path)
 
     output, is_error = registry.execute(
         "run_command",
         {
-            "command": f"{shlex.quote(sys.executable)} -c \"import time; time.sleep(1)\"",
+            "command": f"{shlex.quote(sys.executable)} -m pytest test_slow.py",
             "timeout_seconds": 0.1,
         },
     )
@@ -809,18 +820,24 @@ def test_run_command_times_out(tmp_path: Path) -> None:
 
 
 def test_run_command_truncates_long_output(tmp_path: Path) -> None:
+    test_file = tmp_path / "test_long_output.py"
+    test_file.write_text(
+        "def test_long_output():\n"
+        "    assert False, 'x' * 250\n",
+        encoding="utf-8",
+    )
     registry = create_registry(tmp_path)
 
     output, is_error = registry.execute(
         "run_command",
         {
-            "command": f"{shlex.quote(sys.executable)} -c \"print('x' * 250)\"",
+            "command": f"{shlex.quote(sys.executable)} -m pytest test_long_output.py",
             "max_output_chars": 200,
         },
     )
 
     assert "[... truncated" in output
-    assert "exit_code: 0" in output
+    assert "exit_code: 1" in output
     assert is_error is False
 
 
@@ -836,23 +853,48 @@ def test_run_command_rejects_dangerous_command(tmp_path: Path) -> None:
     assert is_error is True
 
 
+def test_run_command_requires_approval_for_arbitrary_python(tmp_path: Path) -> None:
+    registry = create_registry(tmp_path)
+
+    output, is_error = registry.execute(
+        "run_command",
+        {"command": f"{shlex.quote(sys.executable)} -c \"print('needs approval')\""},
+    )
+
+    assert "requires approval" in output
+    assert "broad side effects" in output
+    assert is_error is True
+
+
+def test_run_command_executes_after_approval(tmp_path: Path) -> None:
+    registry = create_registry(tmp_path)
+
+    output, is_error = registry.execute(
+        "run_command",
+        {"command": f"{shlex.quote(sys.executable)} -c \"print('approved')\""},
+        approval_granted=True,
+    )
+
+    assert "exit_code: 0" in output
+    assert "stdout:\napproved" in output
+    assert is_error is False
+
+
 def test_run_command_uses_workspace_relative_cwd(tmp_path: Path) -> None:
     subdir = tmp_path / "package"
     subdir.mkdir()
+    (subdir / "module.py").write_text("value = 1\n", encoding="utf-8")
     registry = create_registry(tmp_path)
 
     output, is_error = registry.execute(
         "run_command",
         {
-            "command": (
-                f"{shlex.quote(sys.executable)} -c "
-                "\"from pathlib import Path; print(Path.cwd().name)\""
-            ),
+            "command": f"{shlex.quote(sys.executable)} -m py_compile module.py",
             "cwd": "package",
         },
     )
 
-    assert "stdout:\npackage" in output
+    assert "exit_code: 0" in output
     assert is_error is False
 
 
@@ -860,12 +902,13 @@ def test_run_command_rejects_cwd_outside_workspace(tmp_path: Path) -> None:
     workspace_root = tmp_path / "project"
     workspace_root.mkdir()
     (tmp_path / "outside").mkdir()
+    (workspace_root / "module.py").write_text("value = 1\n", encoding="utf-8")
     registry = create_registry(workspace_root)
 
     output, is_error = registry.execute(
         "run_command",
         {
-            "command": f"{shlex.quote(sys.executable)} -c \"print('nope')\"",
+            "command": f"{shlex.quote(sys.executable)} -m py_compile module.py",
             "cwd": "../outside",
         },
     )

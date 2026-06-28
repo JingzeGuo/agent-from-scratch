@@ -9,7 +9,8 @@ from pydantic import BaseModel
 
 from agent.agent import Agent
 from agent.provider import create_provider_adapter, load_provider_config
-from agent.schemas import SessionEvent
+from agent.schemas import SessionEvent, ToolCall
+from agent.security import CommandPolicyResult
 from agent.session import SessionStore, utc_timestamp
 from agent.setup import create_registry
 from agent.workspace import resolve_workspace_path
@@ -156,6 +157,27 @@ def report_interrupted_action(
     )
     session_store.clear_pending_action(session_id)
     print(message)
+
+
+def prompt_tool_approval(
+    tool_call: ToolCall,
+    policy: CommandPolicyResult,
+) -> bool:
+    raw_command = tool_call.input.get("command")
+    command = raw_command if isinstance(raw_command, str) else "[unknown]"
+    print("\nApproval required:")
+    print(f"  Tool: {tool_call.name}")
+    print(f"  Reason: {policy.reason}")
+    print(f"  Command: {command}")
+    answer = input("Approve command? [y/N]: ").strip().lower()
+    return answer in {"y", "yes"}
+
+
+def deny_tool_approval(
+    tool_call: ToolCall,
+    policy: CommandPolicyResult,
+) -> bool:
+    return False
 
 
 def handle_command(
@@ -451,6 +473,10 @@ async def main(argv: Sequence[str] | None = None) -> None:
         model=config.model,
         provider=config.provider,
     )
+    if cli_args.one_shot_task is None:
+        agent.configure_approval_callback(prompt_tool_approval)
+    else:
+        agent.configure_approval_callback(deny_tool_approval)
     session_state = CliSessionState(session_id=generate_session_id())
     if cli_args.resume_session_id is not None:
         snapshot = session_store.find(cli_args.resume_session_id)

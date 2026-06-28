@@ -16,8 +16,10 @@ from agent.schemas import (
     SessionEvent,
     SessionSnapshot,
     TokenUsage,
+    ToolCall,
     VerificationEvidence,
 )
+from agent.security import classify_command
 from agent.session import SessionStore, utc_timestamp
 from agent.tool import Tool
 from agent.tool_registry import ToolRegistry
@@ -30,6 +32,7 @@ from main import (
     handle_command,
     parse_cli_args,
     parse_one_shot_task,
+    prompt_tool_approval,
     report_interrupted_action,
     run_cli,
 )
@@ -123,6 +126,42 @@ def test_exit_requests_cli_exit(
 
     assert should_exit is True
     assert capsys.readouterr().out == "Goodbye.\n"
+
+
+def test_prompt_tool_approval_accepts_yes(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    tool_call = ToolCall(
+        name="run_command",
+        input={"command": "python -c \"print('ok')\""},
+        tool_use_id="toolu_command",
+    )
+    policy = classify_command("python -c \"print('ok')\"")
+    monkeypatch.setattr("builtins.input", lambda prompt: "yes")
+
+    approved = prompt_tool_approval(tool_call, policy)
+
+    assert approved is True
+    output = capsys.readouterr().out
+    assert "Approval required:" in output
+    assert "Command: python -c" in output
+
+
+def test_prompt_tool_approval_rejects_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool_call = ToolCall(
+        name="run_command",
+        input={"command": "python -c \"print('ok')\""},
+        tool_use_id="toolu_command",
+    )
+    policy = classify_command("python -c \"print('ok')\"")
+    monkeypatch.setattr("builtins.input", lambda prompt: "")
+
+    approved = prompt_tool_approval(tool_call, policy)
+
+    assert approved is False
 
 
 def test_unknown_command_shows_help_hint(

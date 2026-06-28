@@ -163,6 +163,25 @@ def test_session_store_appends_and_reads_events(tmp_path: Path) -> None:
     assert store.list_snapshots() == []
 
 
+def test_session_store_redacts_secret_like_event_fields(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    event = SessionEvent(
+        event_type="tool_finished",
+        session_id="session-one",
+        created_at="2026-06-25T00:00:00+00:00",
+        output_preview="api_key=sk-secret123456 token=plain-secret",
+        native_metadata={"header": "Bearer abcdefghijklmnop"},
+    )
+
+    store.append_event(event)
+
+    [stored] = store.read_events("session-one")
+    assert "sk-secret123456" not in (stored.output_preview or "")
+    assert "plain-secret" not in (stored.output_preview or "")
+    assert stored.output_preview == "api_key=[REDACTED] token=[REDACTED]"
+    assert stored.native_metadata == {"header": "Bearer [REDACTED]"}
+
+
 def test_session_store_creates_session_directory(tmp_path: Path) -> None:
     sessions_dir = tmp_path / "missing" / "sessions"
     store = SessionStore(sessions_dir)

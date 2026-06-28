@@ -4,6 +4,7 @@ from typing import Any
 from anthropic.types import ToolParam
 
 from .schemas import ToolDefinition
+from .security import classify_command
 from .tool import Tool
 from .tools import _build_unified_diff
 from .workspace import resolve_workspace_path
@@ -30,6 +31,8 @@ class ToolRegistry:
         self,
         name: str,
         raw_input: dict[str, Any],
+        *,
+        approval_granted: bool = False,
     ) -> tuple[str, bool]:
         tool = self.tools.get(name)
         if tool is None:
@@ -43,9 +46,18 @@ class ToolRegistry:
             error = self._validate_write_allowed(raw_input)
             if error is not None:
                 return error, True
+        if name == "run_command":
+            error = self._validate_command_allowed(raw_input, approval_granted)
+            if error is not None:
+                return error, True
 
         original_snapshot = self._snapshot_before_mutation(name, raw_input)
-        output, is_error = tool.execute(raw_input)
+        extra_kwargs = (
+            {"approval_granted": True}
+            if name == "run_command" and approval_granted
+            else None
+        )
+        output, is_error = tool.execute(raw_input, extra_kwargs)
         if not is_error:
             self._record_successful_file_action(name, raw_input, original_snapshot)
         return output, is_error
@@ -105,6 +117,29 @@ class ToolRegistry:
         if isinstance(value, str):
             return value.lower() in {"1", "true", "yes", "on"}
         return False
+
+    def _validate_command_allowed(
+        self,
+        raw_input: dict[str, Any],
+        approval_granted: bool,
+    ) -> str | None:
+        raw_command = raw_input.get("command")
+        if not isinstance(raw_command, str):
+            return None
+        try:
+            policy = classify_command(raw_command)
+        except ValueError as e:
+            return f"Tool 'run_command' raised ValueError: {e}"
+        if policy.decision == "allowed":
+            return None
+        if approval_granted and policy.decision == "requires_approval":
+            return None
+        if policy.decision == "blocked":
+            return f"Tool 'run_command' raised ValueError: {policy.reason}"
+        return (
+            "Tool 'run_command' requires approval: "
+            f"{policy.reason} Command: {raw_command}"
+        )
 
     def _snapshot_before_mutation(
         self,

@@ -1,7 +1,9 @@
 import asyncio
 import json
+import shlex
 import sys
 from collections.abc import Callable, Sequence
+from functools import partial
 from pathlib import Path
 from threading import Event
 from typing import Any, cast
@@ -31,6 +33,7 @@ from agent.schemas import (
     ProviderCapabilities,
     ProviderResponse,
     ReadFileInput,
+    RunCommandInput,
     SearchWebInput,
     TokenUsage,
     ToolCall,
@@ -42,7 +45,7 @@ from agent.session import SessionStore
 from agent.setup import create_registry as create_workspace_registry
 from agent.tool import Tool
 from agent.tool_registry import ToolRegistry
-from agent.tools import calculator
+from agent.tools import calculator, run_command
 
 
 class FakeMessages:
@@ -247,6 +250,20 @@ def create_registry() -> ToolRegistry:
             description="Calculate an expression.",
             input_schema=CalculatorInput,
             fn=calculator,
+        )
+    )
+    return registry
+
+
+def create_command_registry(workspace_root: Path) -> ToolRegistry:
+    registry = ToolRegistry(workspace_root)
+    registry.register(
+        Tool(
+            name="run_command",
+            description="Run a bounded command.",
+            input_schema=RunCommandInput,
+            fn=partial(run_command, workspace_root=workspace_root),
+            kind="command",
         )
     )
     return registry
@@ -727,6 +744,83 @@ def test_failed_command_followed_by_repair_and_passing_command(
     assert agent_run.verification.command == command
     assert agent_run.verification.exit_code == 0
     assert agent_run.task_success is None
+
+
+def test_agent_runs_approved_command_requiring_approval(tmp_path: Path) -> None:
+    command = f"{shlex.quote(sys.executable)} -c \"print('approved')\""
+    registry = create_command_registry(tmp_path)
+    responses = [
+        make_message(
+            content=[
+                ToolUseBlock(
+                    id="toolu_command",
+                    name="run_command",
+                    input={"command": command},
+                    type="tool_use",
+                )
+            ],
+            stop_reason="tool_use",
+        ),
+        make_message(
+            content=[TextBlock(text="Command ran.", type="text")],
+            stop_reason="end_turn",
+        ),
+    ]
+    agent, _ = create_agent(responses, registry=registry)
+    agent.configure_approval_callback(lambda tool_call, policy: True)
+    session_store = SessionStore(tmp_path / "sessions")
+    agent.configure_session_recording(session_store, "session-one")
+
+    agent_run = asyncio.run(agent.run("Run an approved command"))
+
+    tool_result = agent_run.steps[0].tool_results[0]
+    events = session_store.read_events("session-one")
+    assert tool_result.is_error is False
+    assert "stdout:\napproved" in tool_result.content
+    assert [
+        event.event_type
+        for event in events
+        if event.event_type.startswith("tool_approval")
+    ] == ["tool_approval_requested", "tool_approval_granted"]
+    assert "tool_started" in [event.event_type for event in events]
+
+
+def test_agent_denies_command_requiring_approval_by_default(tmp_path: Path) -> None:
+    command = f"{shlex.quote(sys.executable)} -c \"print('denied')\""
+    registry = create_command_registry(tmp_path)
+    responses = [
+        make_message(
+            content=[
+                ToolUseBlock(
+                    id="toolu_command",
+                    name="run_command",
+                    input={"command": command},
+                    type="tool_use",
+                )
+            ],
+            stop_reason="tool_use",
+        ),
+        make_message(
+            content=[TextBlock(text="Command was not approved.", type="text")],
+            stop_reason="end_turn",
+        ),
+    ]
+    agent, _ = create_agent(responses, registry=registry)
+    session_store = SessionStore(tmp_path / "sessions")
+    agent.configure_session_recording(session_store, "session-one")
+
+    agent_run = asyncio.run(agent.run("Run an unapproved command"))
+
+    tool_result = agent_run.steps[0].tool_results[0]
+    events = session_store.read_events("session-one")
+    assert tool_result.is_error is True
+    assert "approval denied" in tool_result.content
+    assert [
+        event.event_type
+        for event in events
+        if event.event_type.startswith("tool_approval")
+    ] == ["tool_approval_requested", "tool_approval_denied"]
+    assert "tool_started" not in [event.event_type for event in events]
 
 
 def test_agent_recovers_from_failed_edit(

@@ -1,6 +1,5 @@
 import asyncio
-import os
-import re
+from collections.abc import Callable
 from pathlib import Path
 from time import perf_counter
 from typing import Any, cast
@@ -18,12 +17,14 @@ from .schemas import (
     PendingAction,
     RunOutcome,
     SessionEvent,
+    SessionEventType,
     SessionSnapshot,
     SubAgentInput,
     TokenUsage,
     ToolCall,
     ToolResult,
 )
+from .security import CommandPolicyResult, classify_command, redact_text
 from .session import SessionStore, utc_timestamp
 from .setup import create_read_only_registry
 from .token_tracker import TokenTracker
@@ -40,14 +41,7 @@ PARALLEL_READ_ONLY_TOOLS = {
     "search_text",
     "get_diff",
 }
-SECRET_PATTERNS = [
-    (
-        re.compile(r"(?i)\b(api[_-]?key|token|secret|password)\s*=\s*([^\s]+)"),
-        r"\1=[REDACTED]",
-    ),
-    (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}"), "Bearer [REDACTED]"),
-    (re.compile(r"\bsk-[A-Za-z0-9_-]{8,}"), "[REDACTED_SECRET]"),
-]
+ApprovalCallback = Callable[[ToolCall, CommandPolicyResult], bool]
 
 
 def format_tool_activity(tool_call: ToolCall) -> str:
@@ -78,6 +72,7 @@ class Agent:
         provider: str | None = None,
         max_steps: int = 10,
         stream_output: bool = True,
+        approval_callback: ApprovalCallback | None = None,
     ) -> None:
         self.provider_adapter = provider_adapter
         self.registry = registry
@@ -85,6 +80,7 @@ class Agent:
         self.provider = provider_adapter.provider if provider is None else provider
         self.max_steps = max_steps
         self.stream_output = stream_output
+        self.approval_callback = approval_callback
         self.messages: list[dict[str, Any]] = []
         self.steps: list[AgentStep] = []
         self.completed_runs: list[AgentRun] = []
@@ -103,7 +99,9 @@ class Agent:
         provider_adapter: ProviderAdapter,
     ) -> None:
         if not self._provider_switch_is_safe():
-            raise ValueError("Cannot switch provider during an incomplete tool exchange.")
+            raise ValueError(
+                "Cannot switch provider during an incomplete tool exchange."
+            )
         self._validate_provider_capabilities(provider_adapter)
         self.token_tracker.switch_model(provider_adapter.model)
         self.provider_adapter = provider_adapter
@@ -117,6 +115,12 @@ class Agent:
     ) -> None:
         self.session_store = session_store
         self.session_id = session_id
+
+    def configure_approval_callback(
+        self,
+        approval_callback: ApprovalCallback | None,
+    ) -> None:
+        self.approval_callback = approval_callback
 
     def build_context_result(self, objective: str | None = None) -> ContextBuildResult:
         return self.context_builder.build_with_metadata(
@@ -315,7 +319,9 @@ class Agent:
                     final_stop_reason=response.stop_reason,
                 )
 
-            self.messages.append(self.provider_adapter.tool_result_message(tool_results))
+            self.messages.append(
+                self.provider_adapter.tool_result_message(tool_results)
+            )
         print(f"Agent reached the {self.max_steps}-step limit. Task stopped.")
         return self._finish_run(
             run_id=run_id,
@@ -543,6 +549,30 @@ class Agent:
         step_number: int,
         tool_call: ToolCall,
     ) -> ToolResult:
+        approval = self._required_approval(tool_call)
+        if approval is not None:
+            approved = self._request_tool_approval(
+                run_id=run_id,
+                step_number=step_number,
+                tool_call=tool_call,
+                policy=approval,
+            )
+            if not approved:
+                output = self._format_approval_denied(tool_call, approval)
+                self._record_tool_finished(
+                    run_id=run_id,
+                    step_number=step_number,
+                    tool_call=tool_call,
+                    is_error=True,
+                    output=output,
+                    latency_ms=0.0,
+                )
+                return ToolResult(
+                    tool_use_id=tool_call.tool_use_id,
+                    content=output,
+                    is_error=True,
+                )
+
         self._record_tool_started(
             run_id=run_id,
             step_number=step_number,
@@ -559,7 +589,10 @@ class Agent:
             )
             latency_ms = (perf_counter() - tool_started) * 1000
         else:
-            _, output, is_error, latency_ms = self._run_tool_call(tool_call)
+            _, output, is_error, latency_ms = self._run_tool_call(
+                tool_call,
+                approval_granted=approval is not None,
+            )
         self._record_tool_finished(
             run_id=run_id,
             step_number=step_number,
@@ -586,7 +619,10 @@ class Agent:
             return self._format_tool_validation_error("sub_agent", e), True
 
         if self.registry.workspace_root is None:
-            return "Tool 'sub_agent' raised ValueError: Workspace root is required.", True
+            return (
+                "Tool 'sub_agent' raised ValueError: Workspace root is required.",
+                True,
+            )
 
         self._record_sub_agent_started(
             run_id=run_id,
@@ -716,18 +752,106 @@ class Agent:
                 step_count=len(child_run.steps),
                 input_tokens=child_agent.token_tracker.input_tokens,
                 output_tokens=child_agent.token_tracker.output_tokens,
-                text_preview=self._preview_text(self._sub_agent_final_answer(child_run)),
+                text_preview=self._preview_text(
+                    self._sub_agent_final_answer(child_run)
+                ),
             )
         )
 
-    def _run_tool_call(self, tool_call: ToolCall) -> tuple[ToolCall, str, bool, float]:
+    def _run_tool_call(
+        self,
+        tool_call: ToolCall,
+        *,
+        approval_granted: bool = False,
+    ) -> tuple[ToolCall, str, bool, float]:
         tool_started = perf_counter()
         output, is_error = self.registry.execute(
             tool_call.name,
             tool_call.input,
+            approval_granted=approval_granted,
         )
         tool_latency_ms = (perf_counter() - tool_started) * 1000
         return tool_call, output, is_error, tool_latency_ms
+
+    def _required_approval(
+        self,
+        tool_call: ToolCall,
+    ) -> CommandPolicyResult | None:
+        if tool_call.name != "run_command":
+            return None
+        raw_command = tool_call.input.get("command")
+        if not isinstance(raw_command, str):
+            return None
+        try:
+            policy = classify_command(raw_command)
+        except ValueError:
+            return None
+        if policy.decision != "requires_approval":
+            return None
+        return policy
+
+    def _request_tool_approval(
+        self,
+        *,
+        run_id: str,
+        step_number: int,
+        tool_call: ToolCall,
+        policy: CommandPolicyResult,
+    ) -> bool:
+        self._record_tool_approval_event(
+            event_type="tool_approval_requested",
+            run_id=run_id,
+            step_number=step_number,
+            tool_call=tool_call,
+            policy=policy,
+        )
+        approved = False
+        if self.approval_callback is not None:
+            approved = self.approval_callback(tool_call, policy)
+        self._record_tool_approval_event(
+            event_type="tool_approval_granted" if approved else "tool_approval_denied",
+            run_id=run_id,
+            step_number=step_number,
+            tool_call=tool_call,
+            policy=policy,
+        )
+        return approved
+
+    def _record_tool_approval_event(
+        self,
+        *,
+        event_type: SessionEventType,
+        run_id: str,
+        step_number: int,
+        tool_call: ToolCall,
+        policy: CommandPolicyResult,
+    ) -> None:
+        raw_command = tool_call.input.get("command")
+        command = raw_command if isinstance(raw_command, str) else "[unknown]"
+        self._append_session_event(
+            SessionEvent(
+                event_type=event_type,
+                session_id=self.session_id or "",
+                created_at=utc_timestamp(),
+                run_id=run_id,
+                step_number=step_number,
+                tool_name=tool_call.name,
+                tool_use_id=tool_call.tool_use_id,
+                message=f"{policy.reason} Command: {command}",
+            )
+        )
+
+    def _format_approval_denied(
+        self,
+        tool_call: ToolCall,
+        policy: CommandPolicyResult,
+    ) -> str:
+        raw_command = tool_call.input.get("command")
+        command = raw_command if isinstance(raw_command, str) else "[unknown]"
+        return (
+            f"Tool '{tool_call.name}' approval denied: "
+            f"{policy.reason} Command: {command}"
+        )
 
     def _can_execute_tool_calls_concurrently(
         self,
@@ -839,28 +963,10 @@ class Agent:
         return self.session_store.read_pending_action(self.session_id)
 
     def _preview_text(self, text: str) -> str:
-        redacted = self._redact_text(text)
+        redacted = redact_text(text)
         if len(redacted) <= TRACE_PREVIEW_CHARS:
             return redacted
         return redacted[:TRACE_PREVIEW_CHARS] + "... [truncated]"
-
-    def _redact_text(self, text: str) -> str:
-        redacted = text
-        for pattern, replacement in SECRET_PATTERNS:
-            redacted = pattern.sub(replacement, redacted)
-        for pattern in self._configured_secret_patterns():
-            redacted = pattern.sub("[REDACTED]", redacted)
-        return redacted
-
-    def _configured_secret_patterns(self) -> list[re.Pattern[str]]:
-        raw_patterns = os.getenv("AGENT_TRACE_REDACT_PATTERNS", "")
-        patterns: list[re.Pattern[str]] = []
-        for raw_pattern in raw_patterns.splitlines():
-            pattern = raw_pattern.strip()
-            if not pattern:
-                continue
-            patterns.append(re.compile(pattern))
-        return patterns
 
     def _provider_switch_is_safe(self) -> bool:
         if self._current_pending_action() is not None:
