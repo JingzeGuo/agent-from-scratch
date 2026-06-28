@@ -1382,6 +1382,8 @@ def test_sub_agent_runs_with_isolated_read_only_context(
     )
     registry = create_workspace_registry(tmp_path)
     agent = Agent(provider_adapter=adapter, registry=registry)
+    session_store = SessionStore(tmp_path / "sessions")
+    agent.configure_session_recording(session_store, "session-one")
     agent.messages.append({"role": "user", "content": "Parent-only history."})
 
     agent_run = asyncio.run(agent.run("Delegate exploration"))
@@ -1408,6 +1410,28 @@ def test_sub_agent_runs_with_isolated_read_only_context(
     assert "Parent-only history" not in str(child_request["messages"])
     assert agent.token_tracker.input_tokens == 29
     assert agent.token_tracker.output_tokens == 12
+    sub_agent_events = [
+        event
+        for event in session_store.read_events("session-one")
+        if event.event_type in {"sub_agent_started", "sub_agent_finished"}
+    ]
+    assert [event.event_type for event in sub_agent_events] == [
+        "sub_agent_started",
+        "sub_agent_finished",
+    ]
+    assert sub_agent_events[0].run_id == agent_run.run_id
+    assert sub_agent_events[0].tool_use_id == "call_sub_agent"
+    assert sub_agent_events[0].objective == "Find session resume code."
+    assert sub_agent_events[0].step_count == 2
+    assert sub_agent_events[0].message == "profile: read_only_explorer"
+    assert sub_agent_events[1].run_id == agent_run.run_id
+    assert sub_agent_events[1].tool_use_id == "call_sub_agent"
+    assert sub_agent_events[1].child_run_id is not None
+    assert sub_agent_events[1].termination == "completed"
+    assert sub_agent_events[1].step_count == 1
+    assert sub_agent_events[1].input_tokens == 7
+    assert sub_agent_events[1].output_tokens == 3
+    assert sub_agent_events[1].text_preview == "Relevant files: agent/session.py."
     assert capsys.readouterr().out == "Running sub_agent\nDone.\n"
 
 

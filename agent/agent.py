@@ -552,7 +552,11 @@ class Agent:
             print(format_tool_activity(tool_call))
         if tool_call.name == "sub_agent":
             tool_started = perf_counter()
-            output, is_error = await self._run_sub_agent_tool(tool_call)
+            output, is_error = await self._run_sub_agent_tool(
+                run_id=run_id,
+                step_number=step_number,
+                tool_call=tool_call,
+            )
             latency_ms = (perf_counter() - tool_started) * 1000
         else:
             _, output, is_error, latency_ms = self._run_tool_call(tool_call)
@@ -570,7 +574,12 @@ class Agent:
             is_error=is_error,
         )
 
-    async def _run_sub_agent_tool(self, tool_call: ToolCall) -> tuple[str, bool]:
+    async def _run_sub_agent_tool(
+        self,
+        run_id: str,
+        step_number: int,
+        tool_call: ToolCall,
+    ) -> tuple[str, bool]:
         try:
             parsed_input = SubAgentInput(**tool_call.input)
         except ValidationError as e:
@@ -579,6 +588,12 @@ class Agent:
         if self.registry.workspace_root is None:
             return "Tool 'sub_agent' raised ValueError: Workspace root is required.", True
 
+        self._record_sub_agent_started(
+            run_id=run_id,
+            step_number=step_number,
+            tool_call=tool_call,
+            parsed_input=parsed_input,
+        )
         child_registry = create_read_only_registry(self.registry.workspace_root)
         child_agent = Agent(
             provider_adapter=self.provider_adapter,
@@ -594,6 +609,13 @@ class Agent:
                 input_tokens=child_agent.token_tracker.input_tokens,
                 output_tokens=child_agent.token_tracker.output_tokens,
             )
+        )
+        self._record_sub_agent_finished(
+            run_id=run_id,
+            step_number=step_number,
+            tool_call=tool_call,
+            child_run=child_run,
+            child_agent=child_agent,
         )
         return self._format_sub_agent_result(
             profile=parsed_input.profile,
@@ -647,6 +669,55 @@ class Agent:
         return (
             result[:SUB_AGENT_RESULT_CHARS].rstrip()
             + f"\n[truncated after {SUB_AGENT_RESULT_CHARS} chars]"
+        )
+
+    def _record_sub_agent_started(
+        self,
+        run_id: str,
+        step_number: int,
+        tool_call: ToolCall,
+        parsed_input: SubAgentInput,
+    ) -> None:
+        self._append_session_event(
+            SessionEvent(
+                event_type="sub_agent_started",
+                session_id=self.session_id or "",
+                created_at=utc_timestamp(),
+                run_id=run_id,
+                step_number=step_number,
+                tool_name=tool_call.name,
+                tool_use_id=tool_call.tool_use_id,
+                objective=parsed_input.task,
+                step_count=parsed_input.max_steps,
+                message=f"profile: {parsed_input.profile}",
+            )
+        )
+
+    def _record_sub_agent_finished(
+        self,
+        run_id: str,
+        step_number: int,
+        tool_call: ToolCall,
+        child_run: AgentRun,
+        child_agent: "Agent",
+    ) -> None:
+        self._append_session_event(
+            SessionEvent(
+                event_type="sub_agent_finished",
+                session_id=self.session_id or "",
+                created_at=utc_timestamp(),
+                run_id=run_id,
+                step_number=step_number,
+                tool_name=tool_call.name,
+                tool_use_id=tool_call.tool_use_id,
+                child_run_id=child_run.run_id,
+                termination=child_run.termination,
+                final_stop_reason=child_run.final_stop_reason,
+                step_count=len(child_run.steps),
+                input_tokens=child_agent.token_tracker.input_tokens,
+                output_tokens=child_agent.token_tracker.output_tokens,
+                text_preview=self._preview_text(self._sub_agent_final_answer(child_run)),
+            )
         )
 
     def _run_tool_call(self, tool_call: ToolCall) -> tuple[ToolCall, str, bool, float]:
