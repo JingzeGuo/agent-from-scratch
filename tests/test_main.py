@@ -9,6 +9,7 @@ from agent.agent import Agent
 from agent.provider import AnthropicProviderAdapter
 from agent.schemas import (
     AgentRun,
+    AgentStep,
     CalculatorInput,
     PendingAction,
     SessionEvent,
@@ -103,6 +104,7 @@ def test_help_lists_available_commands(
         "  /model    Show or switch provider and model.\n"
         "  /tokens   Show token usage and estimated cost.\n"
         "  /status   Show current session and agent state.\n"
+        "  /reset    Clear the current conversation context.\n"
         "  /diff     Show file changes from this session.\n"
         "  /compact  Show compacted context metrics.\n"
         "  /trace    Show or export structured trace events.\n"
@@ -491,6 +493,50 @@ def test_status_command_requires_agent(
 
     assert should_exit is False
     assert capsys.readouterr().out == "Status command is unavailable.\n"
+
+
+def test_reset_command_clears_conversation_context_only(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    agent = create_agent(tmp_path)
+    read_file = tmp_path / "agent.py"
+    changed_file = tmp_path / "tests.py"
+    agent.messages.append({"role": "user", "content": "Previous task"})
+    agent.steps.append(AgentStep(step_number=1, stop_reason="end_turn"))
+    completed_run = AgentRun(
+        objective="Previous task",
+        steps=[],
+        termination="completed",
+        final_stop_reason="end_turn",
+        verification=VerificationEvidence(status="not_run"),
+        task_success=None,
+    )
+    agent.completed_runs.append(completed_run)
+    agent.registry.read_files.add(read_file)
+    agent.registry.changed_files.add(changed_file)
+    agent.token_tracker.add(TokenUsage(input_tokens=1000, output_tokens=200))
+
+    should_exit = handle_command("/reset", agent)
+
+    assert should_exit is False
+    assert agent.messages == []
+    assert agent.steps == []
+    assert agent.completed_runs == [completed_run]
+    assert agent.registry.read_files == {read_file}
+    assert agent.registry.changed_files == {changed_file}
+    assert agent.token_tracker.input_tokens == 1000
+    assert agent.token_tracker.output_tokens == 200
+    assert capsys.readouterr().out == "Conversation context reset.\n"
+
+
+def test_reset_command_requires_agent(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    should_exit = handle_command("/reset")
+
+    assert should_exit is False
+    assert capsys.readouterr().out == "Reset command is unavailable.\n"
 
 
 def test_diff_command_shows_session_diff(

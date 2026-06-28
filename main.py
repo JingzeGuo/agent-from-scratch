@@ -19,6 +19,7 @@ COMMANDS = {
     "/model": "Show or switch provider and model.",
     "/tokens": "Show token usage and estimated cost.",
     "/status": "Show current session and agent state.",
+    "/reset": "Clear the current conversation context.",
     "/diff": "Show file changes from this session.",
     "/compact": "Show compacted context metrics.",
     "/trace": "Show or export structured trace events.",
@@ -229,6 +230,15 @@ def handle_command(
         print(f"  Input tokens: {agent.token_tracker.input_tokens}")
         print(f"  Output tokens: {agent.token_tracker.output_tokens}")
         print(f"  Estimated cost: ${agent.token_tracker.estimated_cost:.6f}")
+        return False
+    if command == "/reset":
+        if agent is None:
+            print("Reset command is unavailable.")
+            return False
+
+        agent.messages.clear()
+        agent.steps.clear()
+        print("Conversation context reset.")
         return False
     if command == "/diff" or command.startswith("/diff "):
         if agent is None:
