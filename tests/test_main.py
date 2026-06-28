@@ -1,4 +1,5 @@
 import asyncio
+import tomllib
 from pathlib import Path
 from typing import cast
 
@@ -105,6 +106,7 @@ def test_help_lists_available_commands(
         "  /tokens   Show token usage and estimated cost.\n"
         "  /status   Show current session and agent state.\n"
         "  /reset    Clear the current conversation context.\n"
+        "  /save     Save the current session checkpoint.\n"
         "  /diff     Show file changes from this session.\n"
         "  /compact  Show compacted context metrics.\n"
         "  /trace    Show or export structured trace events.\n"
@@ -239,6 +241,7 @@ def test_parse_cli_args_supports_resume_and_one_shot_task() -> None:
     args = parse_cli_args(["--resume", "day10", "Fix", "the", "bug"])
 
     assert args.resume_session_id == "day10"
+    assert args.api_key is None
     assert args.one_shot_task == "Fix the bug"
 
 
@@ -246,6 +249,23 @@ def test_parse_cli_args_supports_equals_resume_form() -> None:
     args = parse_cli_args(["--resume=day10"])
 
     assert args.resume_session_id == "day10"
+    assert args.api_key is None
+    assert args.one_shot_task is None
+
+
+def test_parse_cli_args_supports_api_key_and_one_shot_task() -> None:
+    args = parse_cli_args(["--api-key", "cli-key", "Fix", "the", "bug"])
+
+    assert args.resume_session_id is None
+    assert args.api_key == "cli-key"
+    assert args.one_shot_task == "Fix the bug"
+
+
+def test_parse_cli_args_supports_equals_api_key_form() -> None:
+    args = parse_cli_args(["--api-key=cli-key"])
+
+    assert args.resume_session_id is None
+    assert args.api_key == "cli-key"
     assert args.one_shot_task is None
 
 
@@ -255,6 +275,20 @@ def test_parse_cli_args_rejects_invalid_resume_usage() -> None:
 
     with pytest.raises(ValueError, match="only once"):
         parse_cli_args(["--resume", "one", "--resume", "two"])
+
+
+def test_parse_cli_args_rejects_invalid_api_key_usage() -> None:
+    with pytest.raises(ValueError, match="Usage"):
+        parse_cli_args(["--api-key"])
+
+    with pytest.raises(ValueError, match="only once"):
+        parse_cli_args(["--api-key", "one", "--api-key", "two"])
+
+
+def test_pyproject_exposes_agent_console_script() -> None:
+    pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+
+    assert pyproject["project"]["scripts"]["agent"] == "main:cli"
 
 
 def test_default_sessions_dir_is_workspace_local(tmp_path: Path) -> None:
@@ -537,6 +571,43 @@ def test_reset_command_requires_agent(
 
     assert should_exit is False
     assert capsys.readouterr().out == "Reset command is unavailable.\n"
+
+
+def test_save_command_checkpoints_current_session(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    agent = create_agent(tmp_path)
+    session_store = SessionStore(tmp_path / "sessions")
+    session_state = CliSessionState(session_id="session-one", session_name="day16")
+    agent.messages.append({"role": "user", "content": "Remember this"})
+
+    should_exit = handle_command(
+        "/save",
+        agent,
+        session_store,
+        session_state,
+    )
+
+    loaded = session_store.load("session-one")
+    events = session_store.read_events("session-one")
+    assert should_exit is False
+    assert loaded.session_id == "session-one"
+    assert loaded.session_name == "day16"
+    assert loaded.messages == [{"role": "user", "content": "Remember this"}]
+    assert [event.event_type for event in events] == ["checkpoint_saved"]
+    assert capsys.readouterr().out == "Checkpoint saved: session-one\n"
+
+
+def test_save_command_requires_session_context(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    agent = create_agent()
+
+    should_exit = handle_command("/save", agent)
+
+    assert should_exit is False
+    assert capsys.readouterr().out == "Save command is unavailable.\n"
 
 
 def test_diff_command_shows_session_diff(

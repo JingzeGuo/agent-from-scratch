@@ -542,6 +542,7 @@ class OpenAICompatibleProviderAdapter:
 def load_provider_config(
     provider: str | None = None,
     model: str | None = None,
+    api_key: str | None = None,
 ) -> ProviderConfig:
     provider_name = provider or os.getenv("AGENT_PROVIDER", "anthropic")
     if provider_name not in DEFAULT_MODELS:
@@ -552,8 +553,8 @@ def load_provider_config(
 
     typed_provider: ProviderName = provider_name
     prefix = typed_provider.upper()
-    api_key = os.getenv(f"{prefix}_API_KEY", "")
-    if not api_key:
+    configured_api_key = api_key or os.getenv(f"{prefix}_API_KEY", "")
+    if not configured_api_key:
         raise ValueError(f"{prefix}_API_KEY is not set")
 
     configured_model = (
@@ -568,7 +569,7 @@ def load_provider_config(
     return ProviderConfig(
         provider=typed_provider,
         model=configured_model,
-        api_key=api_key,
+        api_key=configured_api_key,
         base_url=base_url,
     )
 

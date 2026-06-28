@@ -10,6 +10,9 @@ dependencies = [
     "python-dotenv>=1.2.2",
 ]
 
+[project.scripts]
+agent = "main:cli"
+
 [dependency-groups]
 dev = [
     "mypy>=2.1.0",

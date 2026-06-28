@@ -20,6 +20,7 @@ COMMANDS = {
     "/tokens": "Show token usage and estimated cost.",
     "/status": "Show current session and agent state.",
     "/reset": "Clear the current conversation context.",
+    "/save": "Save the current session checkpoint.",
     "/diff": "Show file changes from this session.",
     "/compact": "Show compacted context metrics.",
     "/trace": "Show or export structured trace events.",
@@ -31,6 +32,7 @@ COMMANDS = {
 
 class CliArgs(BaseModel):
     resume_session_id: str | None
+    api_key: str | None
     one_shot_task: str | None
 
 
@@ -48,6 +50,7 @@ def parse_one_shot_task(argv: Sequence[str]) -> str | None:
 def parse_cli_args(argv: Sequence[str]) -> CliArgs:
     remaining_args: list[str] = []
     resume_session_id: str | None = None
+    api_key: str | None = None
     index = 0
 
     while index < len(argv):
@@ -68,12 +71,29 @@ def parse_cli_args(argv: Sequence[str]) -> CliArgs:
                 raise ValueError("Usage: --resume <session-id-or-name>")
             index += 1
             continue
+        if arg == "--api-key":
+            if api_key is not None:
+                raise ValueError("Use --api-key only once.")
+            if index + 1 >= len(argv):
+                raise ValueError("Usage: --api-key <key>")
+            api_key = argv[index + 1]
+            index += 2
+            continue
+        if arg.startswith("--api-key="):
+            if api_key is not None:
+                raise ValueError("Use --api-key only once.")
+            api_key = arg.removeprefix("--api-key=")
+            if not api_key:
+                raise ValueError("Usage: --api-key <key>")
+            index += 1
+            continue
 
         remaining_args.append(arg)
         index += 1
 
     return CliArgs(
         resume_session_id=resume_session_id,
+        api_key=api_key,
         one_shot_task=parse_one_shot_task(remaining_args),
     )
 
@@ -239,6 +259,13 @@ def handle_command(
         agent.messages.clear()
         agent.steps.clear()
         print("Conversation context reset.")
+        return False
+    if command == "/save":
+        if agent is None or session_store is None or session_state is None:
+            print("Save command is unavailable.")
+            return False
+
+        checkpoint_session(agent, session_store, session_state)
         return False
     if command == "/diff" or command.startswith("/diff "):
         if agent is None:
@@ -416,7 +443,7 @@ async def main(argv: Sequence[str] | None = None) -> None:
 
     workspace_root = Path.cwd().resolve()
     session_store = SessionStore(default_sessions_dir(workspace_root))
-    config = load_provider_config()
+    config = load_provider_config(api_key=cli_args.api_key)
     registry = create_registry(workspace_root)
     agent = Agent(
         provider_adapter=create_provider_adapter(config),
@@ -430,6 +457,7 @@ async def main(argv: Sequence[str] | None = None) -> None:
         resumed_config = load_provider_config(
             provider=snapshot.provider,
             model=snapshot.model,
+            api_key=cli_args.api_key,
         )
         agent.switch_provider(create_provider_adapter(resumed_config))
         agent.restore_snapshot(snapshot)
@@ -460,5 +488,9 @@ async def main(argv: Sequence[str] | None = None) -> None:
     await run_cli(agent, cli_args.one_shot_task, session_store, session_state)
 
 
-if __name__ == "__main__":
+def cli() -> None:
     asyncio.run(main())
+
+
+if __name__ == "__main__":
+    cli()

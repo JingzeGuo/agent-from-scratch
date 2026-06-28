@@ -148,6 +148,7 @@ def test_loads_anthropic_provider_config(
 
     assert config.provider == "anthropic"
     assert config.model == "claude-haiku-4-5"
+    assert config.api_key == "anthropic-key"
     assert config.base_url is None
 
 
@@ -163,6 +164,7 @@ def test_loads_deepseek_provider_config(
 
     assert config.provider == "deepseek"
     assert config.model == "deepseek-v4-flash"
+    assert config.api_key == "deepseek-key"
     assert config.base_url == "https://api.deepseek.com/anthropic"
 
 
@@ -178,7 +180,18 @@ def test_loads_openai_provider_config(
 
     assert config.provider == "openai"
     assert config.model == "gpt-4o-mini"
+    assert config.api_key == "openai-key"
     assert config.base_url == "https://api.openai.com/v1"
+
+
+def test_provider_config_uses_cli_api_key_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "env-key")
+
+    config = load_provider_config(api_key="cli-key")
+
+    assert config.api_key == "cli-key"
 
 
 def test_provider_config_requires_matching_api_key(
