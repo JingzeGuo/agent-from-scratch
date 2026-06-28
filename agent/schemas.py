@@ -135,6 +135,25 @@ class RunCommandInput(BaseModel):
     )
 
 
+class SubAgentInput(BaseModel):
+    """Input schema for delegating a bounded read-only exploration task."""
+
+    task: str = Field(
+        min_length=1,
+        description="The delegated exploration task for the child agent.",
+    )
+    profile: Literal["read_only_explorer"] = Field(
+        default="read_only_explorer",
+        description="The capability profile for the child agent.",
+    )
+    max_steps: int = Field(
+        default=3,
+        ge=1,
+        le=5,
+        description="Maximum child-agent steps. Defaults to 3.",
+    )
+
+
 class SearchWebInput(BaseModel):
     """Input schema for the web search tool."""
 

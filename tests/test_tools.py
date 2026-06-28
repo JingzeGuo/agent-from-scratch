@@ -2,7 +2,7 @@ import shlex
 import sys
 from pathlib import Path
 
-from agent.setup import create_registry
+from agent.setup import create_read_only_registry, create_registry
 
 
 def test_glob_files_matches_files_by_pattern(tmp_path: Path) -> None:
@@ -536,6 +536,91 @@ def test_write_file_rejects_file_outside_workspace(tmp_path: Path) -> None:
     assert not outside_file.exists()
     assert "Path is outside the workspace" in output
     assert is_error is True
+
+
+def test_sub_agent_is_registered_with_read_only_profile(tmp_path: Path) -> None:
+    registry = create_registry(tmp_path)
+
+    definitions = {tool.name: tool for tool in registry.to_tool_definitions()}
+
+    assert "sub_agent" in definitions
+    assert definitions["sub_agent"].input_schema["properties"]["profile"] == {
+        "const": "read_only_explorer",
+        "default": "read_only_explorer",
+        "description": "The capability profile for the child agent.",
+        "title": "Profile",
+        "type": "string",
+    }
+
+
+def test_sub_agent_placeholder_returns_bounded_observation(tmp_path: Path) -> None:
+    registry = create_registry(tmp_path)
+    long_task = "Explore session resume behavior. " * 30
+
+    output, is_error = registry.execute(
+        "sub_agent",
+        {
+            "task": long_task,
+            "profile": "read_only_explorer",
+            "max_steps": 3,
+        },
+    )
+
+    assert "Sub-agent execution is not implemented yet." in output
+    assert "profile: read_only_explorer" in output
+    assert "max_steps: 3" in output
+    assert "[truncated after 500 chars]" in output
+    assert len(output) < len(long_task)
+    assert is_error is False
+
+
+def test_sub_agent_rejects_unsupported_profile(tmp_path: Path) -> None:
+    registry = create_registry(tmp_path)
+
+    output, is_error = registry.execute(
+        "sub_agent",
+        {
+            "task": "Explore the repository.",
+            "profile": "coding_worker",
+        },
+    )
+
+    assert "Validation error for tool 'sub_agent'" in output
+    assert "field 'profile'" in output
+    assert is_error is True
+
+
+def test_sub_agent_rejects_excessive_step_budget(tmp_path: Path) -> None:
+    registry = create_registry(tmp_path)
+
+    output, is_error = registry.execute(
+        "sub_agent",
+        {
+            "task": "Explore the repository.",
+            "max_steps": 6,
+        },
+    )
+
+    assert "field 'max_steps': Input should be less than or equal to 5" in output
+    assert is_error is True
+
+
+def test_read_only_registry_excludes_mutating_and_recursive_tools(
+    tmp_path: Path,
+) -> None:
+    registry = create_read_only_registry(tmp_path)
+
+    assert set(registry.tools) == {
+        "calculator",
+        "read_file",
+        "glob_files",
+        "search_text",
+        "get_diff",
+    }
+    assert "edit_file" not in registry.tools
+    assert "write_file" not in registry.tools
+    assert "run_command" not in registry.tools
+    assert "sub_agent" not in registry.tools
 
 
 def test_get_diff_returns_no_changes_message(tmp_path: Path) -> None:

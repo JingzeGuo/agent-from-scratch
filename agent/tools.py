@@ -502,7 +502,34 @@ def _normalize_subprocess_output(output: str | bytes | None) -> str:
 
 
 # ==========================================
-# 7. fetch_url
+# 7. sub_agent
+# ==========================================
+
+
+def sub_agent(
+    task: str,
+    profile: str = "read_only_explorer",
+    max_steps: int = 3,
+) -> str:
+    """Placeholder for a bounded child-agent exploration task."""
+    return "\n".join(
+        [
+            "Sub-agent execution is not implemented yet.",
+            f"profile: {profile}",
+            f"max_steps: {max_steps}",
+            f"task: {_truncate_sub_agent_task(task)}",
+        ]
+    )
+
+
+def _truncate_sub_agent_task(task: str, max_chars: int = 500) -> str:
+    if len(task) <= max_chars:
+        return task
+    return task[:max_chars].rstrip() + f"\n[truncated after {max_chars} chars]"
+
+
+# ==========================================
+# 8. fetch_url
 # ==========================================
 # Returns plain text. We don't parse HTML here — that's a separate concern.
 

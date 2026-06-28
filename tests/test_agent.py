@@ -185,6 +185,7 @@ class FakeProviderAdapter:
         self.model = "claude-haiku-4-5"
         self.capabilities = capabilities or ProviderCapabilities()
         self.responses = responses or []
+        self.requests: list[dict[str, Any]] = []
 
     async def stream_response(
         self,
@@ -194,6 +195,13 @@ class FakeProviderAdapter:
         messages: list[dict[str, Any]],
         on_text_delta: Callable[[str], None] | None = None,
     ) -> ProviderResponse:
+        self.requests.append(
+            {
+                "system": system,
+                "tools": list(tools),
+                "messages": list(messages),
+            }
+        )
         response = self.responses.pop(0)
         for text in response.text:
             if on_text_delta is not None:
@@ -1314,6 +1322,167 @@ def test_agent_preserves_result_order_when_parallel_tool_call_fails() -> None:
     assert results[0].is_error is False
     assert "ValueError: bad expression" in results[1].content
     assert results[1].is_error is True
+
+
+def test_sub_agent_runs_with_isolated_read_only_context(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    sub_agent_call = ToolCall(
+        name="sub_agent",
+        input={
+            "task": "Find session resume code.",
+            "profile": "read_only_explorer",
+            "max_steps": 2,
+        },
+        tool_use_id="call_sub_agent",
+    )
+    adapter = FakeProviderAdapter(
+        responses=[
+            ProviderResponse(
+                message={
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": sub_agent_call.tool_use_id,
+                            "name": sub_agent_call.name,
+                            "input": sub_agent_call.input,
+                        }
+                    ],
+                },
+                stop_reason="tool_use",
+                tool_calls=[sub_agent_call],
+                usage=TokenUsage(input_tokens=10, output_tokens=5),
+            ),
+            ProviderResponse(
+                message={
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Relevant files: agent/session.py.",
+                        }
+                    ],
+                },
+                stop_reason="end_turn",
+                text=["Relevant files: agent/session.py."],
+                usage=TokenUsage(input_tokens=7, output_tokens=3),
+            ),
+            ProviderResponse(
+                message={
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "Done."}],
+                },
+                stop_reason="end_turn",
+                text=["Done."],
+                usage=TokenUsage(input_tokens=12, output_tokens=4),
+            ),
+        ]
+    )
+    registry = create_workspace_registry(tmp_path)
+    agent = Agent(provider_adapter=adapter, registry=registry)
+    agent.messages.append({"role": "user", "content": "Parent-only history."})
+
+    agent_run = asyncio.run(agent.run("Delegate exploration"))
+
+    assert agent_run.termination == "completed"
+    sub_agent_result = agent_run.steps[0].tool_results[0]
+    assert sub_agent_result.is_error is False
+    assert "Sub-agent result:" in sub_agent_result.content
+    assert "profile: read_only_explorer" in sub_agent_result.content
+    assert "termination: completed" in sub_agent_result.content
+    assert "Relevant files: agent/session.py." in sub_agent_result.content
+    child_request = adapter.requests[1]
+    child_tool_names = {tool.name for tool in child_request["tools"]}
+    assert child_tool_names == {
+        "calculator",
+        "read_file",
+        "glob_files",
+        "search_text",
+        "get_diff",
+    }
+    assert child_request["messages"] == [
+        {"role": "user", "content": "Find session resume code."}
+    ]
+    assert "Parent-only history" not in str(child_request["messages"])
+    assert agent.token_tracker.input_tokens == 29
+    assert agent.token_tracker.output_tokens == 12
+    assert capsys.readouterr().out == "Running sub_agent\nDone.\n"
+
+
+def test_sub_agent_enforces_child_step_budget(tmp_path: Path) -> None:
+    target = tmp_path / "notes.txt"
+    target.write_text("content\n", encoding="utf-8")
+    sub_agent_call = ToolCall(
+        name="sub_agent",
+        input={"task": "Read notes.", "max_steps": 1},
+        tool_use_id="call_sub_agent",
+    )
+    child_read_call = ToolCall(
+        name="read_file",
+        input={"path": "notes.txt"},
+        tool_use_id="call_child_read",
+    )
+    adapter = FakeProviderAdapter(
+        responses=[
+            ProviderResponse(
+                message={
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": sub_agent_call.tool_use_id,
+                            "name": sub_agent_call.name,
+                            "input": sub_agent_call.input,
+                        }
+                    ],
+                },
+                stop_reason="tool_use",
+                tool_calls=[sub_agent_call],
+                usage=TokenUsage(input_tokens=10, output_tokens=5),
+            ),
+            ProviderResponse(
+                message={
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": child_read_call.tool_use_id,
+                            "name": child_read_call.name,
+                            "input": child_read_call.input,
+                        }
+                    ],
+                },
+                stop_reason="tool_use",
+                tool_calls=[child_read_call],
+                usage=TokenUsage(input_tokens=7, output_tokens=3),
+            ),
+            ProviderResponse(
+                message={
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "Parent done."}],
+                },
+                stop_reason="end_turn",
+                text=["Parent done."],
+                usage=TokenUsage(input_tokens=11, output_tokens=4),
+            ),
+        ]
+    )
+    agent = Agent(
+        provider_adapter=adapter,
+        registry=create_workspace_registry(tmp_path),
+    )
+
+    agent_run = asyncio.run(agent.run("Delegate exploration"))
+
+    sub_agent_result = agent_run.steps[0].tool_results[0]
+    assert sub_agent_result.is_error is False
+    assert "termination: max_steps" in sub_agent_result.content
+    assert "steps: 1" in sub_agent_result.content
+    assert "final_answer:\n[No final text returned by child agent.]" in (
+        sub_agent_result.content
+    )
 
 
 def test_agent_creates_snapshot_from_current_state(tmp_path: Path) -> None:

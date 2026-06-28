@@ -6,6 +6,8 @@ from time import perf_counter
 from typing import Any, cast
 from uuid import uuid4
 
+from pydantic import ValidationError
+
 from .context import ContextBuilder
 from .prompts import build_system_prompt
 from .provider import ProviderAdapter
@@ -17,16 +19,20 @@ from .schemas import (
     RunOutcome,
     SessionEvent,
     SessionSnapshot,
+    SubAgentInput,
+    TokenUsage,
     ToolCall,
     ToolResult,
 )
 from .session import SessionStore, utc_timestamp
+from .setup import create_read_only_registry
 from .token_tracker import TokenTracker
 from .tool_registry import ToolRegistry
 from .verification import extract_verification_evidence, infer_task_success
 from .workspace import resolve_workspace_path
 
 TRACE_PREVIEW_CHARS = 500
+SUB_AGENT_RESULT_CHARS = 4_000
 PARALLEL_READ_ONLY_TOOLS = {
     "calculator",
     "read_file",
@@ -71,12 +77,14 @@ class Agent:
         model: str | None = None,
         provider: str | None = None,
         max_steps: int = 10,
+        stream_output: bool = True,
     ) -> None:
         self.provider_adapter = provider_adapter
         self.registry = registry
         self.model = provider_adapter.model if model is None else model
         self.provider = provider_adapter.provider if provider is None else provider
         self.max_steps = max_steps
+        self.stream_output = stream_output
         self.messages: list[dict[str, Any]] = []
         self.steps: list[AgentStep] = []
         self.completed_runs: list[AgentRun] = []
@@ -210,7 +218,7 @@ class Agent:
                 system=self.system_prompt,
                 tools=self.registry.to_tool_definitions(),
                 messages=model_messages,
-                on_text_delta=print_text_delta,
+                on_text_delta=print_text_delta if self.stream_output else None,
             )
 
             if streamed_text:
@@ -466,13 +474,13 @@ class Agent:
                 mode="serial",
                 reason="one or more tool calls may mutate state or depend on ordering",
             )
-        return self._execute_tool_calls_serially(
+        return await self._execute_tool_calls_serially(
             run_id=run_id,
             step_number=step_number,
             tool_calls=tool_calls,
         )
 
-    def _execute_tool_calls_serially(
+    async def _execute_tool_calls_serially(
         self,
         run_id: str,
         step_number: int,
@@ -481,7 +489,7 @@ class Agent:
         tool_results: list[ToolResult] = []
         for tool_call in tool_calls:
             tool_results.append(
-                self._execute_one_tool_call(
+                await self._execute_one_tool_call(
                     run_id=run_id,
                     step_number=step_number,
                     tool_call=tool_call,
@@ -501,7 +509,8 @@ class Agent:
                 step_number=step_number,
                 tool_call=tool_call,
             )
-            print(format_tool_activity(tool_call))
+            if self.stream_output:
+                print(format_tool_activity(tool_call))
 
         tasks = [
             asyncio.to_thread(self._run_tool_call, tool_call)
@@ -528,7 +537,7 @@ class Agent:
             )
         return tool_results
 
-    def _execute_one_tool_call(
+    async def _execute_one_tool_call(
         self,
         run_id: str,
         step_number: int,
@@ -539,8 +548,14 @@ class Agent:
             step_number=step_number,
             tool_call=tool_call,
         )
-        print(format_tool_activity(tool_call))
-        _, output, is_error, latency_ms = self._run_tool_call(tool_call)
+        if self.stream_output:
+            print(format_tool_activity(tool_call))
+        if tool_call.name == "sub_agent":
+            tool_started = perf_counter()
+            output, is_error = await self._run_sub_agent_tool(tool_call)
+            latency_ms = (perf_counter() - tool_started) * 1000
+        else:
+            _, output, is_error, latency_ms = self._run_tool_call(tool_call)
         self._record_tool_finished(
             run_id=run_id,
             step_number=step_number,
@@ -553,6 +568,85 @@ class Agent:
             tool_use_id=tool_call.tool_use_id,
             content=output,
             is_error=is_error,
+        )
+
+    async def _run_sub_agent_tool(self, tool_call: ToolCall) -> tuple[str, bool]:
+        try:
+            parsed_input = SubAgentInput(**tool_call.input)
+        except ValidationError as e:
+            return self._format_tool_validation_error("sub_agent", e), True
+
+        if self.registry.workspace_root is None:
+            return "Tool 'sub_agent' raised ValueError: Workspace root is required.", True
+
+        child_registry = create_read_only_registry(self.registry.workspace_root)
+        child_agent = Agent(
+            provider_adapter=self.provider_adapter,
+            registry=child_registry,
+            model=self.model,
+            provider=self.provider,
+            max_steps=parsed_input.max_steps,
+            stream_output=False,
+        )
+        child_run = await child_agent.run(parsed_input.task)
+        self.token_tracker.add(
+            TokenUsage(
+                input_tokens=child_agent.token_tracker.input_tokens,
+                output_tokens=child_agent.token_tracker.output_tokens,
+            )
+        )
+        return self._format_sub_agent_result(
+            profile=parsed_input.profile,
+            child_run=child_run,
+            child_agent=child_agent,
+        ), False
+
+    def _format_tool_validation_error(
+        self,
+        tool_name: str,
+        error: ValidationError,
+    ) -> str:
+        error_lines = [f"Validation error for tool '{tool_name}':"]
+        for err in error.errors():
+            field = ".".join(str(p) for p in err["loc"])
+            error_lines.append(f"  - field '{field}': {err['msg']}")
+        return "\n".join(error_lines)
+
+    def _format_sub_agent_result(
+        self,
+        profile: str,
+        child_run: AgentRun,
+        child_agent: "Agent",
+    ) -> str:
+        final_answer = self._sub_agent_final_answer(child_run)
+        result = "\n".join(
+            [
+                "Sub-agent result:",
+                f"child_run_id: {child_run.run_id}",
+                f"profile: {profile}",
+                f"termination: {child_run.termination}",
+                f"steps: {len(child_run.steps)}",
+                f"final_stop_reason: {child_run.final_stop_reason}",
+                f"input_tokens: {child_agent.token_tracker.input_tokens}",
+                f"output_tokens: {child_agent.token_tracker.output_tokens}",
+                "final_answer:",
+                final_answer,
+            ]
+        )
+        return self._bounded_sub_agent_result(result)
+
+    def _sub_agent_final_answer(self, child_run: AgentRun) -> str:
+        for step in reversed(child_run.steps):
+            if step.text:
+                return "\n".join(step.text)
+        return "[No final text returned by child agent.]"
+
+    def _bounded_sub_agent_result(self, result: str) -> str:
+        if len(result) <= SUB_AGENT_RESULT_CHARS:
+            return result
+        return (
+            result[:SUB_AGENT_RESULT_CHARS].rstrip()
+            + f"\n[truncated after {SUB_AGENT_RESULT_CHARS} chars]"
         )
 
     def _run_tool_call(self, tool_call: ToolCall) -> tuple[ToolCall, str, bool, float]:
