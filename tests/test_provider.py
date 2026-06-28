@@ -216,7 +216,7 @@ def test_deepseek_uses_openai_compatible_adapter() -> None:
     assert isinstance(adapter, OpenAICompatibleProviderAdapter)
     assert adapter.provider == "deepseek"
     assert adapter.base_url == "https://api.deepseek.com"
-    assert adapter.capabilities.supports_parallel_tool_calls is False
+    assert adapter.capabilities.supports_parallel_tool_calls is True
 
 
 def test_anthropic_adapter_normalizes_tool_response() -> None:
@@ -604,7 +604,6 @@ def test_deepseek_adapter_omits_openai_parallel_tool_call_parameter() -> None:
         api_key="deepseek-key",
         base_url="https://api.deepseek.com",
         http_client=cast(httpx.AsyncClient, fake_client),
-        capabilities=ProviderCapabilities(supports_parallel_tool_calls=False),
     )
 
     asyncio.run(

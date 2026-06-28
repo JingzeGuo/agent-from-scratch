@@ -591,9 +591,6 @@ def create_provider_adapter(config: ProviderConfig) -> ProviderAdapter:
             model=config.model,
             api_key=config.api_key,
             base_url=config.base_url,
-            capabilities=ProviderCapabilities(
-                supports_parallel_tool_calls=config.provider == "openai"
-            ),
         )
     return AnthropicProviderAdapter(
         provider=config.provider,
