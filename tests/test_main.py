@@ -36,6 +36,9 @@ from main import (
     report_interrupted_action,
     run_cli,
 )
+from main import (
+    main as cli_main,
+)
 
 
 class FakeRunAgent:
@@ -308,6 +311,18 @@ def test_parse_cli_args_supports_equals_api_key_form() -> None:
     assert args.one_shot_task is None
 
 
+def test_parse_cli_args_supports_help_and_version() -> None:
+    help_args = parse_cli_args(["--help"])
+    version_args = parse_cli_args(["--version"])
+
+    assert help_args.show_help is True
+    assert help_args.show_version is False
+    assert help_args.one_shot_task is None
+    assert version_args.show_help is False
+    assert version_args.show_version is True
+    assert version_args.one_shot_task is None
+
+
 def test_parse_cli_args_rejects_invalid_resume_usage() -> None:
     with pytest.raises(ValueError, match="Usage"):
         parse_cli_args(["--resume"])
@@ -328,6 +343,55 @@ def test_pyproject_exposes_agent_console_script() -> None:
     pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
 
     assert pyproject["project"]["scripts"]["agent"] == "main:cli"
+
+
+def test_cli_help_does_not_require_provider_config(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def fail_load_provider_config(*args: object, **kwargs: object) -> object:
+        raise AssertionError("Provider config should not be loaded for --help.")
+
+    monkeypatch.setattr("main.load_provider_config", fail_load_provider_config)
+
+    asyncio.run(cli_main(["--help"]))
+
+    output = capsys.readouterr().out
+    assert "Usage:" in output
+    assert "--version" in output
+    assert "/help" in output
+
+
+def test_cli_version_does_not_require_provider_config(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def fail_load_provider_config(*args: object, **kwargs: object) -> object:
+        raise AssertionError("Provider config should not be loaded for --version.")
+
+    monkeypatch.setattr("main.load_provider_config", fail_load_provider_config)
+    monkeypatch.setattr("main.package_version", lambda: "0.1.0")
+
+    asyncio.run(cli_main(["--version"]))
+
+    assert capsys.readouterr().out == "agent-from-scratch 0.1.0\n"
+
+
+def test_cli_reports_configuration_error_without_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def fail_load_provider_config(*args: object, **kwargs: object) -> object:
+        raise ValueError("ANTHROPIC_API_KEY is not set")
+
+    monkeypatch.setattr("main.load_provider_config", fail_load_provider_config)
+
+    asyncio.run(cli_main([]))
+
+    assert capsys.readouterr().out == (
+        "Configuration error: ANTHROPIC_API_KEY is not set\n"
+        "Set it in .env or export it in your shell.\n"
+    )
 
 
 def test_default_sessions_dir_is_workspace_local(tmp_path: Path) -> None:

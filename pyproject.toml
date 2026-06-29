@@ -1,7 +1,7 @@
 [project]
 name = "agent-from-scratch"
 version = "0.1.0"
-description = "Add your description here"
+description = "A small terminal coding agent built from scratch."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -15,6 +15,7 @@ agent = "main:cli"
 
 [dependency-groups]
 dev = [
+    "build>=1.2.0",
     "mypy>=2.1.0",
     "pytest>=9.0.3",
     "ruff>=0.15.16",
@@ -34,3 +35,11 @@ check_untyped_defs = true
 disallow_untyped_defs = true
 warn_return_any = true
 warn_unused_ignores = true
+
+[tool.setuptools]
+packages = ["agent"]
+py-modules = ["main"]
+
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"

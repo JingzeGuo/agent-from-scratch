@@ -2,6 +2,7 @@ import asyncio
 import sys
 from collections.abc import Sequence
 from datetime import datetime
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -14,6 +15,9 @@ from agent.security import CommandPolicyResult
 from agent.session import SessionStore, utc_timestamp
 from agent.setup import create_registry
 from agent.workspace import resolve_workspace_path
+
+PACKAGE_NAME = "agent-from-scratch"
+FALLBACK_VERSION = "0.1.0"
 
 COMMANDS = {
     "/help": "Show available commands.",
@@ -35,6 +39,8 @@ class CliArgs(BaseModel):
     resume_session_id: str | None
     api_key: str | None
     one_shot_task: str | None
+    show_help: bool = False
+    show_version: bool = False
 
 
 class CliSessionState(BaseModel):
@@ -52,10 +58,20 @@ def parse_cli_args(argv: Sequence[str]) -> CliArgs:
     remaining_args: list[str] = []
     resume_session_id: str | None = None
     api_key: str | None = None
+    show_help = False
+    show_version = False
     index = 0
 
     while index < len(argv):
         arg = argv[index]
+        if arg in {"--help", "-h"}:
+            show_help = True
+            index += 1
+            continue
+        if arg == "--version":
+            show_version = True
+            index += 1
+            continue
         if arg == "--resume":
             if resume_session_id is not None:
                 raise ValueError("Use --resume only once.")
@@ -96,7 +112,37 @@ def parse_cli_args(argv: Sequence[str]) -> CliArgs:
         resume_session_id=resume_session_id,
         api_key=api_key,
         one_shot_task=parse_one_shot_task(remaining_args),
+        show_help=show_help,
+        show_version=show_version,
     )
+
+
+def package_version() -> str:
+    try:
+        return version(PACKAGE_NAME)
+    except PackageNotFoundError:
+        return FALLBACK_VERSION
+
+
+def print_cli_help() -> None:
+    print("Usage:")
+    print("  agent [options] [task]")
+    print("")
+    print("Options:")
+    print("  -h, --help                       Show this help message.")
+    print("  --version                        Show the installed version.")
+    print("  --resume <session-id-or-name>    Resume a saved session.")
+    print("  --api-key <key>                  Provide the provider API key.")
+    print("")
+    print("Interactive commands:")
+    width = max(len(name) for name in COMMANDS)
+    for name, description in COMMANDS.items():
+        print(f"  {name:<{width}} {description}")
+
+
+def print_configuration_error(error: ValueError) -> None:
+    print(f"Configuration error: {error}")
+    print("Set it in .env or export it in your shell.")
 
 
 def default_sessions_dir(workspace_root: Path) -> Path:
@@ -462,10 +508,20 @@ async def main(argv: Sequence[str] | None = None) -> None:
     except ValueError as error:
         print(error)
         return
+    if cli_args.show_help:
+        print_cli_help()
+        return
+    if cli_args.show_version:
+        print(f"{PACKAGE_NAME} {package_version()}")
+        return
 
     workspace_root = Path.cwd().resolve()
     session_store = SessionStore(default_sessions_dir(workspace_root))
-    config = load_provider_config(api_key=cli_args.api_key)
+    try:
+        config = load_provider_config(api_key=cli_args.api_key)
+    except ValueError as error:
+        print_configuration_error(error)
+        return
     registry = create_registry(workspace_root)
     agent = Agent(
         provider_adapter=create_provider_adapter(config),
@@ -480,11 +536,15 @@ async def main(argv: Sequence[str] | None = None) -> None:
     session_state = CliSessionState(session_id=generate_session_id())
     if cli_args.resume_session_id is not None:
         snapshot = session_store.find(cli_args.resume_session_id)
-        resumed_config = load_provider_config(
-            provider=snapshot.provider,
-            model=snapshot.model,
-            api_key=cli_args.api_key,
-        )
+        try:
+            resumed_config = load_provider_config(
+                provider=snapshot.provider,
+                model=snapshot.model,
+                api_key=cli_args.api_key,
+            )
+        except ValueError as error:
+            print_configuration_error(error)
+            return
         agent.switch_provider(create_provider_adapter(resumed_config))
         agent.restore_snapshot(snapshot)
         session_state = CliSessionState(
