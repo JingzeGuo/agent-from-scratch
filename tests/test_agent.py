@@ -505,6 +505,10 @@ def test_agent_sends_coding_system_prompt() -> None:
     assert "`calculator`: Optional helper for math." in system_prompt
     assert "Inspect before editing" in system_prompt
     assert "Edit, then verify" in system_prompt
+    assert "must run focused verification" in system_prompt
+    assert "Do not run the same failing command again" in system_prompt
+    assert "Do not create temporary verification scripts" in system_prompt
+    assert "When a focused verification command passes" in system_prompt
 
 
 def test_agent_uses_context_builder_for_model_messages() -> None:
@@ -551,6 +555,7 @@ def test_build_system_prompt_uses_workspace_and_registered_tools(
 
     assert workspace_root.as_posix() in prompt
     assert "`calculator`: Optional helper for math." in prompt
+    assert "must run focused verification" in prompt
     assert "- `read_file`:" not in prompt
 
 

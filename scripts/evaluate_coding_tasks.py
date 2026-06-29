@@ -1,0 +1,881 @@
+# ruff: noqa: I001
+import argparse
+import asyncio
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from collections.abc import Callable
+from pathlib import Path
+from time import perf_counter
+from typing import Any, Literal
+
+from dotenv import load_dotenv
+from pydantic import BaseModel, Field
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from agent.agent import Agent
+from agent.provider import ProviderAdapter, create_provider_adapter, load_provider_config
+from agent.schemas import (
+    AgentRun,
+    ProviderCapabilities,
+    ProviderResponse,
+    TokenUsage,
+    ToolCall,
+    ToolDefinition,
+    ToolResult,
+)
+from agent.security import CommandPolicyResult
+from agent.setup import create_registry
+from agent.tool_registry import ToolRegistry
+
+PYTHON = sys.executable
+EvaluationMode = Literal["scripted", "real_model"]
+
+
+class ScriptedStep(BaseModel):
+    text: str | None = None
+    tool_call: ToolCall | None = None
+    input_tokens: int = Field(default=20, ge=0)
+    output_tokens: int = Field(default=8, ge=0)
+
+
+class CodingTaskCase(BaseModel):
+    name: str
+    task: str
+    acceptance_criteria: list[str]
+    expected_evidence: list[str]
+    scripted_steps: list[ScriptedStep]
+
+
+class CodingTaskResult(BaseModel):
+    name: str
+    mode: EvaluationMode
+    task_success: bool
+    runtime_success: bool
+    verification_success: bool
+    recovery_success: bool
+    tool_accuracy: bool
+    steps: int
+    tool_calls: int
+    tools: list[str]
+    commands: list[str]
+    latency_ms: float
+    input_tokens: int
+    output_tokens: int
+    estimated_cost: float
+    failures: list[str] = Field(default_factory=list)
+
+
+class ScriptedProviderAdapter:
+    """Deterministic provider used for local coding-agent evaluations."""
+
+    provider = "fake"
+    model = "claude-haiku-4-5"
+    capabilities = ProviderCapabilities()
+
+    def __init__(self, steps: list[ScriptedStep]) -> None:
+        self._steps = steps
+        self._index = 0
+
+    async def stream_response(
+        self,
+        *,
+        system: str,
+        tools: list[ToolDefinition],
+        messages: list[dict[str, Any]],
+        on_text_delta: Callable[[str], None] | None = None,
+    ) -> ProviderResponse:
+        del system, tools, messages
+        if self._index >= len(self._steps):
+            raise RuntimeError("Scripted provider ran out of responses.")
+
+        step = self._steps[self._index]
+        self._index += 1
+        if step.tool_call is not None:
+            content = [
+                {
+                    "type": "tool_use",
+                    "id": step.tool_call.tool_use_id,
+                    "name": step.tool_call.name,
+                    "input": step.tool_call.input,
+                }
+            ]
+            return ProviderResponse(
+                message={"role": "assistant", "content": content},
+                stop_reason="tool_use",
+                tool_calls=[step.tool_call],
+                usage=TokenUsage(
+                    input_tokens=step.input_tokens,
+                    output_tokens=step.output_tokens,
+                ),
+                native_metadata={
+                    "provider": self.provider,
+                    "script_index": self._index,
+                },
+            )
+
+        text = step.text or ""
+        if on_text_delta is not None and text:
+            on_text_delta(text)
+        return ProviderResponse(
+            message={
+                "role": "assistant",
+                "content": [{"type": "text", "text": text}],
+            },
+            stop_reason="end_turn",
+            text=[text] if text else [],
+            usage=TokenUsage(
+                input_tokens=step.input_tokens,
+                output_tokens=step.output_tokens,
+            ),
+            native_metadata={"provider": self.provider, "script_index": self._index},
+        )
+
+    def tool_result_message(self, tool_results: list[ToolResult]) -> dict[str, Any]:
+        return {
+            "role": "user",
+            "content": [
+                {
+                    "type": result.type,
+                    "tool_use_id": result.tool_use_id,
+                    "content": result.content,
+                    "is_error": result.is_error,
+                }
+                for result in tool_results
+            ],
+        }
+
+
+Oracle = Callable[[Path, AgentRun, Agent], list[str]]
+FixtureBuilder = Callable[[Path], None]
+
+
+def tool_call(name: str, input_data: dict[str, Any], tool_use_id: str) -> ScriptedStep:
+    return ScriptedStep(
+        tool_call=ToolCall(name=name, input=input_data, tool_use_id=tool_use_id)
+    )
+
+
+def final_text(text: str) -> ScriptedStep:
+    return ScriptedStep(text=text)
+
+
+def build_cases() -> dict[str, tuple[CodingTaskCase, FixtureBuilder, Oracle]]:
+    return {
+        "repository_search": (
+            CodingTaskCase(
+                name="repository_search",
+                task=(
+                    "Find where token usage is tracked and explain which file owns "
+                    "estimated cost calculation."
+                ),
+                acceptance_criteria=[
+                    "The agent searches repository content.",
+                    "The agent reads the relevant file.",
+                    "The final answer names the token tracker owner.",
+                    "No file edits are made.",
+                ],
+                expected_evidence=[
+                    "search_text was used.",
+                    "read_file was used on agent/token_tracker.py.",
+                    "changed files list is empty.",
+                ],
+                scripted_steps=[
+                    tool_call(
+                        "search_text",
+                        {"pattern": "estimated_cost", "file_pattern": "**/*.py"},
+                        "toolu_search_cost",
+                    ),
+                    tool_call(
+                        "read_file",
+                        {"path": "agent/token_tracker.py", "offset": 1, "limit": 120},
+                        "toolu_read_token_tracker",
+                    ),
+                    final_text(
+                        "Estimated cost is owned by agent/token_tracker.py in "
+                        "TokenTracker."
+                    ),
+                ],
+            ),
+            fixture_repository_search,
+            oracle_repository_search,
+        ),
+        "small_bug_fix": (
+            CodingTaskCase(
+                name="small_bug_fix",
+                task=(
+                    "Fix a bug where add(2, 3) incorrectly returns 6 instead of 5. "
+                    "After editing, run the focused test that verifies the behavior. "
+                    "Do not create new files."
+                ),
+                acceptance_criteria=[
+                    "The source file is read before editing.",
+                    "The add function returns a + b.",
+                    "The focused pytest command passes.",
+                    "Only the intended source file changes.",
+                ],
+                expected_evidence=[
+                    "read_file was used before edit_file.",
+                    "edit_file returned a successful diff.",
+                    "run_command reported exit_code: 0.",
+                ],
+                scripted_steps=[
+                    tool_call(
+                        "read_file",
+                        {"path": "calculator.py"},
+                        "toolu_read_calculator",
+                    ),
+                    tool_call(
+                        "edit_file",
+                        {
+                            "path": "calculator.py",
+                            "old_text": "def add(a: int, b: int) -> int:\n    return a * b\n",
+                            "new_text": "def add(a: int, b: int) -> int:\n    return a + b\n",
+                        },
+                        "toolu_fix_add",
+                    ),
+                    tool_call(
+                        "run_command",
+                        {"command": f"{PYTHON} -m pytest tests/test_calculator.py"},
+                        "toolu_pytest_add",
+                    ),
+                    final_text("The add bug is fixed and the focused test passes."),
+                ],
+            ),
+            fixture_small_bug_fix,
+            oracle_small_bug_fix,
+        ),
+        "targeted_refactor": (
+            CodingTaskCase(
+                name="targeted_refactor",
+                task=(
+                    "Rename format_user_name to format_display_name and update "
+                    "local references. After editing, run the focused test that "
+                    "verifies the behavior. Do not create new files."
+                ),
+                acceptance_criteria=[
+                    "The old symbol is searched.",
+                    "The definition and call sites are updated.",
+                    "The old symbol no longer appears in Python source.",
+                    "The focused pytest command passes.",
+                ],
+                expected_evidence=[
+                    "search_text found old references.",
+                    "edit_file updated the module.",
+                    "run_command reported exit_code: 0.",
+                ],
+                scripted_steps=[
+                    tool_call(
+                        "search_text",
+                        {"pattern": "format_user_name", "file_pattern": "**/*.py"},
+                        "toolu_search_old_name",
+                    ),
+                    tool_call(
+                        "read_file",
+                        {"path": "users.py"},
+                        "toolu_read_users",
+                    ),
+                    tool_call(
+                        "edit_file",
+                        {
+                            "path": "users.py",
+                            "old_text": (
+                                "def format_user_name(first: str, last: str) -> str:\n"
+                                '    return f"{first} {last}"\n\n\n'
+                                "def greeting(first: str, last: str) -> str:\n"
+                                '    return f"Hello, {format_user_name(first, last)}!"\n'
+                            ),
+                            "new_text": (
+                                "def format_display_name(first: str, last: str) -> str:\n"
+                                '    return f"{first} {last}"\n\n\n'
+                                "def greeting(first: str, last: str) -> str:\n"
+                                '    return f"Hello, {format_display_name(first, last)}!"\n'
+                            ),
+                        },
+                        "toolu_refactor_name",
+                    ),
+                    tool_call(
+                        "run_command",
+                        {"command": f"{PYTHON} -m pytest tests/test_users.py"},
+                        "toolu_pytest_users",
+                    ),
+                    final_text("The rename is complete and tests pass."),
+                ],
+            ),
+            fixture_targeted_refactor,
+            oracle_targeted_refactor,
+        ),
+        "failed_edit_recovery": (
+            CodingTaskCase(
+                name="failed_edit_recovery",
+                task=(
+                    "Fix a README typo by changing instalation to installation, "
+                    "recovering from a failed edit if needed. Check the final diff."
+                ),
+                acceptance_criteria=[
+                    "One edit attempt fails.",
+                    "The agent rereads or searches before retrying.",
+                    "A later edit succeeds.",
+                    "The README contains the corrected word.",
+                ],
+                expected_evidence=[
+                    "trace contains a failed edit_file result.",
+                    "read_file occurs after the failed edit.",
+                    "trace contains a later successful edit_file result.",
+                ],
+                scripted_steps=[
+                    tool_call(
+                        "read_file",
+                        {"path": "README.md"},
+                        "toolu_read_readme",
+                    ),
+                    tool_call(
+                        "edit_file",
+                        {
+                            "path": "README.md",
+                            "old_text": "installation guide",
+                            "new_text": "installation guide",
+                        },
+                        "toolu_bad_readme_edit",
+                    ),
+                    tool_call(
+                        "read_file",
+                        {"path": "README.md"},
+                        "toolu_reread_readme",
+                    ),
+                    tool_call(
+                        "edit_file",
+                        {
+                            "path": "README.md",
+                            "old_text": "Follow the instalation guide.\n",
+                            "new_text": "Follow the installation guide.\n",
+                        },
+                        "toolu_good_readme_edit",
+                    ),
+                    final_text("Recovered from the failed edit and fixed the typo."),
+                ],
+            ),
+            fixture_failed_edit_recovery,
+            oracle_failed_edit_recovery,
+        ),
+        "failed_test_recovery": (
+            CodingTaskCase(
+                name="failed_test_recovery",
+                task="Fix module.py after a failed verification command.",
+                acceptance_criteria=[
+                    "The first verification command fails.",
+                    "The agent edits after observing the failure.",
+                    "The later verification command passes.",
+                    "The final file is syntactically valid.",
+                ],
+                expected_evidence=[
+                    "run_command first reports exit_code: 1.",
+                    "edit_file repairs module.py.",
+                    "run_command later reports exit_code: 0.",
+                ],
+                scripted_steps=[
+                    tool_call(
+                        "read_file",
+                        {"path": "module.py"},
+                        "toolu_read_module",
+                    ),
+                    tool_call(
+                        "run_command",
+                        {"command": f"{PYTHON} -m py_compile module.py"},
+                        "toolu_failed_compile",
+                    ),
+                    tool_call(
+                        "edit_file",
+                        {
+                            "path": "module.py",
+                            "old_text": "def answer()\n    return 1\n",
+                            "new_text": "def answer() -> int:\n    return 1\n",
+                        },
+                        "toolu_fix_syntax",
+                    ),
+                    tool_call(
+                        "run_command",
+                        {"command": f"{PYTHON} -m py_compile module.py"},
+                        "toolu_passing_compile",
+                    ),
+                    final_text("The syntax error is fixed and verification passes."),
+                ],
+            ),
+            fixture_failed_test_recovery,
+            oracle_failed_test_recovery,
+        ),
+    }
+
+
+def fixture_repository_search(workspace: Path) -> None:
+    package = workspace / "agent"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "token_tracker.py").write_text(
+        "\n".join(
+            [
+                "class TokenTracker:",
+                "    def __init__(self) -> None:",
+                "        self.input_tokens = 0",
+                "        self.output_tokens = 0",
+                "        self._estimated_cost = 0.0",
+                "",
+                "    @property",
+                "    def estimated_cost(self) -> float:",
+                "        return self._estimated_cost",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def fixture_small_bug_fix(workspace: Path) -> None:
+    (workspace / "calculator.py").write_text(
+        "def add(a: int, b: int) -> int:\n    return a * b\n",
+        encoding="utf-8",
+    )
+    tests = workspace / "tests"
+    tests.mkdir()
+    (tests / "test_calculator.py").write_text(
+        "from calculator import add\n\n\n"
+        "def test_adds_two_numbers() -> None:\n"
+        "    assert add(2, 3) == 5\n",
+        encoding="utf-8",
+    )
+
+
+def fixture_targeted_refactor(workspace: Path) -> None:
+    (workspace / "users.py").write_text(
+        "def format_user_name(first: str, last: str) -> str:\n"
+        '    return f"{first} {last}"\n\n\n'
+        "def greeting(first: str, last: str) -> str:\n"
+        '    return f"Hello, {format_user_name(first, last)}!"\n',
+        encoding="utf-8",
+    )
+    tests = workspace / "tests"
+    tests.mkdir()
+    (tests / "test_users.py").write_text(
+        "from users import greeting\n\n\n"
+        "def test_greeting_uses_display_name() -> None:\n"
+        "    assert greeting('Ada', 'Lovelace') == 'Hello, Ada Lovelace!'\n",
+        encoding="utf-8",
+    )
+
+
+def fixture_failed_edit_recovery(workspace: Path) -> None:
+    (workspace / "README.md").write_text(
+        "# Demo\n\nFollow the instalation guide.\n",
+        encoding="utf-8",
+    )
+
+
+def fixture_failed_test_recovery(workspace: Path) -> None:
+    (workspace / "module.py").write_text(
+        "def answer()\n    return 1\n",
+        encoding="utf-8",
+    )
+
+
+def oracle_repository_search(workspace: Path, run: AgentRun, agent: Agent) -> list[str]:
+    failures: list[str] = []
+    calls = tool_names(run)
+    final = final_answer(run)
+    if not any(name in calls for name in {"search_text", "glob_files"}):
+        failures.append("expected repository search or globbing")
+    if "read_file" not in calls:
+        failures.append("expected read_file on the relevant file")
+    if "TokenTracker" not in final or "agent/token_tracker.py" not in final:
+        failures.append("final answer did not identify TokenTracker owner")
+    if agent.registry.changed_files:
+        failures.append("repository search should not change files")
+    if not (workspace / "agent" / "token_tracker.py").exists():
+        failures.append("fixture file disappeared")
+    return failures
+
+
+def oracle_small_bug_fix(workspace: Path, run: AgentRun, agent: Agent) -> list[str]:
+    failures: list[str] = []
+    content = (workspace / "calculator.py").read_text(encoding="utf-8")
+    if "return a + b" not in content:
+        failures.append("calculator.py does not add the inputs")
+    if "return a * b" in content:
+        failures.append("calculator.py still multiplies the inputs")
+    if not oracle_command_passed(
+        workspace,
+        [PYTHON, "-m", "pytest", "tests/test_calculator.py"],
+    ):
+        failures.append("external pytest oracle did not pass")
+    if relative_changed_files(workspace, agent.registry) != ["calculator.py"]:
+        failures.append("changed files were not limited to calculator.py")
+    return failures
+
+
+def oracle_targeted_refactor(workspace: Path, run: AgentRun, agent: Agent) -> list[str]:
+    del agent
+    failures: list[str] = []
+    content = (workspace / "users.py").read_text(encoding="utf-8")
+    if "format_display_name" not in content:
+        failures.append("new symbol is missing")
+    if "format_user_name" in content:
+        failures.append("old symbol still appears in users.py")
+    if not oracle_command_passed(workspace, [PYTHON, "-m", "pytest", "tests/test_users.py"]):
+        failures.append("external pytest oracle did not pass")
+    return failures
+
+
+def oracle_failed_edit_recovery(
+    workspace: Path,
+    run: AgentRun,
+    agent: Agent,
+) -> list[str]:
+    del agent
+    failures: list[str] = []
+    results = [
+        (tool_call.name, tool_result.is_error)
+        for step in run.steps
+        for tool_call, tool_result in zip(step.tool_calls, step.tool_results)
+    ]
+    if ("edit_file", False) not in results:
+        failures.append("missing successful edit_file observation")
+    content = (workspace / "README.md").read_text(encoding="utf-8")
+    if "installation" not in content or "instalation" in content:
+        failures.append("README typo was not corrected")
+    return failures
+
+
+def oracle_failed_test_recovery(
+    workspace: Path,
+    run: AgentRun,
+    agent: Agent,
+) -> list[str]:
+    del agent
+    failures: list[str] = []
+    if not oracle_command_passed(workspace, [PYTHON, "-m", "py_compile", "module.py"]):
+        failures.append("external py_compile oracle did not pass")
+    return failures
+
+
+def oracle_command_passed(workspace: Path, command: list[str]) -> bool:
+    completed = subprocess.run(
+        command,
+        cwd=workspace,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    return completed.returncode == 0
+
+
+async def evaluate_case(
+    case: CodingTaskCase,
+    fixture_builder: FixtureBuilder,
+    oracle: Oracle,
+    *,
+    mode: EvaluationMode,
+    provider_adapter: ProviderAdapter | None,
+    keep_workspace: bool,
+) -> CodingTaskResult:
+    workspace = Path(tempfile.mkdtemp(prefix=f"agent-eval-{case.name}-"))
+    original_path = os.environ.get("PATH", "")
+    started = perf_counter()
+    try:
+        fixture_builder(workspace)
+        add_python_shim(workspace)
+        os.environ["PATH"] = (
+            f"{(workspace / '.venv' / 'bin').as_posix()}{os.pathsep}{original_path}"
+        )
+        registry = create_registry(workspace)
+        provider = provider_adapter or ScriptedProviderAdapter(case.scripted_steps)
+        agent = Agent(
+            provider_adapter=provider,
+            registry=registry,
+            stream_output=False,
+            max_steps=max(10, len(case.scripted_steps) + 1),
+            approval_callback=approve_eval_diagnostic_command,
+        )
+        run = await agent.run(case.task)
+        latency_ms = (perf_counter() - started) * 1000
+        failures = oracle(workspace, run, agent)
+        return CodingTaskResult(
+            name=case.name,
+            mode=mode,
+            task_success=not failures,
+            runtime_success=run.termination == "completed",
+            verification_success=run.verification.status == "passed",
+            recovery_success=recovered_from_error(run),
+            tool_accuracy=tool_accuracy(case, run, mode),
+            steps=len(run.steps),
+            tool_calls=sum(len(step.tool_calls) for step in run.steps),
+            tools=tool_names(run),
+            commands=command_summaries(run),
+            latency_ms=latency_ms,
+            input_tokens=agent.token_tracker.input_tokens,
+            output_tokens=agent.token_tracker.output_tokens,
+            estimated_cost=agent.token_tracker.estimated_cost,
+            failures=failures,
+        )
+    finally:
+        os.environ["PATH"] = original_path
+        if keep_workspace:
+            print(f"Kept workspace for {case.name}: {workspace}")
+        else:
+            shutil.rmtree(workspace)
+
+
+def add_python_shim(workspace: Path) -> None:
+    bin_dir = workspace / ".venv" / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    for executable in ("python", "python3"):
+        python_path = bin_dir / executable
+        try:
+            python_path.symlink_to(PYTHON)
+        except OSError:
+            python_path.write_text(
+                "#!/bin/sh\n"
+                f"exec {PYTHON} \"$@\"\n",
+                encoding="utf-8",
+            )
+            python_path.chmod(0o755)
+
+
+def approve_eval_diagnostic_command(
+    tool_call: ToolCall,
+    policy: CommandPolicyResult,
+) -> bool:
+    del tool_call
+    args = policy.args
+    if not args:
+        return False
+    executable = Path(args[0]).name
+    if executable in {"python", "python3"}:
+        return len(args) >= 2 and args[1] in {"-c", "--version"}
+    return executable in {"which", "ls"}
+
+
+def recovered_from_error(run: AgentRun) -> bool:
+    saw_failure_observation = False
+    for step in run.steps:
+        for tool_call, tool_result in zip(step.tool_calls, step.tool_results):
+            if observation_failed(tool_call, tool_result):
+                saw_failure_observation = True
+            elif saw_failure_observation:
+                return True
+    return False
+
+
+def observation_failed(tool_call: ToolCall, tool_result: ToolResult) -> bool:
+    if tool_result.is_error:
+        return True
+    if tool_call.name != "run_command":
+        return False
+    return "exit_code: 0" not in tool_result.content
+
+
+def tool_accuracy(case: CodingTaskCase, run: AgentRun, mode: EvaluationMode) -> bool:
+    if mode == "scripted":
+        return tool_sequence_matches_script(case, run)
+    return expected_tools_were_used(case, run)
+
+
+def tool_sequence_matches_script(case: CodingTaskCase, run: AgentRun) -> bool:
+    expected = [
+        step.tool_call.name
+        for step in case.scripted_steps
+        if step.tool_call is not None
+    ]
+    return tool_names(run) == expected
+
+
+def expected_tools_were_used(case: CodingTaskCase, run: AgentRun) -> bool:
+    expected = {
+        step.tool_call.name
+        for step in case.scripted_steps
+        if step.tool_call is not None
+    }
+    actual = set(tool_names(run))
+    return expected.issubset(actual)
+
+
+def tool_names(run: AgentRun) -> list[str]:
+    return [tool_call.name for step in run.steps for tool_call in step.tool_calls]
+
+
+def command_summaries(run: AgentRun) -> list[str]:
+    summaries: list[str] = []
+    for step in run.steps:
+        for tool_call, tool_result in zip(step.tool_calls, step.tool_results):
+            if tool_call.name != "run_command":
+                continue
+            command = tool_call.input.get("command")
+            command_text = command if isinstance(command, str) else "[unknown]"
+            exit_code = field_value(tool_result.content, "exit_code") or "error"
+            timed_out = field_value(tool_result.content, "timed_out") or "unknown"
+            summaries.append(
+                f"{command_text} -> exit_code={exit_code}, timed_out={timed_out}"
+            )
+    return summaries
+
+
+def field_value(output: str, field: str) -> str | None:
+    prefix = f"{field}:"
+    for line in output.splitlines():
+        if line.startswith(prefix):
+            return line.removeprefix(prefix).strip()
+    return None
+
+
+def final_answer(run: AgentRun) -> str:
+    for step in reversed(run.steps):
+        if step.text:
+            return "\n".join(step.text)
+    return ""
+
+
+def relative_changed_files(workspace: Path, registry: ToolRegistry) -> list[str]:
+    root = workspace.resolve()
+    return sorted(
+        path.resolve().relative_to(root).as_posix() for path in registry.changed_files
+    )
+
+
+def create_real_provider_adapter() -> ProviderAdapter:
+    config = load_provider_config()
+    return create_provider_adapter(config)
+
+
+async def evaluate_cases(
+    selected_names: list[str],
+    *,
+    mode: EvaluationMode,
+    keep_workspaces: bool,
+) -> list[CodingTaskResult]:
+    cases = build_cases()
+    results: list[CodingTaskResult] = []
+    for name in selected_names:
+        case, fixture_builder, oracle = cases[name]
+        provider_adapter = create_real_provider_adapter() if mode == "real_model" else None
+        results.append(
+            await evaluate_case(
+                case,
+                fixture_builder,
+                oracle,
+                mode=mode,
+                provider_adapter=provider_adapter,
+                keep_workspace=keep_workspaces,
+            )
+        )
+    return results
+
+
+def print_results(results: list[CodingTaskResult]) -> None:
+    mode = results[0].mode if results else "scripted"
+    title = (
+        "Coding-agent real-model evaluation"
+        if mode == "real_model"
+        else "Coding-agent deterministic evaluation"
+    )
+    print(title)
+    print("=" * len(title))
+    for result in results:
+        status = "PASS" if result.task_success else "FAIL"
+        print(f"{status} {result.name}")
+        print(
+            "  "
+            f"runtime={result.runtime_success} "
+            f"verification={result.verification_success} "
+            f"recovery={result.recovery_success} "
+            f"tool_accuracy={result.tool_accuracy}"
+        )
+        print(
+            "  "
+            f"steps={result.steps} "
+            f"tool_calls={result.tool_calls} "
+            f"latency_ms={result.latency_ms:.1f} "
+            f"tokens={result.input_tokens + result.output_tokens} "
+            f"cost=${result.estimated_cost:.6f}"
+        )
+        print(f"  tools={', '.join(result.tools) if result.tools else '[none]'}")
+        for command in result.commands:
+            print(f"  command={command}")
+        for failure in result.failures:
+            print(f"  - {failure}")
+    passed = sum(result.task_success for result in results)
+    total = len(results)
+    print(f"\nSummary: task_success={passed}/{total}")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Run deterministic local coding-agent evaluation cases."
+    )
+    parser.add_argument(
+        "cases",
+        nargs="*",
+        help="Case names to run. Defaults to all implemented cases.",
+    )
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        help="List available cases and exit.",
+    )
+    parser.add_argument(
+        "--keep-workspaces",
+        action="store_true",
+        help="Keep temporary workspaces for debugging.",
+    )
+    parser.add_argument(
+        "--real-model",
+        action="store_true",
+        help=(
+            "Call the configured live provider instead of the scripted fake provider. "
+            "Defaults to the read-only repository_search case when no case is named."
+        ),
+    )
+    return parser.parse_args()
+
+
+def default_case_names(
+    mode: EvaluationMode,
+    cases: dict[str, tuple[CodingTaskCase, FixtureBuilder, Oracle]],
+) -> list[str]:
+    if mode == "real_model":
+        return ["repository_search"]
+    return list(cases)
+
+
+def main() -> None:
+    args = parse_args()
+    cases = build_cases()
+    if args.list:
+        for name, (case, _, _) in cases.items():
+            print(f"{name}: {case.task}")
+        return
+
+    mode: EvaluationMode = "real_model" if args.real_model else "scripted"
+    if mode == "real_model":
+        load_dotenv()
+
+    selected_names = args.cases or default_case_names(mode, cases)
+    unknown = sorted(set(selected_names) - set(cases))
+    if unknown:
+        joined = ", ".join(unknown)
+        raise SystemExit(f"Unknown evaluation case(s): {joined}")
+
+    results = asyncio.run(
+        evaluate_cases(
+            selected_names,
+            mode=mode,
+            keep_workspaces=args.keep_workspaces,
+        )
+    )
+    print_results(results)
+    if not all(result.task_success for result in results):
+        raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main()
