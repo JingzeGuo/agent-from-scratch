@@ -8,6 +8,7 @@ from uuid import uuid4
 from pydantic import ValidationError
 
 from .context import ContextBuilder
+from .memory import MemoryContext, MemorySystem, MemoryWriteResult
 from .prompts import build_system_prompt
 from .provider import ProviderAdapter
 from .schemas import (
@@ -86,6 +87,7 @@ class Agent:
         self.completed_runs: list[AgentRun] = []
         self.session_store: SessionStore | None = None
         self.session_id: str | None = None
+        self.memory_system: MemorySystem | None = None
         self.context_builder = ContextBuilder()
         self.token_tracker = TokenTracker(model=self.model)
         self.system_prompt = build_system_prompt(
@@ -121,6 +123,12 @@ class Agent:
         approval_callback: ApprovalCallback | None,
     ) -> None:
         self.approval_callback = approval_callback
+
+    def configure_memory(
+        self,
+        memory_system: MemorySystem | None,
+    ) -> None:
+        self.memory_system = memory_system
 
     def build_context_result(self, objective: str | None = None) -> ContextBuildResult:
         return self.context_builder.build_with_metadata(
@@ -191,6 +199,7 @@ class Agent:
                 "content": user_task,
             }
         )
+        memory_context = self._retrieve_memory_context(user_task)
 
         for step in range(1, self.max_steps + 1):
             text_blocks: list[str] = []
@@ -204,6 +213,9 @@ class Agent:
                 print(text, end="", flush=True)
                 streamed_text = True
 
+            context_kwargs: dict[str, Any] = {}
+            if memory_context is not None:
+                context_kwargs["memory_context"] = memory_context
             model_messages = cast(
                 list[dict[str, Any]],
                 self.context_builder.build(
@@ -211,6 +223,7 @@ class Agent:
                     self.steps,
                     objective=user_task,
                     pending_action=self._current_pending_action(),
+                    **context_kwargs,
                 ),
             )
             model_request_started = perf_counter()
@@ -268,7 +281,7 @@ class Agent:
                     "Protocol error: provider returned parallel tool calls "
                     "but does not support them."
                 )
-                return self._finish_run(
+                return await self._finish_run_and_remember(
                     run_id=run_id,
                     objective=user_task,
                     steps=run_steps,
@@ -301,7 +314,7 @@ class Agent:
             )
 
             if response.stop_reason == "end_turn":
-                return self._finish_run(
+                return await self._finish_run_and_remember(
                     run_id=run_id,
                     objective=user_task,
                     steps=run_steps,
@@ -311,7 +324,7 @@ class Agent:
 
             if not tool_results:
                 print(f"Protocol error stop reason: {response.stop_reason}")
-                return self._finish_run(
+                return await self._finish_run_and_remember(
                     run_id=run_id,
                     objective=user_task,
                     steps=run_steps,
@@ -323,13 +336,53 @@ class Agent:
                 self.provider_adapter.tool_result_message(tool_results)
             )
         print(f"Agent reached the {self.max_steps}-step limit. Task stopped.")
-        return self._finish_run(
+        return await self._finish_run_and_remember(
             run_id=run_id,
             objective=user_task,
             steps=run_steps,
             termination="max_steps",
             final_stop_reason=response.stop_reason,
         )
+
+    async def remember_last_run(self) -> MemoryWriteResult | None:
+        if not self.completed_runs:
+            return None
+        return await self._remember_run(self.completed_runs[-1])
+
+    def _retrieve_memory_context(self, user_task: str) -> MemoryContext | None:
+        if self.memory_system is None:
+            return None
+        return self.memory_system.search(user_task)
+
+    async def _finish_run_and_remember(
+        self,
+        run_id: str,
+        objective: str,
+        steps: list[AgentStep],
+        termination: RunOutcome,
+        final_stop_reason: str | None,
+    ) -> AgentRun:
+        agent_run = self._finish_run(
+            run_id=run_id,
+            objective=objective,
+            steps=steps,
+            termination=termination,
+            final_stop_reason=final_stop_reason,
+        )
+        await self._remember_run(agent_run)
+        return agent_run
+
+    async def _remember_run(self, agent_run: AgentRun) -> MemoryWriteResult | None:
+        if self.memory_system is None:
+            return None
+        result = await self.memory_system.remember_run(
+            provider_adapter=self.provider_adapter,
+            session_id=self.session_id or "",
+            agent_run=agent_run,
+            workspace_root=self.registry.workspace_root,
+        )
+        self.token_tracker.add(result.usage)
+        return result
 
     def _finish_run(
         self,

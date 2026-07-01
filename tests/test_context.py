@@ -3,6 +3,7 @@ from typing import Any, cast
 from anthropic.types import MessageParam
 
 from agent.context import OMITTED_TOOL_RESULT_TEMPLATE, ContextBuilder
+from agent.memory import MemoryContext, MemoryRecord, MemorySearchResult
 from agent.schemas import AgentStep, PendingAction, ToolCall, ToolResult
 
 
@@ -267,6 +268,62 @@ def test_context_builder_prepends_structured_checkpoint_message() -> None:
     assert "Pending action:" in context[0]["content"]
     assert "- step 2 run_command (toolu_pending)" in context[0]["content"]
     assert context[1:] == messages
+
+
+def test_context_builder_inserts_memory_after_checkpoint() -> None:
+    messages: list[MessageParam] = [
+        {
+            "role": "user",
+            "content": "Continue",
+        }
+    ]
+    steps = [
+        AgentStep(
+            step_number=1,
+            stop_reason="tool_use",
+            tool_calls=[
+                ToolCall(
+                    name="read_file",
+                    input={"path": "agent/context.py"},
+                    tool_use_id="toolu_read",
+                )
+            ],
+            tool_results=[ToolResult(tool_use_id="toolu_read", content="content")],
+        )
+    ]
+    memory_context = MemoryContext(
+        results=[
+            MemorySearchResult(
+                record=MemoryRecord(
+                    id="project-topic-context",
+                    scope="project",
+                    kind="topic",
+                    title="Context boundary",
+                    content="Keep tool-use and tool-result messages together.",
+                    tags=["context"],
+                    created_at="2026-06-28T00:00:00+00:00",
+                    updated_at="2026-06-28T00:00:00+00:00",
+                ),
+                score=0.9,
+                lexical_score=1.0,
+                vector_score=0.8,
+                boost_score=0.4,
+            )
+        ]
+    )
+    builder = ContextBuilder()
+
+    context = builder.build(
+        messages,
+        steps,
+        objective="Continue context work",
+        memory_context=memory_context,
+    )
+
+    assert "[Structured context checkpoint]" in context[0]["content"]
+    assert "[Retrieved memory]" in context[1]["content"]
+    assert "Context boundary" in context[1]["content"]
+    assert context[2:] == messages
 
 
 def test_context_builder_does_not_collapse_under_budget() -> None:

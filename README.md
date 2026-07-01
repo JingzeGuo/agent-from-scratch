@@ -23,6 +23,9 @@ controller loop, termination, recovery, context, persistence, and evaluation.
 - Bounded command execution with a command safety policy
 - Session checkpoints, listing, resume, and rename
 - Context compaction reporting
+- Project and global memory stores for durable agent context
+- Local hybrid memory retrieval with BM25-like lexical scoring and TF-IDF cosine
+- Automatic run reflection into session, topic, profile, and lesson memories
 - Structured JSONL trace events with secret redaction
 - Token and estimated cost tracking
 - Optional web search and URL fetching
@@ -91,6 +94,10 @@ Supported variables:
 | `OPENAI_BASE_URL` | OpenAI API base URL, default `https://api.openai.com/v1` |
 | `TAVILY_API_KEY` | Optional key for the web search tool |
 | `AGENT_TRACE_REDACT_PATTERNS` | Optional newline-separated regex patterns redacted from trace text |
+| `AGENT_MEMORY_ENABLED` | Enable memory retrieval and reflection, default `true` |
+| `AGENT_MEMORY_GLOBAL_DIR` | Global memory directory, default `~/.agent-from-scratch/memory` |
+| `AGENT_MEMORY_MAX_RESULTS` | Maximum retrieved memory records per model request, default `5` |
+| `AGENT_MEMORY_MAX_CONTEXT_CHARS` | Maximum memory context characters inserted into a request, default `4000` |
 
 The CLI loads `.env` from the directory where you start the process. For a
 coding task in another repository, either export environment variables globally
@@ -151,6 +158,10 @@ Interactive sessions support slash commands:
 | `/diff` | Show all file changes from this session |
 | `/diff <path>` | Show changes for one file |
 | `/compact` | Show context compaction metrics |
+| `/memory status` | Show memory paths and record counts |
+| `/memory search <query>` | Search project and global memory |
+| `/memory show <id>` | Show one memory record |
+| `/memory reflect` | Reflect on the latest completed run and save memory |
 | `/trace` | Print structured JSONL trace events |
 | `/trace <path>` | Export trace events to a workspace-relative file |
 | `/rename <session-name>` | Rename the current session |
@@ -236,6 +247,7 @@ CLI
   -> Agent controller
        -> Provider adapter
        -> Context builder
+       -> Memory system
        -> Tool registry
             -> repository tools
             -> edit/write tools
@@ -263,8 +275,42 @@ Core modules:
 | `agent/security.py` | Command policy and trace redaction |
 | `agent/session.py` | Session snapshots, pending actions, JSONL trace events |
 | `agent/context.py` | Context compaction and checkpoint construction |
+| `agent/memory.py` | Project/global memory stores, retrieval, and run reflection |
 | `agent/token_tracker.py` | Token and estimated cost tracking |
 | `agent/verification.py` | Verification evidence extraction |
+
+## Memory
+
+Memory is separate from session checkpoints. Checkpoints preserve resumable
+controller state; memory preserves durable context that may help future tasks.
+
+Project memory lives inside the active workspace:
+
+```text
+.agents/memory/
+  profile.md
+  index.json
+  sessions/
+  topics/
+  reflections/
+```
+
+Global memory defaults to `~/.agent-from-scratch/memory` and uses the same
+layout. Project memory is for repository-specific facts, session notes,
+debugging history, and reflections. Global memory is reserved for stable user
+preferences and cross-project lessons that should still matter in another
+repository.
+
+On each task, the agent searches project and global memory using local hybrid
+retrieval: BM25-like lexical scoring plus TF-IDF cosine scoring over local
+tokens. Retrieved memory is inserted as supporting context after the structured
+checkpoint and does not override system or project rules.
+
+After a run finishes, the agent asks the configured model to propose concise
+memory candidates. The controller filters candidates before persistence, redacts
+secret-like text, rejects project-specific global memories, and stores accepted
+records as Markdown plus `index.json` entries. If memory reflection fails, the
+main task result is still preserved.
 
 ## Sessions, Checkpoints, and Traces
 

@@ -3,6 +3,7 @@ from typing import Literal, cast
 
 from anthropic.types import MessageParam
 
+from .memory import MemoryContext
 from .schemas import (
     AgentStep,
     CommandSummary,
@@ -42,6 +43,7 @@ class ContextBuilder:
         steps: list[AgentStep] | None = None,
         objective: str | None = None,
         pending_action: PendingAction | None = None,
+        memory_context: MemoryContext | None = None,
     ) -> list[MessageParam]:
         return cast(
             list[MessageParam],
@@ -50,6 +52,7 @@ class ContextBuilder:
                 steps=steps,
                 objective=objective,
                 pending_action=pending_action,
+                memory_context=memory_context,
             ).messages,
         )
 
@@ -59,6 +62,7 @@ class ContextBuilder:
         steps: list[AgentStep] | None = None,
         objective: str | None = None,
         pending_action: PendingAction | None = None,
+        memory_context: MemoryContext | None = None,
     ) -> ContextBuildResult:
         original_context_chars = self._context_chars(messages)
         context = cast(list[MessageParam], deepcopy(messages))
@@ -68,22 +72,26 @@ class ContextBuilder:
         for message in context[:older_message_count]:
             snipped_tool_results += self._snip_large_tool_results(message)
 
-        checkpoint_message: MessageParam | None = None
+        prefix_messages: list[MessageParam] = []
         if steps:
-            checkpoint_message = self._checkpoint_message(
-                self.build_checkpoint(
-                    steps,
-                    objective=objective,
-                    pending_action=pending_action,
+            prefix_messages.append(
+                self._checkpoint_message(
+                    self.build_checkpoint(
+                        steps,
+                        objective=objective,
+                        pending_action=pending_action,
+                    )
                 )
             )
-            context.insert(0, checkpoint_message)
+        if memory_context is not None and not memory_context.is_empty():
+            prefix_messages.append(self._memory_message(memory_context))
+        context = [*prefix_messages, *context]
 
         hard_collapsed = False
-        if checkpoint_message is not None and self._context_chars(context) > self.max_context_chars:
+        if prefix_messages and self._context_chars(context) > self.max_context_chars:
             context = self._collapse_context(
-                checkpoint_message=checkpoint_message,
-                messages=context[1:],
+                prefix_messages=prefix_messages,
+                messages=context[len(prefix_messages) :],
             )
             hard_collapsed = True
 
@@ -95,7 +103,7 @@ class ContextBuilder:
             final_context_chars=self._context_chars(context),
             snipped_tool_results=snipped_tool_results,
             hard_collapsed=hard_collapsed,
-            checkpoint_included=checkpoint_message is not None,
+            checkpoint_included=bool(steps),
         )
 
     def build_checkpoint(
@@ -190,12 +198,12 @@ class ContextBuilder:
 
     def _collapse_context(
         self,
-        checkpoint_message: MessageParam,
+        prefix_messages: list[MessageParam],
         messages: list[MessageParam],
     ) -> list[MessageParam]:
         recent_start = self._recent_complete_turn_start(messages)
         recent_start = self._expand_to_tool_boundary(messages, recent_start)
-        return [checkpoint_message, *messages[recent_start:]]
+        return [*prefix_messages, *messages[recent_start:]]
 
     def _recent_complete_turn_start(self, messages: list[MessageParam]) -> int:
         turn_starts = [
@@ -250,6 +258,12 @@ class ContextBuilder:
         return {
             "role": "user",
             "content": self._format_checkpoint(checkpoint),
+        }
+
+    def _memory_message(self, memory_context: MemoryContext) -> MessageParam:
+        return {
+            "role": "user",
+            "content": memory_context.format_for_prompt(),
         }
 
     def _format_checkpoint(self, checkpoint: ContextCheckpoint) -> str:

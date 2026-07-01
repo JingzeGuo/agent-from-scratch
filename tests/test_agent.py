@@ -23,6 +23,14 @@ from anthropic.types import (
 
 from agent.agent import Agent
 from agent.context import ContextBuilder
+from agent.memory import (
+    MemoryCandidate,
+    MemoryContext,
+    MemoryRecord,
+    MemoryStore,
+    MemorySummaryResult,
+    MemorySystem,
+)
 from agent.prompts import build_system_prompt
 from agent.provider import AnthropicProviderAdapter, OpenAICompatibleProviderAdapter
 from agent.schemas import (
@@ -170,12 +178,34 @@ class FakeContextBuilder(ContextBuilder):
         steps: list[AgentStep] | None = None,
         objective: str | None = None,
         pending_action: PendingAction | None = None,
+        memory_context: MemoryContext | None = None,
     ) -> list[MessageParam]:
         self.calls.append(list(messages))
         self.step_calls.append(list(steps or []))
         self.objective_calls.append(objective)
         self.pending_action_calls.append(pending_action)
         return self.context
+
+
+class FakeMemorySummarizer:
+    async def summarize_run(
+        self,
+        **kwargs: Any,
+    ) -> MemorySummaryResult:
+        return MemorySummaryResult(
+            candidates=[
+                MemoryCandidate(
+                    scope="project",
+                    kind="reflection",
+                    title="Context memory lesson",
+                    content="Retrieved memory helped preserve context boundaries.",
+                    tags=["context"],
+                    confidence="medium",
+                    evidence="The run completed with memory context.",
+                )
+            ],
+            usage=TokenUsage(input_tokens=3, output_tokens=2),
+        )
 
 
 class FakeProviderAdapter:
@@ -540,6 +570,58 @@ def test_agent_uses_context_builder_for_model_messages() -> None:
     assert context_builder.objective_calls == ["Original task"]
     assert context_builder.pending_action_calls == [None]
     assert messages.requests[0]["messages"] == built_context
+
+
+def test_agent_retrieves_memory_and_remembers_completed_run(tmp_path: Path) -> None:
+    adapter = FakeProviderAdapter(
+        responses=[
+            ProviderResponse(
+                message={"role": "assistant", "content": "Done."},
+                stop_reason="end_turn",
+                text=["Done."],
+                usage=TokenUsage(input_tokens=10, output_tokens=5),
+            )
+        ]
+    )
+    registry = ToolRegistry(tmp_path)
+    agent = Agent(
+        provider_adapter=adapter,
+        registry=registry,
+        stream_output=False,
+    )
+    project_store = MemoryStore(tmp_path / "project-memory", "project")
+    project_store.save_record(
+        MemoryRecord(
+            id="project-topic-context",
+            scope="project",
+            kind="topic",
+            title="Context compaction",
+            content="Keep tool-call and tool-result boundaries intact.",
+            tags=["context"],
+            created_at="2026-06-28T00:00:00+00:00",
+            updated_at="2026-06-28T00:00:00+00:00",
+        )
+    )
+    memory_system = MemorySystem(
+        project_store=project_store,
+        global_store=MemoryStore(tmp_path / "global-memory", "global"),
+        summarizer=FakeMemorySummarizer(),  # type: ignore[arg-type]
+    )
+    agent.configure_memory(memory_system)
+
+    agent_run = asyncio.run(agent.run("Use context compaction memory"))
+
+    first_request_messages = adapter.requests[0]["messages"]
+    assert any(
+        isinstance(message.get("content"), str)
+        and "[Retrieved memory]" in message["content"]
+        for message in first_request_messages
+    )
+    assert agent_run.termination == "completed"
+    saved_titles = {record.title for record in project_store.list_records()}
+    assert "Context memory lesson" in saved_titles
+    assert agent.token_tracker.input_tokens == 13
+    assert agent.token_tracker.output_tokens == 7
 
 
 def test_build_system_prompt_uses_workspace_and_registered_tools(

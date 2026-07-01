@@ -7,6 +7,13 @@ import pytest
 from anthropic import AsyncAnthropic
 
 from agent.agent import Agent
+from agent.memory import (
+    MemoryCandidate,
+    MemoryRecord,
+    MemoryStore,
+    MemorySummaryResult,
+    MemorySystem,
+)
 from agent.provider import AnthropicProviderAdapter
 from agent.schemas import (
     AgentRun,
@@ -27,9 +34,13 @@ from agent.tools import calculator
 from main import (
     CliSessionState,
     checkpoint_session,
+    default_global_memory_dir,
+    default_project_memory_dir,
     default_sessions_dir,
+    format_memory_record,
     generate_session_id,
     handle_command,
+    handle_command_async,
     parse_cli_args,
     parse_one_shot_task,
     prompt_tool_approval,
@@ -79,6 +90,27 @@ class FakeCheckpointAgent(FakeRunAgent):
         )
 
 
+class FakeMemorySummarizer:
+    async def summarize_run(
+        self,
+        **kwargs: object,
+    ) -> MemorySummaryResult:
+        return MemorySummaryResult(
+            candidates=[
+                MemoryCandidate(
+                    scope="project",
+                    kind="reflection",
+                    title="CLI reflection",
+                    content="Manual reflection saved from the CLI.",
+                    tags=["cli"],
+                    confidence="medium",
+                    evidence="The user ran /memory reflect.",
+                )
+            ],
+            usage=TokenUsage(input_tokens=2, output_tokens=1),
+        )
+
+
 def create_agent(workspace_root: Path | None = None) -> Agent:
     registry = ToolRegistry(workspace_root)
     registry.register(
@@ -115,6 +147,7 @@ def test_help_lists_available_commands(
         "  /save     Save the current session checkpoint.\n"
         "  /diff     Show file changes from this session.\n"
         "  /compact  Show compacted context metrics.\n"
+        "  /memory   Manage memory status, search, show, and reflection.\n"
         "  /trace    Show or export structured trace events.\n"
         "  /rename   Rename the current session.\n"
         "  /sessions List saved sessions.\n"
@@ -396,6 +429,16 @@ def test_cli_reports_configuration_error_without_traceback(
 
 def test_default_sessions_dir_is_workspace_local(tmp_path: Path) -> None:
     assert default_sessions_dir(tmp_path) == tmp_path / ".agents" / "sessions"
+
+
+def test_default_memory_dirs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENT_MEMORY_GLOBAL_DIR", str(tmp_path / "global-memory"))
+
+    assert default_project_memory_dir(tmp_path) == tmp_path / ".agents" / "memory"
+    assert default_global_memory_dir() == tmp_path / "global-memory"
 
 
 def test_generate_session_id_uses_safe_timestamp_format() -> None:
@@ -786,6 +829,123 @@ def test_compact_command_requires_agent(
 
     assert should_exit is False
     assert capsys.readouterr().out == "Compact command is unavailable.\n"
+
+
+def test_memory_status_command_shows_store_state(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    agent = create_agent(tmp_path)
+    memory_system = MemorySystem(
+        project_store=MemoryStore(tmp_path / "project-memory", "project"),
+        global_store=MemoryStore(tmp_path / "global-memory", "global"),
+    )
+    memory_system.project_store.save_record(
+        MemoryRecord(
+            id="project-topic-one",
+            scope="project",
+            kind="topic",
+            title="Context topic",
+            content="Context compaction notes.",
+            created_at="2026-06-28T00:00:00+00:00",
+            updated_at="2026-06-28T00:00:00+00:00",
+        )
+    )
+    agent.configure_memory(memory_system)
+
+    should_exit = handle_command("/memory status", agent)
+
+    assert should_exit is False
+    assert capsys.readouterr().out == (
+        "Memory:\n"
+        "  Enabled: True\n"
+        f"  Project root: {(tmp_path / 'project-memory').as_posix()}\n"
+        f"  Global root: {(tmp_path / 'global-memory').as_posix()}\n"
+        "  Project records: 1\n"
+        "  Global records: 0\n"
+    )
+
+
+def test_memory_search_and_show_commands(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    agent = create_agent(tmp_path)
+    memory_system = MemorySystem(
+        project_store=MemoryStore(tmp_path / "project-memory", "project"),
+        global_store=MemoryStore(tmp_path / "global-memory", "global"),
+    )
+    record = memory_system.project_store.save_record(
+        MemoryRecord(
+            id="project-topic-context",
+            scope="project",
+            kind="topic",
+            title="Context boundary",
+            content="Keep tool-call and tool-result messages together.",
+            tags=["context"],
+            created_at="2026-06-28T00:00:00+00:00",
+            updated_at="2026-06-28T00:00:00+00:00",
+        )
+    )
+    agent.configure_memory(memory_system)
+
+    should_exit = handle_command("/memory search context boundary", agent)
+
+    assert should_exit is False
+    search_output = capsys.readouterr().out
+    assert "project-topic-context  project/topic" in search_output
+    assert "Context boundary" in search_output
+
+    should_exit = handle_command("/memory show project-topic-context", agent)
+
+    assert should_exit is False
+    assert capsys.readouterr().out == format_memory_record(record) + "\n"
+
+
+def test_memory_reflect_async_command_saves_last_run(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    agent = create_agent(tmp_path)
+    memory_system = MemorySystem(
+        project_store=MemoryStore(tmp_path / "project-memory", "project"),
+        global_store=MemoryStore(tmp_path / "global-memory", "global"),
+        summarizer=FakeMemorySummarizer(),  # type: ignore[arg-type]
+    )
+    agent.configure_memory(memory_system)
+    agent.completed_runs.append(
+        AgentRun(
+            run_id="run-one",
+            objective="Reflect",
+            steps=[],
+            termination="completed",
+            final_stop_reason="end_turn",
+            verification=VerificationEvidence(status="not_run"),
+        )
+    )
+
+    should_exit = asyncio.run(handle_command_async("/memory reflect", agent))
+
+    assert should_exit is False
+    assert capsys.readouterr().out == (
+        "Memory reflection saved 1 records; skipped 0.\n"
+    )
+    assert {record.title for record in memory_system.project_store.list_records()} == {
+        "CLI reflection"
+    }
+    assert agent.token_tracker.input_tokens == 2
+    assert agent.token_tracker.output_tokens == 1
+
+
+def test_memory_command_requires_memory_system(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    agent = create_agent()
+
+    should_exit = handle_command("/memory status", agent)
+
+    assert should_exit is False
+    assert capsys.readouterr().out == "Memory is unavailable.\n"
 
 
 def test_rename_command_updates_current_session_name(

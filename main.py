@@ -1,4 +1,5 @@
 import asyncio
+import os
 import sys
 from collections.abc import Sequence
 from datetime import datetime
@@ -9,6 +10,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel
 
 from agent.agent import Agent
+from agent.memory import MemoryRecord, MemoryStore, MemorySystem
 from agent.provider import create_provider_adapter, load_provider_config
 from agent.schemas import SessionEvent, ToolCall
 from agent.security import CommandPolicyResult
@@ -28,6 +30,7 @@ COMMANDS = {
     "/save": "Save the current session checkpoint.",
     "/diff": "Show file changes from this session.",
     "/compact": "Show compacted context metrics.",
+    "/memory": "Manage memory status, search, show, and reflection.",
     "/trace": "Show or export structured trace events.",
     "/rename": "Rename the current session.",
     "/sessions": "List saved sessions.",
@@ -147,6 +150,49 @@ def print_configuration_error(error: ValueError) -> None:
 
 def default_sessions_dir(workspace_root: Path) -> Path:
     return workspace_root / ".agents" / "sessions"
+
+
+def default_project_memory_dir(workspace_root: Path) -> Path:
+    return workspace_root / ".agents" / "memory"
+
+
+def default_global_memory_dir() -> Path:
+    configured = os.getenv("AGENT_MEMORY_GLOBAL_DIR")
+    if configured:
+        return Path(configured).expanduser()
+    return Path("~/.agent-from-scratch/memory").expanduser()
+
+
+def memory_enabled_from_env() -> bool:
+    value = os.getenv("AGENT_MEMORY_ENABLED", "true").strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+
+def memory_int_from_env(name: str, default: int, minimum: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        parsed = int(value)
+    except ValueError:
+        return default
+    return max(minimum, parsed)
+
+
+def create_memory_system(workspace_root: Path) -> MemorySystem:
+    memory_system = MemorySystem(
+        project_store=MemoryStore(default_project_memory_dir(workspace_root), "project"),
+        global_store=MemoryStore(default_global_memory_dir(), "global"),
+        enabled=memory_enabled_from_env(),
+        max_results=memory_int_from_env("AGENT_MEMORY_MAX_RESULTS", 5, 1),
+        max_context_chars=memory_int_from_env(
+            "AGENT_MEMORY_MAX_CONTEXT_CHARS",
+            4_000,
+            200,
+        ),
+    )
+    memory_system.initialize()
+    return memory_system
 
 
 def generate_session_id() -> str:
@@ -377,6 +423,8 @@ def handle_command(
         print(f"  checkpoint included: {result.checkpoint_included}")
         print(f"  hard collapsed: {result.hard_collapsed}")
         return False
+    if command == "/memory" or command.startswith("/memory "):
+        return handle_memory_command(command, agent)
     if command == "/trace" or command.startswith("/trace "):
         if session_store is None or session_state is None:
             print("Trace command is unavailable.")
@@ -470,6 +518,104 @@ def handle_command(
     return False
 
 
+def handle_memory_command(
+    command: str,
+    agent: Agent | None = None,
+) -> bool:
+    memory_system = None if agent is None else agent.memory_system
+    if memory_system is None:
+        print("Memory is unavailable.")
+        return False
+
+    parts = command.split(maxsplit=2)
+    action = parts[1] if len(parts) >= 2 else "status"
+    if action == "status":
+        status = memory_system.status()
+        print("Memory:")
+        print(f"  Enabled: {status.enabled}")
+        print(f"  Project root: {status.project_root}")
+        print(f"  Global root: {status.global_root}")
+        print(f"  Project records: {status.project_records}")
+        print(f"  Global records: {status.global_records}")
+        return False
+
+    if action == "search":
+        if len(parts) != 3 or not parts[2].strip():
+            print("Usage: /memory search <query>")
+            return False
+        context = memory_system.search(parts[2])
+        if context.is_empty():
+            print("[No memory matches]")
+            return False
+        for result in context.results:
+            result_record = result.record
+            print(
+                f"{result_record.id}  {result_record.scope}/{result_record.kind}  "
+                f"{result.score:.3f}  {result_record.title}"
+            )
+        return False
+
+    if action == "show":
+        if len(parts) != 3 or not parts[2].strip():
+            print("Usage: /memory show <id>")
+            return False
+        record = memory_system.get_record(parts[2].strip())
+        if record is None:
+            print(f"Memory not found: {parts[2].strip()}")
+            return False
+        print(format_memory_record(record))
+        return False
+
+    if action == "reflect":
+        print("Memory reflection is available in the interactive CLI.")
+        return False
+
+    print("Usage: /memory [status|search|show|reflect]")
+    return False
+
+
+def format_memory_record(record: MemoryRecord) -> str:
+    tags = ", ".join(record.tags) if record.tags else "none"
+    lines = [
+        f"ID: {record.id}",
+        f"Scope: {record.scope}",
+        f"Kind: {record.kind}",
+        f"Title: {record.title}",
+        f"Tags: {tags}",
+    ]
+    if record.confidence is not None:
+        lines.append(f"Confidence: {record.confidence}")
+    if record.evidence:
+        lines.append(f"Evidence: {record.evidence}")
+    lines.extend(["", record.content])
+    return "\n".join(lines)
+
+
+async def handle_command_async(
+    command: str,
+    agent: Agent | None = None,
+    session_store: SessionStore | None = None,
+    session_state: CliSessionState | None = None,
+) -> bool:
+    if command == "/memory reflect":
+        if agent is None or agent.memory_system is None:
+            print("Memory is unavailable.")
+            return False
+        result = await agent.remember_last_run()
+        if result is None:
+            print("No completed run to reflect.")
+            return False
+        if result.error is not None:
+            print(f"Memory reflection failed: {result.error}")
+            return False
+        print(
+            "Memory reflection saved "
+            f"{len(result.saved_records)} records; skipped {result.skipped_candidates}."
+        )
+        return False
+    return handle_command(command, agent, session_store, session_state)
+
+
 async def run_cli(
     agent: Agent,
     one_shot_task: str | None = None,
@@ -491,7 +637,12 @@ async def run_cli(
             print("Task cannot be empty.")
             continue
         if user_task.startswith("/"):
-            if handle_command(user_task, agent, session_store, session_state):
+            if await handle_command_async(
+                user_task,
+                agent,
+                session_store,
+                session_state,
+            ):
                 return
             continue
 
@@ -529,6 +680,7 @@ async def main(argv: Sequence[str] | None = None) -> None:
         model=config.model,
         provider=config.provider,
     )
+    agent.configure_memory(create_memory_system(workspace_root))
     if cli_args.one_shot_task is None:
         agent.configure_approval_callback(prompt_tool_approval)
     else:
