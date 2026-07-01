@@ -52,6 +52,18 @@ PATH_LIKE_PATTERN = re.compile(
 COMMAND_LIKE_PATTERN = re.compile(
     r"\b(pytest|ruff|mypy|python\s+-m|git\s+|uv\s+|pip\s+|npm\s+|pnpm\s+|cargo\s+)\b"
 )
+FAILURE_CLAIM_PATTERN = re.compile(
+    r"\b(test|tests|test suite|verification|pytest|ruff|mypy)\b[^.\n]{0,80}"
+    r"\b(fail|failed|failing|exit code 1)\b"
+    r"|\b(fail|failed|failing)\b[^.\n]{0,80}"
+    r"\b(test|tests|verification|pytest|ruff|mypy)\b",
+    re.IGNORECASE,
+)
+ENVIRONMENT_VERIFICATION_PATTERN = re.compile(
+    r"(approval denied|requires approval|no module named (pytest|ruff|mypy)|"
+    r"command not found|no such file or directory)",
+    re.IGNORECASE,
+)
 STOP_WORDS = {
     "a",
     "an",
@@ -530,6 +542,7 @@ Return JSON only, with this shape:
 
 Use project scope for repository facts, session notes, file-specific decisions, and concrete debugging history.
 Use global scope only for stable user preferences or cross-project lessons that remain useful in another repository.
+If verification failed because the interpreter, pytest, ruff, mypy, command approval, or another environment/tooling prerequisite was unavailable, do not claim the repository tests or code failed. Store that only as a session/tooling note if it is useful.
 Do not include raw tool output, full diffs, secrets, API keys, or long logs."""
 
     def _format_run_evidence(
@@ -554,6 +567,10 @@ Do not include raw tool output, full diffs, secrets, API keys, or long logs."""
         ]
         if agent_run.verification.command is not None:
             lines.append(f"verification_command: {agent_run.verification.command}")
+        if agent_run.verification.output is not None:
+            lines.append(
+                f"verification_output: {_first_diagnostic_line(agent_run.verification.output)}"
+            )
         lines.extend(_format_list("files_read", facts["files_read"]))
         lines.extend(_format_list("files_changed", facts["files_changed"]))
         lines.extend(_format_list("commands_run", facts["commands_run"]))
@@ -655,7 +672,7 @@ class MemorySystem:
         saved_records: list[MemoryRecord] = []
         skipped_candidates = 0
         for candidate in summary.candidates:
-            if not self._candidate_allowed(candidate, workspace_root):
+            if not self._candidate_allowed(candidate, workspace_root, agent_run):
                 skipped_candidates += 1
                 continue
             record = self._record_from_candidate(candidate, agent_run)
@@ -671,9 +688,13 @@ class MemorySystem:
         self,
         candidate: MemoryCandidate,
         workspace_root: Path | None,
+        agent_run: AgentRun,
     ) -> bool:
         if candidate.scope == "project":
-            return candidate.kind in PROJECT_KINDS
+            return candidate.kind in PROJECT_KINDS and not _unsupported_failure_claim(
+                candidate,
+                agent_run,
+            )
 
         if candidate.kind not in GLOBAL_KINDS:
             return False
@@ -755,13 +776,52 @@ def _extract_run_facts(steps: list[AgentStep]) -> dict[str, list[str]]:
 
 
 def _command_summary(command: str, tool_result: ToolResult) -> str:
-    first_line = _first_line(tool_result.content)
+    first_line = _first_diagnostic_line(tool_result.content)
     status = "error" if tool_result.is_error else "ok"
     return f"{status}: {command} ({first_line})"
 
 
 def _first_line(text: str) -> str:
     return text.splitlines()[0] if text.splitlines() else ""
+
+
+def _first_diagnostic_line(text: str) -> str:
+    metadata_prefixes = ("exit_code:", "timed_out:", "duration_seconds:")
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped in {"stdout:", "stderr:", "[empty]"}:
+            continue
+        if stripped.startswith(metadata_prefixes):
+            continue
+        return stripped
+    return _first_line(text)
+
+
+def _unsupported_failure_claim(
+    candidate: MemoryCandidate,
+    agent_run: AgentRun,
+) -> bool:
+    if agent_run.verification.status != "error":
+        return False
+    verification_text = "\n".join(
+        value
+        for value in (
+            agent_run.verification.command,
+            agent_run.verification.output,
+        )
+        if value
+    )
+    if ENVIRONMENT_VERIFICATION_PATTERN.search(verification_text) is None:
+        return False
+    candidate_text = "\n".join(
+        [
+            candidate.title,
+            candidate.content,
+            candidate.evidence or "",
+            " ".join(candidate.tags),
+        ]
+    )
+    return FAILURE_CLAIM_PATTERN.search(candidate_text) is not None
 
 
 def _format_list(heading: str, values: list[str]) -> list[str]:

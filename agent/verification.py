@@ -1,5 +1,18 @@
 from .schemas import AgentStep, ToolCall, ToolResult, VerificationEvidence
 
+ENVIRONMENT_FAILURE_PATTERNS = (
+    "no module named pytest",
+    "no module named ruff",
+    "no module named mypy",
+    "pytest: command not found",
+    "ruff: command not found",
+    "mypy: command not found",
+    "python: command not found",
+    "python3: command not found",
+    "no such file or directory: 'python'",
+    "no such file or directory: 'python3'",
+)
+
 
 def extract_verification_evidence(
     steps: list[AgentStep],
@@ -31,6 +44,13 @@ def extract_verification_evidence(
     if exit_code == 0:
         return VerificationEvidence(
             status="passed",
+            command=command,
+            exit_code=exit_code,
+            output=output,
+        )
+    if _is_environment_failure(output):
+        return VerificationEvidence(
+            status="error",
             command=command,
             exit_code=exit_code,
             output=output,
@@ -92,3 +112,8 @@ def _field_value(output: str, field: str) -> str | None:
         if line.startswith(prefix):
             return line.removeprefix(prefix).strip()
     return None
+
+
+def _is_environment_failure(output: str) -> bool:
+    normalized = output.lower()
+    return any(pattern in normalized for pattern in ENVIRONMENT_FAILURE_PATTERNS)

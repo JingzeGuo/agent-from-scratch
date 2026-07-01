@@ -104,7 +104,11 @@ def classify_command(command: str) -> CommandPolicyResult:
             reason="Blocked dangerous command: git clean",
             args=args,
         )
-    if _is_safe_python_module_command(args) or _is_safe_direct_command(args):
+    if (
+        _is_safe_python_module_command(args)
+        or _is_safe_python_version_command(args)
+        or _is_safe_direct_command(args)
+    ):
         return CommandPolicyResult(
             decision="allowed",
             reason="Command matches the safe coding-agent command policy.",
@@ -144,6 +148,15 @@ def _is_safe_python_module_command(args: list[str]) -> bool:
     if executable not in {"python", "python3"} and not executable.endswith("python"):
         return False
     return args[1] == "-m" and args[2] in SAFE_PYTHON_MODULES
+
+
+def _is_safe_python_version_command(args: list[str]) -> bool:
+    if len(args) != 2:
+        return False
+    executable = args[0].split("/")[-1]
+    if executable not in {"python", "python3"} and not executable.endswith("python"):
+        return False
+    return args[1] in {"--version", "-V"}
 
 
 def _is_safe_direct_command(args: list[str]) -> bool:

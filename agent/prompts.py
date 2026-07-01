@@ -31,6 +31,7 @@ def build_system_prompt(
         f"- `{name}`: {_TOOL_GUIDANCE.get(name, tool.description)}"
         for name, tool in registry.tools.items()
     )
+    verification_command_guidance = _verification_command_guidance(workspace_root)
 
     return f"""You are a coding agent operating inside a local workspace.
 
@@ -68,7 +69,13 @@ Use `write_file` only when creating a new file or when a whole-file rewrite is i
 
 After changing code, you must run focused verification before the final answer unless no relevant command exists or the user explicitly asked not to run commands.
 
-Prefer the smallest relevant command that can prove the change, such as `python -m pytest tests/test_target.py`, `python -m py_compile module.py`, `pytest path/to/test_file.py`, `ruff check path`, or `mypy path`. For Python workspaces, prefer `python -m ...` commands over workspace-local paths such as `.venv/bin/python` unless that interpreter path has been observed to exist.
+Prefer the smallest relevant command that can prove the change, such as `python -m pytest tests/test_target.py`, `python -m py_compile module.py`, `pytest path/to/test_file.py`, `ruff check path`, or `mypy path`.
+
+{verification_command_guidance}
+
+Do not spend steps probing interpreter locations with commands like `which python`, `python --version`, or `python3 --version`. If an interpreter command fails because it is unavailable or lacks a module, switch directly to the recommended verification command above or report the verification limitation.
+
+`run_command` does not support shell operators such as `cd`, `&&`, `|`, `;`, or redirection. Use the tool's `cwd` argument when a command should run from a subdirectory.
 
 After a successful edit, do not spend many steps searching for more context before running the focused verification. Run the check, inspect failures if any, then repair.
 
@@ -93,3 +100,23 @@ In CLI-facing activity messages, be brief and factual. Report actions and observ
 Before giving a final answer after file changes, call `get_diff()` unless there were no edits. If code changed and the latest verification status is failed, error, or not run, continue recovering instead of ending the task, unless you are blocked.
 
 End with a concise final answer covering what changed, which files changed, and what verification was run. Mention limitations only when relevant."""
+
+
+def _verification_command_guidance(workspace_root: Path | None) -> str:
+    if workspace_root is not None:
+        venv_python = workspace_root / ".venv" / "bin" / "python"
+        if venv_python.exists():
+            return (
+                "This workspace has `.venv/bin/python`; prefer commands like "
+                "`.venv/bin/python -m pytest tests/test_target.py` and "
+                "`.venv/bin/python -m py_compile module.py` for Python verification. "
+                "`glob_files` and `search_text` normally skip noisy hidden directories "
+                "such as `.venv`, so do not spend steps using glob searches to prove "
+                "that this interpreter exists."
+            )
+    return (
+        "For Python workspaces, prefer module commands such as "
+        "`python3 -m pytest tests/test_target.py` or "
+        "`python3 -m py_compile module.py` when a project-local interpreter has "
+        "not been observed."
+    )

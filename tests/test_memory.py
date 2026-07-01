@@ -135,6 +135,26 @@ class FakeSummarizer:
         )
 
 
+class EnvironmentFailureSummarizer:
+    async def summarize_run(
+        self,
+        **kwargs: Any,
+    ) -> MemorySummaryResult:
+        return MemorySummaryResult(
+            candidates=[
+                MemoryCandidate(
+                    scope="project",
+                    kind="project_fact",
+                    title="Taskledger tests failing",
+                    content="The taskledger pytest suite is failing with exit code 1.",
+                    tags=["taskledger", "tests", "failing"],
+                    confidence="high",
+                    evidence="python3 -m pytest exited with code 1.",
+                )
+            ]
+        )
+
+
 class DummyProvider:
     pass
 
@@ -169,3 +189,38 @@ def test_memory_system_filters_project_specific_global_candidates(
     assert result.saved_records[0].scope == "project"
     assert result.skipped_candidates == 1
     assert result.usage == TokenUsage(input_tokens=3, output_tokens=2)
+
+
+def test_memory_system_skips_failure_claim_from_environment_error(
+    tmp_path: Path,
+) -> None:
+    memory_system = MemorySystem(
+        project_store=MemoryStore(tmp_path / "project-memory", "project"),
+        global_store=MemoryStore(tmp_path / "global-memory", "global"),
+        summarizer=EnvironmentFailureSummarizer(),  # type: ignore[arg-type]
+    )
+    agent_run = AgentRun(
+        run_id="run-one",
+        objective="Run taskledger tests",
+        steps=[],
+        termination="max_steps",
+        final_stop_reason="tool_use",
+        verification=VerificationEvidence(
+            status="error",
+            command="python3 -m pytest docs/live_memory_eval/taskledger/tests -q",
+            exit_code=1,
+            output="/path/to/python: No module named pytest",
+        ),
+    )
+
+    result = asyncio.run(
+        memory_system.remember_run(
+            provider_adapter=DummyProvider(),  # type: ignore[arg-type]
+            session_id="session-one",
+            agent_run=agent_run,
+            workspace_root=tmp_path,
+        )
+    )
+
+    assert result.saved_records == []
+    assert result.skipped_candidates == 1

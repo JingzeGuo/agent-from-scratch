@@ -322,6 +322,7 @@ SessionEventType = Literal[
     "step_finished",
     "run_finished",
     "compaction_reported",
+    "memory_retrieved",
     "tool_schedule_decided",
     "tool_approval_requested",
     "tool_approval_granted",

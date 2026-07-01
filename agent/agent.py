@@ -200,6 +200,7 @@ class Agent:
             }
         )
         memory_context = self._retrieve_memory_context(user_task)
+        self._record_memory_retrieved(run_id, memory_context)
 
         for step in range(1, self.max_steps + 1):
             text_blocks: list[str] = []
@@ -353,6 +354,28 @@ class Agent:
         if self.memory_system is None:
             return None
         return self.memory_system.search(user_task)
+
+    def _record_memory_retrieved(
+        self,
+        run_id: str,
+        memory_context: MemoryContext | None,
+    ) -> None:
+        if memory_context is None:
+            return
+        titles = [
+            result.record.title
+            for result in memory_context.results
+        ]
+        self._append_session_event(
+            SessionEvent(
+                event_type="memory_retrieved",
+                session_id=self.session_id or "",
+                created_at=utc_timestamp(),
+                run_id=run_id,
+                message=f"retrieved {len(titles)} memory records",
+                text_preview=self._preview_text("; ".join(titles)),
+            )
+        )
 
     async def _finish_run_and_remember(
         self,

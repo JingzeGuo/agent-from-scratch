@@ -57,6 +57,40 @@ def test_glob_files_skips_noisy_directories(tmp_path: Path) -> None:
     assert is_error is False
 
 
+def test_glob_files_allows_explicit_noisy_directory_pattern(tmp_path: Path) -> None:
+    venv_bin = tmp_path / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    (venv_bin / "python").write_text("", encoding="utf-8")
+    registry = create_registry(tmp_path)
+
+    output, is_error = registry.execute(
+        "glob_files",
+        {"pattern": ".venv/bin/python*"},
+    )
+
+    assert output == ".venv/bin/python"
+    assert is_error is False
+
+
+def test_glob_files_allows_explicit_workspace_symlink(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    external_python = tmp_path / "external-python"
+    external_python.write_text("", encoding="utf-8")
+    venv_bin = workspace / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    (venv_bin / "python").symlink_to(external_python)
+    registry = create_registry(workspace)
+
+    output, is_error = registry.execute(
+        "glob_files",
+        {"pattern": ".venv/bin/python*"},
+    )
+
+    assert output == ".venv/bin/python"
+    assert is_error is False
+
+
 def test_glob_files_truncates_results(tmp_path: Path) -> None:
     for index in range(3):
         (tmp_path / f"file_{index}.py").write_text("", encoding="utf-8")
@@ -864,6 +898,40 @@ def test_run_command_requires_approval_for_arbitrary_python(tmp_path: Path) -> N
     assert "requires approval" in output
     assert "broad side effects" in output
     assert is_error is True
+
+
+def test_run_command_allows_python_version_probe(tmp_path: Path) -> None:
+    registry = create_registry(tmp_path)
+
+    output, is_error = registry.execute(
+        "run_command",
+        {"command": f"{shlex.quote(sys.executable)} --version"},
+    )
+
+    assert "exit_code: 0" in output
+    assert "Python" in output
+    assert is_error is False
+
+
+def test_run_command_resolves_workspace_venv_from_subdirectory(
+    tmp_path: Path,
+) -> None:
+    venv_bin = tmp_path / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    fake_python = venv_bin / "python"
+    fake_python.write_text("#!/bin/sh\nprintf 'fake python\\n'\n", encoding="utf-8")
+    fake_python.chmod(0o755)
+    (tmp_path / "package").mkdir()
+    registry = create_registry(tmp_path)
+
+    output, is_error = registry.execute(
+        "run_command",
+        {"command": ".venv/bin/python --version", "cwd": "package"},
+    )
+
+    assert "exit_code: 0" in output
+    assert "stdout:\nfake python" in output
+    assert is_error is False
 
 
 def test_run_command_executes_after_approval(tmp_path: Path) -> None:

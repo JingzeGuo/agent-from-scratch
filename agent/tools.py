@@ -95,22 +95,38 @@ def _is_skipped_path(path: Path) -> bool:
     return any(part in _SKIPPED_DIRS for part in path.parts)
 
 
+def _pattern_names_skipped_dir(pattern: str, path: Path) -> bool:
+    pattern_parts = set(Path(pattern).parts)
+    return any(part in pattern_parts and part in path.parts for part in _SKIPPED_DIRS)
+
+
 def _validate_workspace_pattern(pattern: str, *, kind: str) -> None:
     if Path(pattern).is_absolute() or ".." in Path(pattern).parts:
         raise ValueError(f"{kind} must be workspace-relative and cannot contain '..'")
 
 
-def _iter_workspace_files(root: Path, pattern: str) -> Iterator[tuple[Path, Path]]:
+def _iter_workspace_files(
+    root: Path,
+    pattern: str,
+    *,
+    include_explicit_skipped_dirs: bool = False,
+    allow_workspace_symlinks: bool = False,
+) -> Iterator[tuple[Path, Path]]:
     for candidate in sorted(root.glob(pattern)):
         if not candidate.is_file():
             continue
 
         resolved = candidate.resolve()
-        if not resolved.is_relative_to(root):
+        if not resolved.is_relative_to(root) and not (
+            allow_workspace_symlinks and candidate.is_symlink()
+        ):
             continue
 
         relative_path = candidate.relative_to(root)
-        if _is_skipped_path(relative_path):
+        if _is_skipped_path(relative_path) and not (
+            include_explicit_skipped_dirs
+            and _pattern_names_skipped_dir(pattern, relative_path)
+        ):
             continue
 
         yield candidate, relative_path
@@ -128,7 +144,12 @@ def glob_files(
     root = workspace_root.expanduser().resolve()
     matches: list[str] = []
 
-    for _, relative_path in _iter_workspace_files(root, pattern):
+    for _, relative_path in _iter_workspace_files(
+        root,
+        pattern,
+        include_explicit_skipped_dirs=True,
+        allow_workspace_symlinks=True,
+    ):
         matches.append(relative_path.as_posix())
         if len(matches) == max_results:
             break
@@ -145,7 +166,12 @@ def glob_files(
 
 def _has_more_glob_matches(root: Path, pattern: str, max_results: int) -> bool:
     match_count = 0
-    for _ in _iter_workspace_files(root, pattern):
+    for _ in _iter_workspace_files(
+        root,
+        pattern,
+        include_explicit_skipped_dirs=True,
+        allow_workspace_symlinks=True,
+    ):
         match_count += 1
         if match_count > max_results:
             return True
@@ -388,6 +414,7 @@ def run_command(
     """Run a bounded command inside the workspace and return its observation."""
     args = _parse_safe_command(command, approval_granted)
     command_cwd = _resolve_command_cwd(workspace_root, cwd)
+    args = _resolve_workspace_local_executable(args, workspace_root)
 
     start = time.monotonic()
     try:
@@ -439,6 +466,19 @@ def _resolve_command_cwd(workspace_root: Path, cwd: str | None) -> Path:
     if not resolved.is_dir():
         raise NotADirectoryError(f"Working directory is not a directory: {cwd}")
     return resolved
+
+
+def _resolve_workspace_local_executable(
+    args: list[str],
+    workspace_root: Path,
+) -> list[str]:
+    executable = args[0]
+    if not executable.startswith(".venv/"):
+        return args
+    resolved = workspace_root.expanduser().resolve() / executable
+    if not resolved.exists():
+        return args
+    return [resolved.as_posix(), *args[1:]]
 
 
 def _format_command_result(

@@ -78,6 +78,28 @@ def test_extract_verification_failed_command() -> None:
     assert infer_task_success(evidence) is False
 
 
+def test_extract_verification_treats_missing_test_tool_as_error() -> None:
+    output = "\n".join(
+        [
+            "exit_code: 1",
+            "timed_out: false",
+            "duration_seconds: 0.010",
+            "stdout:",
+            "[empty]",
+            "stderr:",
+            "/path/to/python: No module named pytest",
+        ]
+    )
+
+    evidence = extract_verification_evidence(
+        [make_run_command_step(command="python3 -m pytest tests", content=output)]
+    )
+
+    assert evidence.status == "error"
+    assert evidence.exit_code == 1
+    assert infer_task_success(evidence) is None
+
+
 def test_extract_verification_timeout_is_error() -> None:
     output = command_result("null", timed_out="true")
 

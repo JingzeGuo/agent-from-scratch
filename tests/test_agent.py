@@ -608,6 +608,8 @@ def test_agent_retrieves_memory_and_remembers_completed_run(tmp_path: Path) -> N
         summarizer=FakeMemorySummarizer(),  # type: ignore[arg-type]
     )
     agent.configure_memory(memory_system)
+    session_store = SessionStore(tmp_path / "sessions")
+    agent.configure_session_recording(session_store, "session-one")
 
     agent_run = asyncio.run(agent.run("Use context compaction memory"))
 
@@ -620,6 +622,14 @@ def test_agent_retrieves_memory_and_remembers_completed_run(tmp_path: Path) -> N
     assert agent_run.termination == "completed"
     saved_titles = {record.title for record in project_store.list_records()}
     assert "Context memory lesson" in saved_titles
+    memory_events = [
+        event
+        for event in session_store.read_events("session-one")
+        if event.event_type == "memory_retrieved"
+    ]
+    assert len(memory_events) == 1
+    assert memory_events[0].message == "retrieved 1 memory records"
+    assert memory_events[0].text_preview == "Context compaction"
     assert agent.token_tracker.input_tokens == 13
     assert agent.token_tracker.output_tokens == 7
 
@@ -638,7 +648,35 @@ def test_build_system_prompt_uses_workspace_and_registered_tools(
     assert workspace_root.as_posix() in prompt
     assert "`calculator`: Optional helper for math." in prompt
     assert "must run focused verification" in prompt
+    assert "`run_command` does not support shell operators" in prompt
     assert "- `read_file`:" not in prompt
+
+
+def test_build_system_prompt_prefers_observed_venv_python(tmp_path: Path) -> None:
+    venv_python = tmp_path / ".venv" / "bin" / "python"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_text("", encoding="utf-8")
+
+    prompt = build_system_prompt(
+        workspace_root=tmp_path,
+        registry=create_registry(),
+    )
+
+    assert "This workspace has `.venv/bin/python`" in prompt
+    assert "`.venv/bin/python -m pytest tests/test_target.py`" in prompt
+    assert "Do not spend steps probing interpreter locations" in prompt
+    assert "do not spend steps using glob searches" in prompt
+
+
+def test_build_system_prompt_uses_python3_fallback_without_venv(
+    tmp_path: Path,
+) -> None:
+    prompt = build_system_prompt(
+        workspace_root=tmp_path,
+        registry=create_registry(),
+    )
+
+    assert "`python3 -m pytest tests/test_target.py`" in prompt
 
 
 def test_agent_completes_read_search_edit_test_trajectory(
