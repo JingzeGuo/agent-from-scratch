@@ -33,34 +33,82 @@ class ToolRegistry:
         raw_input: dict[str, Any],
         *,
         approval_granted: bool = False,
+        extra_kwargs: dict[str, Any] | None = None,
     ) -> tuple[str, bool]:
         tool = self.tools.get(name)
         if tool is None:
             return f"Unknown tool: '{name}'. Available: {list(self.tools)}", True
 
-        if name == "edit_file":
-            error = self._validate_edit_allowed(raw_input)
-            if error is not None:
-                return error, True
-        if name == "write_file":
-            error = self._validate_write_allowed(raw_input)
-            if error is not None:
-                return error, True
-        if name == "run_command":
-            error = self._validate_command_allowed(raw_input, approval_granted)
-            if error is not None:
-                return error, True
+        error = self._validate_execution_allowed(name, raw_input, approval_granted)
+        if error is not None:
+            return error, True
 
         original_snapshot = self._snapshot_before_mutation(name, raw_input)
-        extra_kwargs = (
-            {"approval_granted": True}
-            if name == "run_command" and approval_granted
-            else None
+        output, is_error = tool.execute(
+            raw_input,
+            self._tool_extra_kwargs(name, approval_granted, extra_kwargs),
         )
-        output, is_error = tool.execute(raw_input, extra_kwargs)
         if not is_error:
             self._record_successful_file_action(name, raw_input, original_snapshot)
         return output, is_error
+
+    async def execute_async(
+        self,
+        name: str,
+        raw_input: dict[str, Any],
+        *,
+        approval_granted: bool = False,
+        extra_kwargs: dict[str, Any] | None = None,
+    ) -> tuple[str, bool]:
+        tool = self.tools.get(name)
+        if tool is None:
+            return f"Unknown tool: '{name}'. Available: {list(self.tools)}", True
+
+        error = self._validate_execution_allowed(name, raw_input, approval_granted)
+        if error is not None:
+            return error, True
+
+        original_snapshot = self._snapshot_before_mutation(name, raw_input)
+        output, is_error = await tool.execute_async(
+            raw_input,
+            self._tool_extra_kwargs(name, approval_granted, extra_kwargs),
+        )
+        if not is_error:
+            self._record_successful_file_action(name, raw_input, original_snapshot)
+        return output, is_error
+
+    def _validate_execution_allowed(
+        self,
+        name: str,
+        raw_input: dict[str, Any],
+        approval_granted: bool,
+    ) -> str | None:
+        if name == "edit_file":
+            error = self._validate_edit_allowed(raw_input)
+            if error is not None:
+                return error
+        if name == "write_file":
+            error = self._validate_write_allowed(raw_input)
+            if error is not None:
+                return error
+        if name == "run_command":
+            error = self._validate_command_allowed(raw_input, approval_granted)
+            if error is not None:
+                return error
+        return None
+
+    def _tool_extra_kwargs(
+        self,
+        name: str,
+        approval_granted: bool,
+        extra_kwargs: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        merged_kwargs = dict(extra_kwargs or {})
+        if name == "run_command" and approval_granted:
+            merged_kwargs["approval_granted"] = True
+        if not merged_kwargs:
+            return None
+        return merged_kwargs
 
     def get_diff(self, path: str | None = None) -> str:
         """Return unified diffs for files changed during this registry session."""

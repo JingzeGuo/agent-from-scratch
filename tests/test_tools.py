@@ -593,25 +593,23 @@ def test_sub_agent_is_registered_with_read_only_profile(tmp_path: Path) -> None:
     }
 
 
-def test_sub_agent_placeholder_returns_bounded_observation(tmp_path: Path) -> None:
+def test_sub_agent_requires_parent_agent_when_executed_directly(
+    tmp_path: Path,
+) -> None:
     registry = create_registry(tmp_path)
-    long_task = "Explore session resume behavior. " * 30
 
     output, is_error = registry.execute(
         "sub_agent",
         {
-            "task": long_task,
+            "task": "Explore session resume behavior.",
             "profile": "read_only_explorer",
             "max_steps": 3,
         },
     )
 
-    assert "Sub-agent execution is not implemented yet." in output
-    assert "profile: read_only_explorer" in output
-    assert "max_steps: 3" in output
-    assert "[truncated after 500 chars]" in output
-    assert len(output) < len(long_task)
-    assert is_error is False
+    assert "Tool 'sub_agent' raised ValueError" in output
+    assert "not initialized with a parent agent" in output
+    assert is_error is True
 
 
 def test_sub_agent_rejects_unsupported_profile(tmp_path: Path) -> None:

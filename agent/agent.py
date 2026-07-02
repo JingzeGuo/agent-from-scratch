@@ -5,8 +5,6 @@ from time import perf_counter
 from typing import Any, cast
 from uuid import uuid4
 
-from pydantic import ValidationError
-
 from .context import ContextBuilder
 from .memory import MemoryContext, MemorySystem, MemoryWriteResult
 from .prompts import build_system_prompt
@@ -21,13 +19,11 @@ from .schemas import (
     SessionEventType,
     SessionSnapshot,
     SubAgentInput,
-    TokenUsage,
     ToolCall,
     ToolResult,
 )
 from .security import CommandPolicyResult, classify_command, redact_text
 from .session import SessionStore, utc_timestamp
-from .setup import create_read_only_registry
 from .token_tracker import TokenTracker
 from .tool_registry import ToolRegistry
 from .verification import extract_verification_evidence, infer_task_success
@@ -657,13 +653,15 @@ class Agent:
         if self.stream_output:
             print(format_tool_activity(tool_call))
         if tool_call.name == "sub_agent":
-            tool_started = perf_counter()
-            output, is_error = await self._run_sub_agent_tool(
-                run_id=run_id,
-                step_number=step_number,
-                tool_call=tool_call,
+            _, output, is_error, latency_ms = await self._run_tool_call_async(
+                tool_call,
+                extra_kwargs={
+                    "parent_agent": self,
+                    "run_id": run_id,
+                    "step_number": step_number,
+                    "tool_call": tool_call,
+                },
             )
-            latency_ms = (perf_counter() - tool_started) * 1000
         else:
             _, output, is_error, latency_ms = self._run_tool_call(
                 tool_call,
@@ -682,69 +680,6 @@ class Agent:
             content=output,
             is_error=is_error,
         )
-
-    async def _run_sub_agent_tool(
-        self,
-        run_id: str,
-        step_number: int,
-        tool_call: ToolCall,
-    ) -> tuple[str, bool]:
-        try:
-            parsed_input = SubAgentInput(**tool_call.input)
-        except ValidationError as e:
-            return self._format_tool_validation_error("sub_agent", e), True
-
-        if self.registry.workspace_root is None:
-            return (
-                "Tool 'sub_agent' raised ValueError: Workspace root is required.",
-                True,
-            )
-
-        self._record_sub_agent_started(
-            run_id=run_id,
-            step_number=step_number,
-            tool_call=tool_call,
-            parsed_input=parsed_input,
-        )
-        child_registry = create_read_only_registry(self.registry.workspace_root)
-        child_agent = Agent(
-            provider_adapter=self.provider_adapter,
-            registry=child_registry,
-            model=self.model,
-            provider=self.provider,
-            max_steps=parsed_input.max_steps,
-            stream_output=False,
-        )
-        child_run = await child_agent.run(parsed_input.task)
-        self.token_tracker.add(
-            TokenUsage(
-                input_tokens=child_agent.token_tracker.input_tokens,
-                output_tokens=child_agent.token_tracker.output_tokens,
-            )
-        )
-        self._record_sub_agent_finished(
-            run_id=run_id,
-            step_number=step_number,
-            tool_call=tool_call,
-            child_run=child_run,
-            child_agent=child_agent,
-        )
-        return self._format_sub_agent_result(
-            profile=parsed_input.profile,
-            child_run=child_run,
-            child_agent=child_agent,
-        ), False
-
-    def _format_tool_validation_error(
-        self,
-        tool_name: str,
-        error: ValidationError,
-    ) -> str:
-        error_lines = [f"Validation error for tool '{tool_name}':"]
-        for err in error.errors():
-            field = ".".join(str(p) for p in err["loc"])
-            error_lines.append(f"  - field '{field}': {err['msg']}")
-        return "\n".join(error_lines)
 
     def _format_sub_agent_result(
         self,
@@ -845,6 +780,23 @@ class Agent:
             tool_call.name,
             tool_call.input,
             approval_granted=approval_granted,
+        )
+        tool_latency_ms = (perf_counter() - tool_started) * 1000
+        return tool_call, output, is_error, tool_latency_ms
+
+    async def _run_tool_call_async(
+        self,
+        tool_call: ToolCall,
+        *,
+        approval_granted: bool = False,
+        extra_kwargs: dict[str, Any] | None = None,
+    ) -> tuple[ToolCall, str, bool, float]:
+        tool_started = perf_counter()
+        output, is_error = await self.registry.execute_async(
+            tool_call.name,
+            tool_call.input,
+            approval_granted=approval_granted,
+            extra_kwargs=extra_kwargs,
         )
         tool_latency_ms = (perf_counter() - tool_started) * 1000
         return tool_call, output, is_error, tool_latency_ms

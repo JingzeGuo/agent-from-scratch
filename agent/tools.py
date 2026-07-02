@@ -20,6 +20,7 @@ import subprocess
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any, Literal, cast
 
 import httpx
 
@@ -533,26 +534,70 @@ def _normalize_subprocess_output(output: str | bytes | None) -> str:
 # ==========================================
 
 
-def sub_agent(
+async def sub_agent(
     task: str,
-    profile: str = "read_only_explorer",
+    profile: Literal["read_only_explorer"] = "read_only_explorer",
     max_steps: int = 3,
+    *,
+    parent_agent: Any | None = None,
+    run_id: str | None = None,
+    step_number: int | None = None,
+    tool_call: Any | None = None,
 ) -> str:
-    """Placeholder for a bounded child-agent exploration task."""
-    return "\n".join(
-        [
-            "Sub-agent execution is not implemented yet.",
-            f"profile: {profile}",
-            f"max_steps: {max_steps}",
-            f"task: {_truncate_sub_agent_task(task)}",
-        ]
+    """Run a bounded read-only child agent and return a compact summary."""
+    if parent_agent is None:
+        raise ValueError("sub_agent tool is not initialized with a parent agent")
+    if run_id is None or step_number is None or tool_call is None:
+        raise ValueError("sub_agent tool requires parent run metadata")
+    if parent_agent.registry.workspace_root is None:
+        raise ValueError("Workspace root is required.")
+
+    from .agent import Agent
+    from .schemas import SubAgentInput, TokenUsage
+    from .setup import create_read_only_registry
+
+    parsed_input = SubAgentInput(
+        task=task,
+        profile=profile,
+        max_steps=max_steps,
+    )
+    parent_agent._record_sub_agent_started(
+        run_id=run_id,
+        step_number=step_number,
+        tool_call=tool_call,
+        parsed_input=parsed_input,
     )
 
-
-def _truncate_sub_agent_task(task: str, max_chars: int = 500) -> str:
-    if len(task) <= max_chars:
-        return task
-    return task[:max_chars].rstrip() + f"\n[truncated after {max_chars} chars]"
+    child_agent = Agent(
+        provider_adapter=parent_agent.provider_adapter,
+        registry=create_read_only_registry(parent_agent.registry.workspace_root),
+        model=parent_agent.model,
+        provider=parent_agent.provider,
+        max_steps=max_steps,
+        stream_output=False,
+    )
+    child_run = await child_agent.run(task)
+    parent_agent.token_tracker.add(
+        TokenUsage(
+            input_tokens=child_agent.token_tracker.input_tokens,
+            output_tokens=child_agent.token_tracker.output_tokens,
+        )
+    )
+    parent_agent._record_sub_agent_finished(
+        run_id=run_id,
+        step_number=step_number,
+        tool_call=tool_call,
+        child_run=child_run,
+        child_agent=child_agent,
+    )
+    return cast(
+        str,
+        parent_agent._format_sub_agent_result(
+            profile=profile,
+            child_run=child_run,
+            child_agent=child_agent,
+        ),
+    )
 
 
 # ==========================================

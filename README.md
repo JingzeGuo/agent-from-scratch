@@ -190,6 +190,13 @@ All tool inputs are validated with Pydantic before execution. Validation
 failures are returned to the model as error observations so the agent can
 recover by choosing corrected arguments.
 
+`sub_agent` is a delegated tool rather than a normal file or command helper.
+When the main controller executes it, the tool creates an isolated child agent
+with a fresh conversation, the same provider adapter, and a read-only registry
+containing `calculator`, `read_file`, `glob_files`, `search_text`, and
+`get_diff`. The child agent cannot edit files, run commands, use network tools,
+or recursively spawn another sub-agent.
+
 ## Python API
 
 The current library API is intentionally small and close to the learning
