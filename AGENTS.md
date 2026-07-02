@@ -2,112 +2,117 @@
 
 ## Purpose
 
-This repository is a Week 4 learning project for building an LLM agent loop from
-scratch with Python and the Anthropic API. The goal is to understand the
-mechanics behind agent frameworks before using LangGraph in Week 5.
+This repository contains a local terminal coding agent built with Python,
+Pydantic, and LLM tool calling. The agent operates inside the current working
+directory, uses structured tools to inspect and modify files, can run bounded
+verification commands, and records session state for resumable workflows.
 
-The finished Week 4 project should support:
+The project is intended to be a practical, maintainable coding-agent
+implementation with explicit controller behavior, provider adapters, tool
+validation, session persistence, context management, memory, observability, and
+cost tracking.
 
-- Multi-step tool use
-- Multi-turn CLI conversations
-- Tool validation and error recovery
-- Tool retries with a maximum of three attempts
-- A maximum agent-step limit
-- Structured execution logs
-- Pydantic models for internal agent data
-- Async Anthropic API calls
-- Token and cost tracking
-- Focused pytest coverage
+## Capabilities
 
-## Current State
+The agent supports:
 
-The project currently has:
-
-- Four tools: calculator, file reader, web search, and URL fetcher
-- Pydantic input schemas
-- A `Tool` wrapper and `ToolRegistry`
-- An asynchronous multi-step `Agent` loop
-- Multi-turn conversation history
-- Structured tool-call, tool-result, and agent-step models
-- Tool retries with exponential backoff
-- A ten-step safety limit
-- Structured execution logging
-- Per-task token and estimated cost tracking
-- Ruff, mypy, and pytest configuration
-- Eight focused tests
-- A thin CLI entry point
-
-The Week 4 implementation is feature-complete. Remaining work is final
-evaluation, documentation, and theory review.
+- Multi-step tool use with a maximum step limit
+- Multi-turn CLI conversations and one-shot task mode
+- Anthropic, DeepSeek, and OpenAI-compatible provider adapters
+- Pydantic schemas for tool inputs and internal agent data
+- Tool validation and model-visible error observations
+- Transient tool retries with exponential backoff
+- Workspace-confined file reads, searches, edits, writes, diffs, and commands
+- Command safety policy with approval flow for broad commands
+- Read-only sub-agent delegation for focused repository exploration
+- Context compaction with structured checkpoints
+- Session checkpoints, resume, rename, and JSONL trace events
+- Project and global memory retrieval plus run reflection
+- Token and estimated cost tracking
+- Focused pytest coverage, Ruff, and mypy checks
 
 ## Structure
 
 ```text
-main.py                 CLI entry point
-agent/agent.py          Agent loop and conversation state
-agent/setup.py          Tool construction and registration
-agent/tool.py           Tool schema generation and execution
-agent/tool_registry.py  Tool storage and dispatch
-agent/tools.py          Tool implementations
-agent/schemas.py        Pydantic models
-agent/retry.py          Retry decorator
-agent/token_tracker.py  Token and estimated cost tracking
-tests/                  Automated tests
+main.py                          CLI parsing, startup wiring, provider setup
+agent/cli_commands.py            Slash commands, checkpoint, memory, trace commands
+agent/agent.py                   Agent controller, run loop, scheduling, termination
+agent/provider.py                Anthropic and OpenAI-compatible provider adapters
+agent/setup.py                   Built-in tool registry construction
+agent/tool.py                    Tool schema generation, validation, execution, retry
+agent/tool_registry.py           Tool storage, dispatch, file tracking, diffs
+agent/tools.py                   Tool implementations
+agent/schemas.py                 Pydantic models for tools, runs, sessions, traces
+agent/context.py                 Context compaction and checkpoint construction
+agent/session.py                 Session snapshots, pending actions, JSONL events
+agent/memory.py                  Project/global memory stores, retrieval, reflection
+agent/security.py                Command policy and trace redaction
+agent/token_tracker.py           Token and estimated cost tracking
+agent/verification.py            Verification evidence extraction
+agent/workspace.py               Workspace path normalization and escape rejection
+scripts/                         Deterministic evaluation scripts
+tests/                           Automated tests
 ```
 
 ## Development Rules
 
-- Keep changes minimal and scoped to the current learning task.
-- Do not add abstractions until the current behavior creates a real need for
-  them.
+- Keep changes minimal and scoped to the requested behavior.
 - Preserve existing working behavior unless the task explicitly changes it.
-- Use the repository's existing patterns before introducing new ones.
-- Keep all source code, comments, identifiers, logs, and user-facing CLI text
-  in English.
+- Use the repository's existing patterns before introducing new abstractions.
+- Add abstractions only when they remove real duplication or clarify ownership.
+- Keep all source code, comments, identifiers, logs, and user-facing CLI text in
+  English.
 - Use `snake_case` for Python variables, functions, methods, and modules.
 - Use `PascalCase` for classes and `UPPER_SNAKE_CASE` for constants.
 - Add type annotations to all functions and methods.
-- Use Pydantic for structured agent data required by the Week 4 plan.
+- Use Pydantic for structured agent data and tool input schemas.
 - Use structured APIs and SDK types instead of ad hoc string parsing.
-- Never commit `.env`, API keys, credentials, or other secrets.
+- Keep generated output bounded before returning it to the model.
+- Never commit `.env`, API keys, credentials, access tokens, or other secrets.
 
-## Learning Style
+## Agent Design Rules
 
-- Treat this repository primarily as an Agent learning project. Engineering
-  work should support understanding Agent concepts rather than become the main
-  objective.
-- When a task introduces a concept, first explain the necessary foundation,
-  the problem it solves, how it appears in the current code, and one small
-  example before discussing implementation.
-- For Agent topics, connect implementation work to concepts such as state,
-  policy, action, observation, controller, trajectory, recovery, termination,
-  context, memory, and evaluation.
-- By default, ask the learner to implement conceptually important changes after
-  the explanation. Review and guide their attempt instead of immediately
-  editing the code.
-- Do not modify code unless the learner explicitly asks Codex to implement or
-  fix it. Questions, discussions, and requests for explanation are not
-  permission to edit files.
-- When explicitly asked to modify code, make the smallest clear change that
-  satisfies the request. Keep the implementation concise and avoid extra
-  abstractions, unrelated cleanup, speculative extensibility, or premature
-  framework patterns.
-- Avoid front-loading advanced details that belong to later tasks.
-- Explain the purpose and trade-offs of a change, not only its syntax.
-- Continue explanations in Chinese unless the learner requests otherwise.
-- Keep generated project code and documentation in English.
+- Keep the core controller loop in `agent/agent.py` explicit and easy to audit.
+- Treat tools as the action space and tool results as observations.
+- Return validation and execution failures to the model as recoverable
+  observations when possible.
+- Preserve workspace confinement for all file and command operations.
+- Keep `sub_agent` read-only and bounded; it must not edit files, run commands,
+  use network tools, or recursively spawn another sub-agent.
+- Keep command execution policy in controller-level code rather than relying on
+  shell behavior.
+- Keep provider-specific message conversion in provider adapters.
+- Keep CLI command handling outside the core agent controller.
+- Do not add live API calls to tests when a fake provider or deterministic
+  script can verify the behavior.
 
 ## Verification
 
 After code changes, run the smallest relevant checks:
 
 ```bash
-.venv/bin/python -m py_compile main.py agent/*.py
+.venv/bin/python -m py_compile main.py agent/*.py scripts/*.py
 git diff --check
 ```
 
-Run focused tests when they exist. Real Anthropic or web API calls should only
-be used when local checks cannot verify the behavior.
+Run focused tests for touched behavior. Common focused commands:
+
+```bash
+.venv/bin/python -m pytest tests/test_agent.py -q
+.venv/bin/python -m pytest tests/test_main.py -q
+.venv/bin/python -m pytest tests/test_tools.py -q
+```
+
+Before committing broad changes, run:
+
+```bash
+.venv/bin/python -m pytest -q
+.venv/bin/ruff check .
+.venv/bin/mypy .
+```
+
+Real provider and web API calls should only be used when local checks cannot
+verify the behavior.
 
 ## Git
 
@@ -121,16 +126,6 @@ be used when local checks cannot verify the behavior.
 - Review the diff before committing.
 - Keep unrelated changes out of the commit.
 - Do not rewrite or discard user changes.
-
-## Remaining Week 4 Work
-
-The code implementation is closed unless final evaluation reveals a bug.
-
-1. Run the final multi-tool arXiv research task.
-2. Write the README with usage, architecture, limitations, and test commands.
-3. Review the ReAct paper and Anthropic's agent-building guidance.
-4. Prepare explanations of loop termination, recovery, Pydantic, async,
-   decorators, context managers, and ReAct versus plain tool calling.
 
 ## Pricing Scope
 

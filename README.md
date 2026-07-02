@@ -1,12 +1,10 @@
 # agent-from-scratch
 
-A small terminal coding agent built from scratch with Python, Pydantic, and
-LLM tool calling.
+A terminal coding agent built with Python, Pydantic, and LLM tool calling.
 
-This project is both a usable command-line agent and a white-box learning
-project for understanding how agent frameworks work internally. It keeps the
-main agent concepts explicit: state, policy, action space, observations,
-controller loop, termination, recovery, context, persistence, and evaluation.
+The agent runs inside a local workspace, plans and executes multi-step coding
+tasks, uses structured tools for repository inspection and edits, records
+session state, and tracks token usage and estimated cost.
 
 ## Features
 
@@ -25,7 +23,7 @@ controller loop, termination, recovery, context, persistence, and evaluation.
 - Context compaction reporting
 - Project and global memory stores for durable agent context
 - Local hybrid memory retrieval with BM25-like lexical scoring and TF-IDF cosine
-- Automatic run reflection into session, topic, profile, and lesson memories
+- Automatic run reflection into session, topic, profile, and cross-project memories
 - Structured JSONL trace events with secret redaction
 - Token and estimated cost tracking
 - Optional web search and URL fetching
@@ -199,8 +197,8 @@ or recursively spawn another sub-agent.
 
 ## Python API
 
-The current library API is intentionally small and close to the learning
-project internals.
+The current library API is intentionally small and centered on constructing tool
+registries and agent instances.
 
 Create a registry with the built-in tools:
 
@@ -287,9 +285,7 @@ Core modules:
 | `agent/token_tracker.py` | Token and estimated cost tracking |
 | `agent/verification.py` | Verification evidence extraction |
 
-## Interview Narrative
-
-For interviews, explain the project in layers instead of listing every feature.
+## Operating Model
 
 The core loop is in `agent/agent.py`: the controller keeps conversation and
 step state, sends context plus tool definitions to the model, receives either
@@ -326,7 +322,7 @@ Project memory lives inside the active workspace:
 Global memory defaults to `~/.agent-from-scratch/memory` and uses the same
 layout. Project memory is for repository-specific facts, session notes,
 debugging history, and reflections. Global memory is reserved for stable user
-preferences and cross-project lessons that should still matter in another
+preferences and cross-project notes that should still matter in another
 repository.
 
 On each task, the agent searches project and global memory using local hybrid
@@ -466,11 +462,10 @@ Then restart the shell.
 
 ## Current Limitations
 
-- This is a learning project, not a hardened sandbox.
+- This is not a hardened sandbox.
 - Model behavior is nondeterministic with live providers.
 - Token cost estimates currently cover the configured pricing model used by
   the project and may need updates when changing models.
 - Web search requires Tavily configuration.
 - Provider support depends on streaming tool-call compatibility.
-- The public Python API is intentionally small and may evolve as the project
-  moves from Week 4 learning code toward a fuller coding-agent product.
+- The public Python API is intentionally small and may evolve.
