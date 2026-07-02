@@ -635,11 +635,11 @@ def test_sub_agent_rejects_excessive_step_budget(tmp_path: Path) -> None:
         "sub_agent",
         {
             "task": "Explore the repository.",
-            "max_steps": 6,
+            "max_steps": 9,
         },
     )
 
-    assert "field 'max_steps': Input should be less than or equal to 5" in output
+    assert "field 'max_steps': Input should be less than or equal to 8" in output
     assert is_error is True
 
 

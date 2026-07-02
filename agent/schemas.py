@@ -148,10 +148,10 @@ class SubAgentInput(BaseModel):
         description="The capability profile for the child agent.",
     )
     max_steps: int = Field(
-        default=3,
+        default=6,
         ge=1,
-        le=5,
-        description="Maximum child-agent steps. Defaults to 3.",
+        le=8,
+        description="Maximum child-agent steps. Defaults to 6.",
     )
 
 

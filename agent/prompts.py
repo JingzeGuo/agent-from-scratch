@@ -11,6 +11,7 @@ _TOOL_GUIDANCE: dict[str, str] = {
     "get_diff": "Show session diffs for changed files.",
     "run_command": "Run a bounded safe command inside the workspace. Prefer focused verification commands.",
     "calculator": "Optional helper for math.",
+    "sub_agent": "Delegate narrow read-only repository exploration to an isolated child agent.",
     "search_web": "Optional helper when current external information is required.",
     "fetch_url": "Optional helper for reading a known URL.",
 }
@@ -48,6 +49,8 @@ All file reads, writes, edits, searches, and commands must stay inside this work
 {tool_lines}
 
 Treat `calculator`, `search_web`, and `fetch_url` as optional helper tools. For coding tasks, prefer repository inspection, targeted edits, diffs, and verification commands.
+
+Use `sub_agent` only for narrow read-only exploration, such as locating files or tracing one focused concept. Keep delegated tasks small enough to finish within 6-8 child steps. Do not delegate broad repository-wide analysis as one subtask, and treat a child result as supporting evidence rather than a final answer.
 
 ## Core operating rules
 

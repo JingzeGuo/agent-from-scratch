@@ -537,7 +537,7 @@ def _normalize_subprocess_output(output: str | bytes | None) -> str:
 async def sub_agent(
     task: str,
     profile: Literal["read_only_explorer"] = "read_only_explorer",
-    max_steps: int = 3,
+    max_steps: int = 6,
     *,
     parent_agent: Any | None = None,
     run_id: str | None = None,
