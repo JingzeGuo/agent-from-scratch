@@ -1,15 +1,17 @@
 # ruff: noqa: I001
 import argparse
+import ast
 import asyncio
+import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
@@ -31,7 +33,19 @@ from agent.setup import create_registry
 from agent.tool_registry import ToolRegistry
 
 PYTHON = sys.executable
-EvaluationMode = Literal["scripted", "real_model"]
+EvaluationMode = Literal["scripted", "real_model", "swe_bench"]
+FailureReason = Literal[
+    "compile_error",
+    "test_failure",
+    "max_step",
+    "unsafe_command_blocked",
+]
+FAILURE_REASONS: tuple[FailureReason, ...] = (
+    "compile_error",
+    "test_failure",
+    "max_step",
+    "unsafe_command_blocked",
+)
 
 
 class ScriptedStep(BaseModel):
@@ -66,6 +80,27 @@ class CodingTaskResult(BaseModel):
     output_tokens: int
     estimated_cost: float
     failures: list[str] = Field(default_factory=list)
+    failure_reasons: list[FailureReason] = Field(default_factory=list)
+
+
+class EvaluationSummary(BaseModel):
+    total: int
+    passed: int
+    pass_rate: float
+    average_steps: float
+    average_token_cost: float
+    average_tool_calls: float
+    failure_reason_counts: dict[FailureReason, int]
+
+
+class SweBenchInstance(BaseModel):
+    instance_id: str
+    repo: str
+    base_commit: str
+    problem_statement: str
+    test_patch: str = ""
+    fail_to_pass: list[str] = Field(default_factory=list)
+    pass_to_pass: list[str] = Field(default_factory=list)
 
 
 class ScriptedProviderAdapter:
@@ -578,6 +613,7 @@ async def evaluate_case(
     mode: EvaluationMode,
     provider_adapter: ProviderAdapter | None,
     keep_workspace: bool,
+    max_steps: int | None = None,
 ) -> CodingTaskResult:
     workspace = Path(tempfile.mkdtemp(prefix=f"agent-eval-{case.name}-"))
     original_path = os.environ.get("PATH", "")
@@ -594,16 +630,20 @@ async def evaluate_case(
             provider_adapter=provider,
             registry=registry,
             stream_output=False,
-            max_steps=max(10, len(case.scripted_steps) + 1),
+            max_steps=max_steps or max(10, len(case.scripted_steps) + 1),
             approval_callback=approve_eval_diagnostic_command,
         )
         run = await agent.run(case.task)
         latency_ms = (perf_counter() - started) * 1000
         failures = oracle(workspace, run, agent)
+        task_success = not failures
+        failure_reasons = (
+            [] if task_success else classify_failure_reasons(run, failures)
+        )
         return CodingTaskResult(
             name=case.name,
             mode=mode,
-            task_success=not failures,
+            task_success=task_success,
             runtime_success=run.termination == "completed",
             verification_success=run.verification.status == "passed",
             recovery_success=recovered_from_error(run),
@@ -617,6 +657,7 @@ async def evaluate_case(
             output_tokens=agent.token_tracker.output_tokens,
             estimated_cost=agent.token_tracker.estimated_cost,
             failures=failures,
+            failure_reasons=failure_reasons,
         )
     finally:
         os.environ["PATH"] = original_path
@@ -728,6 +769,95 @@ def field_value(output: str, field: str) -> str | None:
     return None
 
 
+def classify_failure_reasons(
+    run: AgentRun,
+    failures: list[str],
+) -> list[FailureReason]:
+    reasons: set[FailureReason] = set()
+    if run.termination == "max_steps":
+        reasons.add("max_step")
+
+    for tool_call, tool_result in iter_tool_results(run):
+        if tool_call.name != "run_command":
+            continue
+        if command_was_blocked(tool_result):
+            reasons.add("unsafe_command_blocked")
+        if not command_failed(tool_result):
+            continue
+        command = command_text(tool_call)
+        output = tool_result.content
+        if command_is_compile(command) or output_has_compile_error(output):
+            reasons.add("compile_error")
+        elif command_is_test(command):
+            reasons.add("test_failure")
+
+    for failure in failures:
+        normalized = failure.lower()
+        if any(marker in normalized for marker in ("py_compile", "syntax", "compile")):
+            reasons.add("compile_error")
+        if any(marker in normalized for marker in ("pytest", "test failure")):
+            reasons.add("test_failure")
+
+    return [reason for reason in FAILURE_REASONS if reason in reasons]
+
+
+def iter_tool_results(run: AgentRun) -> list[tuple[ToolCall, ToolResult]]:
+    return [
+        (tool_call, tool_result)
+        for step in run.steps
+        for tool_call, tool_result in zip(step.tool_calls, step.tool_results)
+    ]
+
+
+def command_text(tool_call: ToolCall) -> str:
+    command = tool_call.input.get("command")
+    if isinstance(command, str):
+        return command
+    return ""
+
+
+def command_failed(tool_result: ToolResult) -> bool:
+    if tool_result.is_error:
+        return True
+    timed_out = field_value(tool_result.content, "timed_out")
+    if timed_out == "true":
+        return True
+    exit_code = field_value(tool_result.content, "exit_code")
+    return exit_code not in {None, "0"}
+
+
+def command_was_blocked(tool_result: ToolResult) -> bool:
+    if not tool_result.is_error:
+        return False
+    normalized = tool_result.content.lower()
+    return any(
+        marker in normalized
+        for marker in (
+            "approval denied",
+            "requires approval",
+            "blocked dangerous command",
+            "shell operators are not supported",
+            "command substitution is not supported",
+        )
+    )
+
+
+def command_is_compile(command: str) -> bool:
+    return "py_compile" in command
+
+
+def command_is_test(command: str) -> bool:
+    return "pytest" in command or "unittest" in command
+
+
+def output_has_compile_error(output: str) -> bool:
+    normalized = output.lower()
+    return any(
+        marker in normalized
+        for marker in ("syntaxerror", "indentationerror", "taberror")
+    )
+
+
 def final_answer(run: AgentRun) -> str:
     for step in reversed(run.steps):
         if step.text:
@@ -742,8 +872,8 @@ def relative_changed_files(workspace: Path, registry: ToolRegistry) -> list[str]
     )
 
 
-def create_real_provider_adapter() -> ProviderAdapter:
-    config = load_provider_config()
+def create_real_provider_adapter(api_key: str | None = None) -> ProviderAdapter:
+    config = load_provider_config(api_key=api_key)
     return create_provider_adapter(config)
 
 
@@ -752,12 +882,16 @@ async def evaluate_cases(
     *,
     mode: EvaluationMode,
     keep_workspaces: bool,
+    api_key: str | None = None,
+    max_steps: int | None = None,
 ) -> list[CodingTaskResult]:
     cases = build_cases()
     results: list[CodingTaskResult] = []
     for name in selected_names:
         case, fixture_builder, oracle = cases[name]
-        provider_adapter = create_real_provider_adapter() if mode == "real_model" else None
+        provider_adapter = (
+            create_real_provider_adapter(api_key) if mode == "real_model" else None
+        )
         results.append(
             await evaluate_case(
                 case,
@@ -766,6 +900,7 @@ async def evaluate_cases(
                 mode=mode,
                 provider_adapter=provider_adapter,
                 keep_workspace=keep_workspaces,
+                max_steps=max_steps,
             )
         )
     return results
@@ -773,11 +908,12 @@ async def evaluate_cases(
 
 def print_results(results: list[CodingTaskResult]) -> None:
     mode = results[0].mode if results else "scripted"
-    title = (
-        "Coding-agent real-model evaluation"
-        if mode == "real_model"
-        else "Coding-agent deterministic evaluation"
-    )
+    if mode == "real_model":
+        title = "Coding-agent real-model evaluation"
+    elif mode == "swe_bench":
+        title = "Coding-agent SWE-bench evaluation"
+    else:
+        title = "Coding-agent deterministic evaluation"
     print(title)
     print("=" * len(title))
     for result in results:
@@ -801,16 +937,28 @@ def print_results(results: list[CodingTaskResult]) -> None:
         print(f"  tools={', '.join(result.tools) if result.tools else '[none]'}")
         for command in result.commands:
             print(f"  command={command}")
+        if result.failure_reasons:
+            print(f"  failure_reasons={', '.join(result.failure_reasons)}")
         for failure in result.failures:
             print(f"  - {failure}")
-    passed = sum(result.task_success for result in results)
-    total = len(results)
-    print(f"\nSummary: task_success={passed}/{total}")
+    summary = summarize_results(results)
+    print("\nSummary")
+    print(
+        "  "
+        f"pass_rate={summary.passed}/{summary.total} "
+        f"({summary.pass_rate:.1%})"
+    )
+    print(f"  average_steps={summary.average_steps:.2f}")
+    print(f"  average_token_cost=${summary.average_token_cost:.6f}")
+    print(f"  average_tool_calls={summary.average_tool_calls:.2f}")
+    print("  failure_reasons:")
+    for reason in FAILURE_REASONS:
+        print(f"    {reason}={summary.failure_reason_counts[reason]}")
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run deterministic local coding-agent evaluation cases."
+        description="Run local coding-agent evaluation cases."
     )
     parser.add_argument(
         "cases",
@@ -835,7 +983,351 @@ def parse_args() -> argparse.Namespace:
             "Defaults to the read-only repository_search case when no case is named."
         ),
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--max-steps",
+        type=int,
+        default=None,
+        help="Override the agent step limit for each evaluated task.",
+    )
+    parser.add_argument(
+        "--swe-bench",
+        type=Path,
+        default=None,
+        help="Run SWE-bench-style instances from a JSON or JSONL file.",
+    )
+    parser.add_argument(
+        "--swe-bench-limit",
+        type=int,
+        default=None,
+        help="Maximum number of SWE-bench instances to run.",
+    )
+    parser.add_argument(
+        "--swe-bench-cache",
+        type=Path,
+        default=Path(".agents/evals/swe-bench/repos"),
+        help="Repository clone cache used for SWE-bench instances.",
+    )
+    parser.add_argument(
+        "--swe-bench-predictions",
+        type=Path,
+        default=None,
+        help="JSONL predictions path with instance_id, model_name_or_path, model_patch.",
+    )
+    parser.add_argument(
+        "--skip-swe-bench-tests",
+        action="store_true",
+        help="Generate SWE-bench predictions without best-effort local pytest runs.",
+    )
+    return parser.parse_args(argv)
+
+
+def load_swe_bench_instances(
+    path: Path,
+    *,
+    limit: int | None = None,
+) -> list[SweBenchInstance]:
+    records = load_json_records(path)
+    if limit is not None:
+        records = records[:limit]
+    instances = [parse_swe_bench_instance(record) for record in records]
+    if not instances:
+        raise SystemExit(f"No SWE-bench instances found in {path}")
+    return instances
+
+
+def load_json_records(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        raise SystemExit(f"SWE-bench file not found: {path}")
+    if path.suffix == ".jsonl":
+        records = [
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+    else:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(payload, list):
+            records = payload
+        elif isinstance(payload, dict) and isinstance(payload.get("instances"), list):
+            records = payload["instances"]
+        else:
+            raise SystemExit(
+                "SWE-bench JSON must be a list or an object with an instances list."
+            )
+    return [cast(dict[str, Any], record) for record in records]
+
+
+def parse_swe_bench_instance(record: dict[str, Any]) -> SweBenchInstance:
+    data = {
+        "instance_id": record.get("instance_id"),
+        "repo": record.get("repo"),
+        "base_commit": record.get("base_commit"),
+        "problem_statement": record.get("problem_statement"),
+        "test_patch": record.get("test_patch") or "",
+        "fail_to_pass": normalize_swe_bench_test_ids(
+            record.get("FAIL_TO_PASS", record.get("fail_to_pass", []))
+        ),
+        "pass_to_pass": normalize_swe_bench_test_ids(
+            record.get("PASS_TO_PASS", record.get("pass_to_pass", []))
+        ),
+    }
+    return SweBenchInstance.model_validate(data)
+
+
+def normalize_swe_bench_test_ids(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return []
+        if stripped.startswith("["):
+            try:
+                parsed = ast.literal_eval(stripped)
+            except (SyntaxError, ValueError):
+                parsed = None
+            if isinstance(parsed, list):
+                return [str(item) for item in parsed if str(item).strip()]
+        return [line.strip() for line in stripped.splitlines() if line.strip()]
+    return [str(value)]
+
+
+async def evaluate_swe_bench_instances(
+    instances: list[SweBenchInstance],
+    *,
+    api_key: str | None,
+    keep_workspaces: bool,
+    cache_root: Path,
+    predictions_path: Path,
+    run_tests: bool,
+    max_steps: int | None,
+) -> list[CodingTaskResult]:
+    provider_adapter = create_real_provider_adapter(api_key)
+    prepare_predictions_file(predictions_path)
+    results: list[CodingTaskResult] = []
+    for instance in instances:
+        results.append(
+            await evaluate_swe_bench_instance(
+                instance,
+                provider_adapter=provider_adapter,
+                keep_workspace=keep_workspaces,
+                cache_root=cache_root,
+                predictions_path=predictions_path,
+                run_tests=run_tests,
+                max_steps=max_steps or 30,
+            )
+        )
+    print(f"\nSWE-bench predictions: {predictions_path}")
+    return results
+
+
+async def evaluate_swe_bench_instance(
+    instance: SweBenchInstance,
+    *,
+    provider_adapter: ProviderAdapter,
+    keep_workspace: bool,
+    cache_root: Path,
+    predictions_path: Path,
+    run_tests: bool,
+    max_steps: int,
+) -> CodingTaskResult:
+    workspace = Path(tempfile.mkdtemp(prefix=f"agent-swe-{instance.instance_id}-"))
+    started = perf_counter()
+    repo_workspace = workspace / "repo"
+    failures: list[str] = []
+    commands: list[str] = []
+    model_patch = ""
+    run: AgentRun | None = None
+    agent: Agent | None = None
+    try:
+        materialize_swe_bench_workspace(instance, repo_workspace, cache_root)
+        registry = create_registry(repo_workspace)
+        agent = Agent(
+            provider_adapter=provider_adapter,
+            registry=registry,
+            stream_output=False,
+            max_steps=max_steps,
+            approval_callback=deny_eval_command_approval,
+        )
+        run = await agent.run(swe_bench_prompt(instance))
+        model_patch = git_diff(repo_workspace)
+        write_swe_bench_prediction(predictions_path, instance, provider_adapter, model_patch)
+
+        if run.termination != "completed":
+            failures.append(f"agent terminated with {run.termination}")
+        if not model_patch.strip():
+            failures.append("no model patch generated")
+        if run_tests:
+            test_success, test_command = run_swe_bench_tests(instance, repo_workspace)
+            commands.append(test_command)
+            if not test_success:
+                failures.append("SWE-bench pytest command did not pass")
+
+        latency_ms = (perf_counter() - started) * 1000
+        assert run is not None
+        assert agent is not None
+        task_success = not failures
+        failure_reasons = (
+            [] if task_success else classify_failure_reasons(run, failures)
+        )
+        return CodingTaskResult(
+            name=instance.instance_id,
+            mode="swe_bench",
+            task_success=task_success,
+            runtime_success=run.termination == "completed",
+            verification_success=run_tests and not any(
+                failure == "SWE-bench pytest command did not pass"
+                for failure in failures
+            ),
+            recovery_success=recovered_from_error(run),
+            tool_accuracy=bool(model_patch.strip()),
+            steps=len(run.steps),
+            tool_calls=sum(len(step.tool_calls) for step in run.steps),
+            tools=tool_names(run),
+            commands=[*command_summaries(run), *commands],
+            latency_ms=latency_ms,
+            input_tokens=agent.token_tracker.input_tokens,
+            output_tokens=agent.token_tracker.output_tokens,
+            estimated_cost=agent.token_tracker.estimated_cost,
+            failures=failures,
+            failure_reasons=failure_reasons,
+        )
+    finally:
+        if keep_workspace:
+            print(f"Kept SWE-bench workspace for {instance.instance_id}: {workspace}")
+        else:
+            shutil.rmtree(workspace, ignore_errors=True)
+
+
+def prepare_predictions_file(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("", encoding="utf-8")
+
+
+def write_swe_bench_prediction(
+    path: Path,
+    instance: SweBenchInstance,
+    provider_adapter: ProviderAdapter,
+    model_patch: str,
+) -> None:
+    record = {
+        "instance_id": instance.instance_id,
+        "model_name_or_path": f"{provider_adapter.provider}/{provider_adapter.model}",
+        "model_patch": model_patch,
+    }
+    with path.open("a", encoding="utf-8") as file:
+        file.write(json.dumps(record) + "\n")
+
+
+def swe_bench_prompt(instance: SweBenchInstance) -> str:
+    return "\n".join(
+        [
+            "Fix this SWE-bench issue in the current repository.",
+            "Make the minimal source changes needed for the described behavior.",
+            "Run focused verification when practical.",
+            "",
+            "Problem statement:",
+            instance.problem_statement,
+        ]
+    )
+
+
+def deny_eval_command_approval(
+    tool_call: ToolCall,
+    policy: CommandPolicyResult,
+) -> bool:
+    del tool_call, policy
+    return False
+
+
+def materialize_swe_bench_workspace(
+    instance: SweBenchInstance,
+    repo_workspace: Path,
+    cache_root: Path,
+) -> None:
+    cached_repo = ensure_swe_bench_repo_cache(instance, cache_root)
+    run_subprocess(["git", "clone", cached_repo.as_posix(), repo_workspace.as_posix()])
+    run_subprocess(["git", "checkout", instance.base_commit], cwd=repo_workspace)
+
+
+def ensure_swe_bench_repo_cache(
+    instance: SweBenchInstance,
+    cache_root: Path,
+) -> Path:
+    cache_root.mkdir(parents=True, exist_ok=True)
+    cached_repo = cache_root / instance.repo.replace("/", "__")
+    if cached_repo.exists():
+        return cached_repo
+    source = f"https://github.com/{instance.repo}.git"
+    run_subprocess(["git", "clone", source, cached_repo.as_posix()])
+    return cached_repo
+
+
+def git_diff(repo_workspace: Path) -> str:
+    run_subprocess(["git", "add", "-N", "."], cwd=repo_workspace)
+    completed = run_subprocess(
+        ["git", "diff", "--binary"],
+        cwd=repo_workspace,
+        check=False,
+    )
+    return completed.stdout
+
+
+def run_swe_bench_tests(
+    instance: SweBenchInstance,
+    repo_workspace: Path,
+) -> tuple[bool, str]:
+    if instance.test_patch:
+        completed = run_subprocess(
+            ["git", "apply"],
+            cwd=repo_workspace,
+            input_text=instance.test_patch,
+            check=False,
+        )
+        if completed.returncode != 0:
+            summary = (
+                "git apply <test_patch> -> "
+                f"exit_code={completed.returncode}, timed_out=false"
+            )
+            return False, summary
+
+    tests = [*instance.fail_to_pass, *instance.pass_to_pass]
+    if not tests:
+        return True, "[No SWE-bench test ids supplied]"
+    command = [PYTHON, "-m", "pytest", *tests]
+    completed = run_subprocess(command, cwd=repo_workspace, check=False, timeout=120)
+    command_text = " ".join(command)
+    return (
+        completed.returncode == 0,
+        f"{command_text} -> exit_code={completed.returncode}, timed_out=false",
+    )
+
+
+def run_subprocess(
+    args: list[str],
+    *,
+    cwd: Path | None = None,
+    input_text: str | None = None,
+    check: bool = True,
+    timeout: float = 120,
+) -> subprocess.CompletedProcess[str]:
+    completed = subprocess.run(
+        args,
+        cwd=cwd,
+        input=input_text,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+    if check and completed.returncode != 0:
+        command = " ".join(args)
+        raise RuntimeError(
+            f"Command failed: {command}\n{completed.stdout}\n{completed.stderr}"
+        )
+    return completed
 
 
 def default_case_names(
@@ -847,13 +1339,74 @@ def default_case_names(
     return list(cases)
 
 
+def summarize_results(results: list[CodingTaskResult]) -> EvaluationSummary:
+    total = len(results)
+    passed = sum(result.task_success for result in results)
+    failure_reason_counts = {
+        reason: sum(reason in result.failure_reasons for result in results)
+        for reason in FAILURE_REASONS
+    }
+    return EvaluationSummary(
+        total=total,
+        passed=passed,
+        pass_rate=passed / total if total else 0.0,
+        average_steps=average_float(result.steps for result in results),
+        average_token_cost=average_float(result.estimated_cost for result in results),
+        average_tool_calls=average_float(result.tool_calls for result in results),
+        failure_reason_counts=failure_reason_counts,
+    )
+
+
+def average_float(values: Iterable[float | int]) -> float:
+    numbers = [float(value) for value in values]
+    if not numbers:
+        return 0.0
+    return sum(numbers) / len(numbers)
+
+
 def main() -> None:
-    args = parse_args()
+    raise SystemExit(asyncio.run(run_eval_cli()))
+
+
+async def run_eval_cli(
+    argv: Sequence[str] | None = None,
+    *,
+    api_key: str | None = None,
+) -> int:
+    args = parse_args(argv)
     cases = build_cases()
     if args.list:
         for name, (case, _, _) in cases.items():
             print(f"{name}: {case.task}")
-        return
+        return 0
+
+    if args.swe_bench is not None:
+        load_dotenv()
+        if args.cases:
+            joined = ", ".join(args.cases)
+            raise SystemExit(
+                f"Do not pass built-in case names with --swe-bench: {joined}"
+            )
+        instances = load_swe_bench_instances(
+            args.swe_bench,
+            limit=args.swe_bench_limit,
+        )
+        predictions_path = args.swe_bench_predictions or Path(
+            ".agents/evals/swe-bench-predictions.jsonl"
+        )
+        results = await evaluate_swe_bench_instances(
+            instances,
+            api_key=api_key,
+            keep_workspaces=args.keep_workspaces,
+            cache_root=args.swe_bench_cache,
+            predictions_path=predictions_path,
+            run_tests=not args.skip_swe_bench_tests,
+            max_steps=args.max_steps,
+        )
+        print_results(results)
+        if not all(result.task_success for result in results):
+            return 1
+        return 0
 
     mode: EvaluationMode = "real_model" if args.real_model else "scripted"
     if mode == "real_model":
@@ -865,16 +1418,17 @@ def main() -> None:
         joined = ", ".join(unknown)
         raise SystemExit(f"Unknown evaluation case(s): {joined}")
 
-    results = asyncio.run(
-        evaluate_cases(
-            selected_names,
-            mode=mode,
-            keep_workspaces=args.keep_workspaces,
-        )
+    results = await evaluate_cases(
+        selected_names,
+        mode=mode,
+        keep_workspaces=args.keep_workspaces,
+        api_key=api_key,
+        max_steps=args.max_steps,
     )
     print_results(results)
     if not all(result.task_success for result in results):
-        raise SystemExit(1)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

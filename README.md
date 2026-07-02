@@ -439,9 +439,34 @@ Run tests:
 Run deterministic evaluations:
 
 ```bash
+.venv/bin/agent eval
 .venv/bin/python scripts/evaluate_tool_selection.py
 .venv/bin/python scripts/evaluate_coding_tasks.py
 ```
+
+The `agent eval` command reports pass rate, average steps, average token cost,
+average tool calls, and failure counts for compile errors, test failures, max
+step exits, and unsafe blocked commands.
+
+Run selected cases or a live-provider smoke case:
+
+```bash
+.venv/bin/agent eval small_bug_fix targeted_refactor
+.venv/bin/agent eval --real-model repository_search
+```
+
+Run SWE-bench-style instances from a local JSONL export:
+
+```bash
+.venv/bin/agent eval --swe-bench swe-bench-lite.jsonl --swe-bench-limit 3
+```
+
+SWE-bench mode checks out each instance's `repo` at `base_commit`, asks the
+agent to produce a patch, writes predictions to
+`.agents/evals/swe-bench-predictions.jsonl`, and runs best-effort local pytest
+targets from `FAIL_TO_PASS` and `PASS_TO_PASS` when present. The predictions
+file uses `instance_id`, `model_name_or_path`, and `model_patch` fields so it
+can be passed to the official SWE-bench harness for Docker-based scoring.
 
 Real API calls should be reserved for behavior experiments that cannot be
 verified with local fake providers or deterministic tests.

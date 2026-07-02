@@ -1,5 +1,6 @@
 import asyncio
 import tomllib
+from collections.abc import Sequence
 from pathlib import Path
 from typing import cast
 
@@ -356,6 +357,14 @@ def test_parse_cli_args_supports_help_and_version() -> None:
     assert version_args.one_shot_task is None
 
 
+def test_parse_cli_args_supports_eval_command() -> None:
+    args = parse_cli_args(["--api-key", "cli-key", "eval", "--list"])
+
+    assert args.api_key == "cli-key"
+    assert args.eval_args == ["--list"]
+    assert args.one_shot_task is None
+
+
 def test_parse_cli_args_rejects_invalid_resume_usage() -> None:
     with pytest.raises(ValueError, match="Usage"):
         parse_cli_args(["--resume"])
@@ -408,6 +417,33 @@ def test_cli_version_does_not_require_provider_config(
     asyncio.run(cli_main(["--version"]))
 
     assert capsys.readouterr().out == "agent-from-scratch 0.1.0\n"
+
+
+def test_cli_eval_does_not_require_provider_config(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls: list[tuple[list[str], str | None]] = []
+
+    def fail_load_provider_config(*args: object, **kwargs: object) -> object:
+        raise AssertionError("Provider config should not be loaded for eval.")
+
+    async def fake_run_eval_command(
+        eval_args: Sequence[str],
+        *,
+        api_key: str | None = None,
+    ) -> int:
+        calls.append((list(eval_args), api_key))
+        print("eval ok")
+        return 0
+
+    monkeypatch.setattr("main.load_provider_config", fail_load_provider_config)
+    monkeypatch.setattr("main.run_eval_command", fake_run_eval_command)
+
+    asyncio.run(cli_main(["--api-key", "cli-key", "eval", "--list"]))
+
+    assert calls == [(["--list"], "cli-key")]
+    assert capsys.readouterr().out == "eval ok\n"
 
 
 def test_cli_reports_configuration_error_without_traceback(

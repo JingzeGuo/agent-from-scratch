@@ -46,6 +46,7 @@ __all__ = [
     "parse_one_shot_task",
     "prompt_tool_approval",
     "report_interrupted_action",
+    "run_eval_command",
     "run_cli",
 ]
 
@@ -53,6 +54,7 @@ __all__ = [
 class CliArgs(BaseModel):
     resume_session_id: str | None
     api_key: str | None
+    eval_args: list[str] | None
     one_shot_task: str | None
     show_help: bool = False
     show_version: bool = False
@@ -68,12 +70,16 @@ def parse_cli_args(argv: Sequence[str]) -> CliArgs:
     remaining_args: list[str] = []
     resume_session_id: str | None = None
     api_key: str | None = None
+    eval_args: list[str] | None = None
     show_help = False
     show_version = False
     index = 0
 
     while index < len(argv):
         arg = argv[index]
+        if arg == "eval" and not remaining_args:
+            eval_args = list(argv[index + 1 :])
+            break
         if arg in {"--help", "-h"}:
             show_help = True
             index += 1
@@ -121,6 +127,7 @@ def parse_cli_args(argv: Sequence[str]) -> CliArgs:
     return CliArgs(
         resume_session_id=resume_session_id,
         api_key=api_key,
+        eval_args=eval_args,
         one_shot_task=parse_one_shot_task(remaining_args),
         show_help=show_help,
         show_version=show_version,
@@ -137,6 +144,7 @@ def package_version() -> str:
 def print_cli_help() -> None:
     print("Usage:")
     print("  agent [options] [task]")
+    print("  agent eval [eval-options] [cases...]")
     print("")
     print("Options:")
     print("  -h, --help                       Show this help message.")
@@ -148,6 +156,16 @@ def print_cli_help() -> None:
     width = max(len(name) for name in COMMANDS)
     for name, description in COMMANDS.items():
         print(f"  {name:<{width}} {description}")
+
+
+async def run_eval_command(
+    eval_args: Sequence[str],
+    *,
+    api_key: str | None = None,
+) -> int:
+    from scripts.evaluate_coding_tasks import run_eval_cli
+
+    return await run_eval_cli(eval_args, api_key=api_key)
 
 
 def print_configuration_error(error: ValueError) -> None:
@@ -258,6 +276,14 @@ async def main(argv: Sequence[str] | None = None) -> None:
         return
     if cli_args.show_version:
         print(f"{PACKAGE_NAME} {package_version()}")
+        return
+    if cli_args.eval_args is not None:
+        if cli_args.resume_session_id is not None:
+            print("Use --resume with interactive or one-shot tasks, not eval.")
+            return
+        exit_code = await run_eval_command(cli_args.eval_args, api_key=cli_args.api_key)
+        if exit_code:
+            raise SystemExit(exit_code)
         return
 
     workspace_root = Path.cwd().resolve()
