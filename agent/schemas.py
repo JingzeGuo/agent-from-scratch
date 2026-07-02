@@ -10,7 +10,15 @@ RunOutcome = Literal[
     "refused",
     "protocol_error",
 ]
-ToolKind = Literal["pure", "read_only", "write", "command", "network", "delegated"]
+ToolKind = Literal[
+    "pure",
+    "read_only",
+    "write",
+    "command",
+    "network",
+    "delegated",
+    "mcp",
+]
 
 
 class CalculatorInput(BaseModel):

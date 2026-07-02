@@ -28,6 +28,7 @@ session state, and tracks token usage and estimated cost.
 - Token and estimated cost tracking
 - Optional web search and URL fetching
 - Read-only sub-agent delegation for bounded repository exploration
+- Optional stdio MCP server tool loading
 
 ## Requirements
 
@@ -96,6 +97,7 @@ Supported variables:
 | `AGENT_MEMORY_GLOBAL_DIR` | Global memory directory, default `~/.agent-from-scratch/memory` |
 | `AGENT_MEMORY_MAX_RESULTS` | Maximum retrieved memory records per model request, default `5` |
 | `AGENT_MEMORY_MAX_CONTEXT_CHARS` | Maximum memory context characters inserted into a request, default `4000` |
+| `AGENT_MCP_CONFIG` | Optional path to an MCP server config. If unset, `.agents/mcp.json` is loaded when present |
 
 The CLI loads `.env` from the directory where you start the process. For a
 coding task in another repository, either export environment variables globally
@@ -188,6 +190,37 @@ All tool inputs are validated with Pydantic before execution. Validation
 failures are returned to the model as error observations so the agent can
 recover by choosing corrected arguments.
 
+### MCP Tools
+
+The agent can load tools from trusted stdio MCP servers at startup. By default,
+it looks for `.agents/mcp.json` in the active workspace. Set `AGENT_MCP_CONFIG`
+to use a different JSON file, or set it to an empty value to disable MCP config
+loading explicitly.
+
+The config uses the common `mcpServers` shape:
+
+```json
+{
+  "mcpServers": {
+    "demo": {
+      "command": "python",
+      "args": ["tools/demo_mcp_server.py"],
+      "env": {
+        "DEMO_TOKEN": "optional"
+      },
+      "cwd": "."
+    }
+  }
+}
+```
+
+Each configured server is launched without a shell, initialized over stdio, and
+queried with `tools/list`. Exposed tools are registered as
+`mcp_<server>__<tool>` and tool calls are forwarded with `tools/call`.
+
+MCP servers are user-configured local processes. Only load servers you trust;
+their behavior is outside the built-in workspace file and command policies.
+
 `sub_agent` is a delegated tool rather than a normal file or command helper.
 When the main controller executes it, the tool creates an isolated child agent
 with a fresh conversation, the same provider adapter, and a read-only registry
@@ -258,6 +291,7 @@ CLI
             -> edit/write tools
             -> command tool
             -> web tools
+            -> MCP server tools
             -> sub-agent tool
        -> Session store
        -> Trace writer

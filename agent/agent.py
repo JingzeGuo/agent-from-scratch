@@ -660,7 +660,7 @@ class Agent:
                 },
             )
         else:
-            _, output, is_error, latency_ms = self._run_tool_call(
+            _, output, is_error, latency_ms = await self._run_tool_call_async(
                 tool_call,
                 approval_granted=approval is not None,
             )

@@ -21,6 +21,7 @@ from agent.cli_commands import (
     prompt_tool_approval,
     report_interrupted_action,
 )
+from agent.mcp import McpError, McpToolManager, load_mcp_tools_from_env
 from agent.memory import MemoryStore, MemorySystem
 from agent.provider import create_provider_adapter, load_provider_config
 from agent.schemas import SessionEvent
@@ -154,6 +155,10 @@ def print_configuration_error(error: ValueError) -> None:
     print("Set it in .env or export it in your shell.")
 
 
+def print_mcp_error(error: ValueError | McpError) -> None:
+    print(f"MCP configuration error: {error}")
+
+
 def default_sessions_dir(workspace_root: Path) -> Path:
     return workspace_root / ".agents" / "sessions"
 
@@ -257,62 +262,71 @@ async def main(argv: Sequence[str] | None = None) -> None:
 
     workspace_root = Path.cwd().resolve()
     session_store = SessionStore(default_sessions_dir(workspace_root))
+    mcp_manager = McpToolManager()
     try:
         config = load_provider_config(api_key=cli_args.api_key)
     except ValueError as error:
         print_configuration_error(error)
         return
-    registry = create_registry(workspace_root)
-    agent = Agent(
-        provider_adapter=create_provider_adapter(config),
-        registry=registry,
-        model=config.model,
-        provider=config.provider,
-    )
-    agent.configure_memory(create_memory_system(workspace_root))
-    if cli_args.one_shot_task is None:
-        agent.configure_approval_callback(prompt_tool_approval)
-    else:
-        agent.configure_approval_callback(deny_tool_approval)
-    session_state = CliSessionState(session_id=generate_session_id())
-    if cli_args.resume_session_id is not None:
-        snapshot = session_store.find(cli_args.resume_session_id)
+    try:
+        registry = create_registry(workspace_root)
         try:
-            resumed_config = load_provider_config(
-                provider=snapshot.provider,
-                model=snapshot.model,
-                api_key=cli_args.api_key,
-            )
-        except ValueError as error:
-            print_configuration_error(error)
+            mcp_manager = await load_mcp_tools_from_env(registry, workspace_root)
+        except (ValueError, McpError) as error:
+            print_mcp_error(error)
             return
-        agent.switch_provider(create_provider_adapter(resumed_config))
-        agent.restore_snapshot(snapshot)
-        session_state = CliSessionState(
-            session_id=snapshot.session_id,
-            session_name=snapshot.session_name,
+        agent = Agent(
+            provider_adapter=create_provider_adapter(config),
+            registry=registry,
+            model=config.model,
+            provider=config.provider,
         )
-        report_interrupted_action(session_store, session_state.session_id)
-        session_store.append_event(
-            SessionEvent(
-                event_type="session_resumed",
-                session_id=session_state.session_id,
-                session_name=session_state.session_name,
-                created_at=utc_timestamp(),
+        agent.configure_memory(create_memory_system(workspace_root))
+        if cli_args.one_shot_task is None:
+            agent.configure_approval_callback(prompt_tool_approval)
+        else:
+            agent.configure_approval_callback(deny_tool_approval)
+        session_state = CliSessionState(session_id=generate_session_id())
+        if cli_args.resume_session_id is not None:
+            snapshot = session_store.find(cli_args.resume_session_id)
+            try:
+                resumed_config = load_provider_config(
+                    provider=snapshot.provider,
+                    model=snapshot.model,
+                    api_key=cli_args.api_key,
+                )
+            except ValueError as error:
+                print_configuration_error(error)
+                return
+            agent.switch_provider(create_provider_adapter(resumed_config))
+            agent.restore_snapshot(snapshot)
+            session_state = CliSessionState(
+                session_id=snapshot.session_id,
+                session_name=snapshot.session_name,
             )
-        )
-        print(f"Resumed session: {snapshot.session_id}")
-    else:
-        session_store.append_event(
-            SessionEvent(
-                event_type="session_started",
-                session_id=session_state.session_id,
-                created_at=utc_timestamp(),
+            report_interrupted_action(session_store, session_state.session_id)
+            session_store.append_event(
+                SessionEvent(
+                    event_type="session_resumed",
+                    session_id=session_state.session_id,
+                    session_name=session_state.session_name,
+                    created_at=utc_timestamp(),
+                )
             )
-        )
-    agent.configure_session_recording(session_store, session_state.session_id)
-    print(f"Provider: {agent.provider} | Model: {agent.model}")
-    await run_cli(agent, cli_args.one_shot_task, session_store, session_state)
+            print(f"Resumed session: {snapshot.session_id}")
+        else:
+            session_store.append_event(
+                SessionEvent(
+                    event_type="session_started",
+                    session_id=session_state.session_id,
+                    created_at=utc_timestamp(),
+                )
+            )
+        agent.configure_session_recording(session_store, session_state.session_id)
+        print(f"Provider: {agent.provider} | Model: {agent.model}")
+        await run_cli(agent, cli_args.one_shot_task, session_store, session_state)
+    finally:
+        await mcp_manager.close()
 
 
 def cli() -> None:

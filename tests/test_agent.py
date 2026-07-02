@@ -1367,6 +1367,63 @@ def test_agent_executes_multiple_tool_calls_serially() -> None:
     ]
 
 
+def test_agent_executes_async_tool_calls_serially() -> None:
+    async def async_probe(expression: str) -> str:
+        await asyncio.sleep(0)
+        return f"async result: {expression}"
+
+    tool_call = ToolCall(
+        name="async_probe",
+        input={"expression": "1 + 1"},
+        tool_use_id="call_async",
+    )
+    registry = ToolRegistry()
+    registry.register(
+        Tool(
+            name="async_probe",
+            description="Run an async probe.",
+            input_schema=CalculatorInput,
+            fn=async_probe,
+        )
+    )
+    adapter = FakeProviderAdapter(
+        responses=[
+            ProviderResponse(
+                message={
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": tool_call.tool_use_id,
+                            "name": tool_call.name,
+                            "input": tool_call.input,
+                        }
+                    ],
+                },
+                stop_reason="tool_use",
+                tool_calls=[tool_call],
+                usage=TokenUsage(input_tokens=10, output_tokens=5),
+            ),
+            ProviderResponse(
+                message={
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "Done."}],
+                },
+                stop_reason="end_turn",
+                text=["Done."],
+                usage=TokenUsage(input_tokens=10, output_tokens=5),
+            ),
+        ]
+    )
+    agent = Agent(provider_adapter=adapter, registry=registry)
+
+    agent_run = asyncio.run(agent.run("Run async probe"))
+
+    assert agent_run.termination == "completed"
+    assert agent_run.steps[0].tool_results[0].content == "async result: 1 + 1"
+    assert agent_run.steps[0].tool_results[0].is_error is False
+
+
 def test_agent_executes_read_only_tool_calls_concurrently_preserving_order(
     tmp_path: Path,
 ) -> None:
