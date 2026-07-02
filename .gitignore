@@ -5,10 +5,18 @@ build/
 dist/
 wheels/
 *.egg-info
+.pytest_cache/
+.mypy_cache/
 
 # Virtual environments
 .venv
 .env
+
+# Tool caches
+.ruff_cache/
+
+# OS-generated files
+.DS_Store
 
 # Editor settings
 .vscode/
