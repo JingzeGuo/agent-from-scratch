@@ -4,7 +4,6 @@ import shlex
 from dataclasses import dataclass
 from typing import Literal
 
-ToolKind = Literal["pure", "read_only", "write", "command", "network", "delegated"]
 CommandPolicyDecision = Literal["allowed", "blocked", "requires_approval"]
 
 SECRET_PATTERNS = [

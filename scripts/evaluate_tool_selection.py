@@ -8,6 +8,7 @@ from anthropic.types import ToolParam
 from dotenv import load_dotenv
 from pydantic import ValidationError
 
+from agent.schemas import ToolDefinition
 from agent.setup import create_registry
 
 MODEL = "claude-haiku-4-5"
@@ -75,15 +76,27 @@ class EvaluationResult:
     arguments_exact: bool
 
 
+def to_anthropic_tool_param(tool: ToolDefinition) -> ToolParam:
+    return {
+        "name": tool.name,
+        "description": tool.description,
+        "input_schema": tool.input_schema,
+    }
+
+
 def build_tool_schemas(vague: bool) -> list[ToolParam]:
-    schemas = create_registry(Path.cwd()).to_anthropic_schemas()
+    schemas = [
+        to_anthropic_tool_param(tool)
+        for tool in create_registry(Path.cwd()).to_tool_definitions()
+    ]
     if not vague:
         return schemas
 
     return [
         {
-            **schema,
+            "name": schema["name"],
             "description": VAGUE_DESCRIPTIONS[schema["name"]],
+            "input_schema": schema["input_schema"],
         }
         for schema in schemas
     ]

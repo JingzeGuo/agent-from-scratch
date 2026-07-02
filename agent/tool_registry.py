@@ -1,8 +1,6 @@
 from pathlib import Path
 from typing import Any
 
-from anthropic.types import ToolParam
-
 from .schemas import ToolDefinition
 from .security import classify_command
 from .tool import Tool
@@ -20,9 +18,6 @@ class ToolRegistry:
 
     def register(self, tool: Tool) -> None:
         self.tools[tool.name] = tool
-
-    def to_anthropic_schemas(self) -> list[ToolParam]:
-        return [tool.to_anthropic_schema() for tool in self.tools.values()]
 
     def to_tool_definitions(self) -> list[ToolDefinition]:
         return [tool.to_definition() for tool in self.tools.values()]

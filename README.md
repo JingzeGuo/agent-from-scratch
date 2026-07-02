@@ -270,11 +270,12 @@ Core modules:
 
 | Path | Responsibility |
 | --- | --- |
-| `main.py` | CLI parsing, interactive loop, slash commands, session wiring |
+| `main.py` | CLI parsing, startup wiring, provider setup, interactive loop |
+| `agent/cli_commands.py` | Slash commands, session checkpoint commands, memory and trace commands |
 | `agent/agent.py` | Agent controller, run loop, tool scheduling, recovery, termination |
 | `agent/provider.py` | Anthropic and OpenAI-compatible provider adapters |
 | `agent/setup.py` | Built-in tool registry construction |
-| `agent/tool.py` | Tool wrapper, schema conversion, validation, retry |
+| `agent/tool.py` | Tool wrapper, schema generation, validation, retry |
 | `agent/tool_registry.py` | Tool storage, dispatch, changed-file tracking, diffs |
 | `agent/tools.py` | Tool implementations |
 | `agent/schemas.py` | Pydantic models for tools, runs, sessions, traces, context |
@@ -285,6 +286,26 @@ Core modules:
 | `agent/memory.py` | Project/global memory stores, retrieval, and run reflection |
 | `agent/token_tracker.py` | Token and estimated cost tracking |
 | `agent/verification.py` | Verification evidence extraction |
+
+## Interview Narrative
+
+For interviews, explain the project in layers instead of listing every feature.
+
+The core loop is in `agent/agent.py`: the controller keeps conversation and
+step state, sends context plus tool definitions to the model, receives either
+final text or tool calls, executes actions through the registry, appends tool
+observations, and stops on completion, protocol error, or the maximum step
+limit.
+
+The recovery story is tool-centered: Pydantic validates inputs before execution,
+validation and runtime failures are returned as observations, transient tool
+failures retry up to three attempts, command approval handles risky actions,
+and focused verification evidence is extracted from command results.
+
+The advanced layers are optional extensions around the loop. Context compaction
+keeps long sessions usable, session checkpoints make runs resumable, trace
+events make behavior inspectable, memory adds durable context, and `sub_agent`
+is a controlled read-only delegation path for narrow repository exploration.
 
 ## Memory
 

@@ -4,7 +4,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from anthropic.types import ToolParam
 from pydantic import BaseModel, ValidationError
 
 from .retry import is_transient_error, retry
@@ -29,15 +28,6 @@ class Tool:
             input_schema=json_schema,
             kind=self.kind,
         )
-
-    def to_anthropic_schema(self) -> ToolParam:
-        """Build the tool definition expected by the Anthropic Messages API."""
-        definition = self.to_definition()
-        return {
-            "name": definition.name,
-            "description": definition.description,
-            "input_schema": definition.input_schema,
-        }
 
     @retry(max_attempts=3, backoff=2)
     def _run(
