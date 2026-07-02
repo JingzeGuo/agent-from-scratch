@@ -15,5 +15,6 @@ wheels/
 
 .agents/memory/
 .agents/sessions/
+.agents/evals/
 
 docs/
