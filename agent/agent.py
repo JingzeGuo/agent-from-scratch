@@ -358,10 +358,7 @@ class Agent:
     ) -> None:
         if memory_context is None:
             return
-        titles = [
-            result.record.title
-            for result in memory_context.results
-        ]
+        titles = [result.record.title for result in memory_context.results]
         self._append_session_event(
             SessionEvent(
                 event_type="memory_retrieved",
