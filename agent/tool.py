@@ -9,6 +9,7 @@ from pydantic import BaseModel, ValidationError
 
 from .retry import is_transient_error, retry
 from .schemas import ToolDefinition, ToolKind
+from .security import ToolApprovalPolicy
 
 
 @dataclass
@@ -19,6 +20,7 @@ class Tool:
     fn: Callable[..., Any]
     kind: ToolKind = "read_only"
     definition_input_schema: dict[str, Any] | None = None
+    approval_policy: ToolApprovalPolicy | None = None
 
     def to_definition(self) -> ToolDefinition:
         """Build a provider-neutral tool definition."""

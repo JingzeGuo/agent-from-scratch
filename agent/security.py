@@ -1,7 +1,7 @@
 import os
 import re
 import shlex
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 CommandPolicyDecision = Literal["allowed", "blocked", "requires_approval"]
@@ -45,10 +45,13 @@ SAFE_GIT_SUBCOMMANDS = {"diff", "status"}
 
 
 @dataclass(frozen=True)
-class CommandPolicyResult:
+class ToolApprovalPolicy:
     decision: CommandPolicyDecision
     reason: str
-    args: list[str]
+    args: list[str] = field(default_factory=list)
+
+
+CommandPolicyResult = ToolApprovalPolicy
 
 
 def redact_text(text: str) -> str:

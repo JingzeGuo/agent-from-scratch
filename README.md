@@ -185,6 +185,7 @@ The default registry exposes these tools to the model:
 | `sub_agent` | delegated | Delegate bounded read-only repository exploration |
 | `fetch_url` | network | Fetch URL content |
 | `search_web` | network | Search the web when `TAVILY_API_KEY` is configured |
+| `mcp_<server>__<tool>` | mcp | Call tools discovered from configured stdio MCP servers |
 
 All tool inputs are validated with Pydantic before execution. Validation
 failures are returned to the model as error observations so the agent can
@@ -192,23 +193,36 @@ recover by choosing corrected arguments.
 
 ### MCP Tools
 
-The agent can load tools from trusted stdio MCP servers at startup. By default,
-it looks for `.agents/mcp.json` in the active workspace. Set `AGENT_MCP_CONFIG`
-to use a different JSON file, or set it to an empty value to disable MCP config
-loading explicitly.
+This project implements a minimal stdio MCP client, not the full MCP
+specification. It currently supports local stdio servers, `initialize`,
+`tools/list`, and `tools/call`. It does not yet support HTTP transport,
+resources, prompts, sampling, auth, progress notifications, or tool-list change
+notifications.
 
-The config uses the common `mcpServers` shape:
+The agent can load tools from configured stdio MCP servers at startup. By
+default, it looks for `.agents/mcp.json` in the active workspace. Set
+`AGENT_MCP_CONFIG` to use a different JSON file, or set it to an empty value to
+disable MCP config loading explicitly.
+
+The config uses the common `mcpServers` shape with explicit trust and approval
+settings:
 
 ```json
 {
   "mcpServers": {
     "demo": {
       "command": "python",
-      "args": ["tools/demo_mcp_server.py"],
+      "args": ["server.py"],
       "env": {
-        "DEMO_TOKEN": "optional"
+        "TOKEN": "..."
       },
-      "cwd": "."
+      "cwd": "tools",
+      "trust": "untrusted",
+      "approval": "auto",
+      "allowedTools": ["list_items", "get_item"],
+      "blockedTools": ["delete_item"],
+      "readOnlyTools": ["list_items", "get_item"],
+      "allowExternalCwd": false
     }
   }
 }
@@ -218,8 +232,28 @@ Each configured server is launched without a shell, initialized over stdio, and
 queried with `tools/list`. Exposed tools are registered as
 `mcp_<server>__<tool>` and tool calls are forwarded with `tools/call`.
 
-MCP servers are user-configured local processes. Only load servers you trust;
-their behavior is outside the built-in workspace file and command policies.
+Tool registration follows `blockedTools > allowedTools > discovered tools`.
+`blockedTools` are never registered. If `allowedTools` is omitted, every
+discovered tool that is not blocked is registered. If `allowedTools` is present,
+only listed tools are registered.
+
+By default, MCP servers use `trust: "untrusted"` and `approval: "auto"`.
+Approval modes are:
+
+- `always`: every MCP tool call requires user approval.
+- `auto`: tools listed in `readOnlyTools` run without approval; other MCP tools
+  require approval.
+- `never`: MCP tool calls run without approval. Use this only for servers you
+  trust.
+
+`readOnlyTools` is a user configuration claim used only for approval decisions;
+it does not affect registration and is not inferred from server-provided tool
+descriptions.
+
+MCP server working directories are workspace-confined by default. If `cwd` is
+omitted, the server starts in the workspace root. Relative `cwd` values are
+resolved under the workspace and rejected if they escape it. Absolute `cwd`
+values are rejected unless `allowExternalCwd` is set to `true`.
 
 `sub_agent` is a delegated tool rather than a normal file or command helper.
 When the main controller executes it, the tool creates an isolated child agent
@@ -408,6 +442,10 @@ contract.
   `shutdown`, and `git reset --hard` are blocked.
 - Broad commands such as `git`, `pip`, `python`, `uv`, `curl`, and `wget`
   require approval unless they match the safe command policy.
+- External MCP tools are mapped into the same approval system and are not
+  automatically trusted.
+- MCP server `cwd` is workspace-confined by default; external absolute working
+  directories require explicit `allowExternalCwd`.
 - One-shot mode denies command approvals automatically.
 
 This is a controller-level safety policy, not an operating-system sandbox.
@@ -527,5 +565,7 @@ Then restart the shell.
 - Token cost estimates currently cover the configured pricing model used by
   the project and may need updates when changing models.
 - Web search requires Tavily configuration.
+- MCP support is limited to local stdio tool discovery and calls; it is not a
+  full MCP client.
 - Provider support depends on streaming tool-call compatibility.
 - The public Python API is intentionally small and may evolve.

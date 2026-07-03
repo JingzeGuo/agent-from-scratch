@@ -1,10 +1,12 @@
+import json
+
 from pydantic import BaseModel
 
 from .agent import Agent
 from .memory import MemoryRecord
 from .provider import create_provider_adapter, load_provider_config
 from .schemas import SessionEvent, ToolCall
-from .security import CommandPolicyResult
+from .security import ToolApprovalPolicy
 from .session import SessionStore, utc_timestamp
 from .workspace import resolve_workspace_path
 
@@ -84,23 +86,35 @@ def report_interrupted_action(
 
 def prompt_tool_approval(
     tool_call: ToolCall,
-    policy: CommandPolicyResult,
+    policy: ToolApprovalPolicy,
 ) -> bool:
     raw_command = tool_call.input.get("command")
-    command = raw_command if isinstance(raw_command, str) else "[unknown]"
     print("\nApproval required:")
     print(f"  Tool: {tool_call.name}")
     print(f"  Reason: {policy.reason}")
-    print(f"  Command: {command}")
-    answer = input("Approve command? [y/N]: ").strip().lower()
+    if isinstance(raw_command, str):
+        print(f"  Command: {raw_command}")
+    else:
+        print(f"  Input: {_format_tool_approval_input(tool_call.input)}")
+    answer = input("Approve tool? [y/N]: ").strip().lower()
     return answer in {"y", "yes"}
 
 
 def deny_tool_approval(
     tool_call: ToolCall,
-    policy: CommandPolicyResult,
+    policy: ToolApprovalPolicy,
 ) -> bool:
     return False
+
+
+def _format_tool_approval_input(tool_input: dict[str, object]) -> str:
+    try:
+        text = json.dumps(tool_input, ensure_ascii=True, sort_keys=True)
+    except TypeError:
+        text = str(tool_input)
+    if len(text) <= 500:
+        return text
+    return text[:500] + "... [truncated]"
 
 
 def handle_command(

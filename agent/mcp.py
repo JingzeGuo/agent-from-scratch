@@ -8,18 +8,22 @@ import os
 import re
 from asyncio.subprocess import Process
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model
 
+from .security import ToolApprovalPolicy
 from .tool import Tool
 from .tool_registry import ToolRegistry
+from .workspace import resolve_workspace_path
 
 MCP_CLIENT_NAME = "agent-from-scratch"
 MCP_PROTOCOL_VERSION = "2024-11-05"
 DEFAULT_MCP_CONFIG_PATH = Path(".agents") / "mcp.json"
 JSONRPC_VERSION = "2.0"
 MAX_TOOL_NAME_LENGTH = 64
+McpTrust = Literal["trusted", "untrusted"]
+McpApprovalMode = Literal["auto", "always", "never"]
 MCP_INPUT_MODEL = cast(
     type[BaseModel],
     create_model("McpToolInput", __config__=ConfigDict(extra="allow")),
@@ -37,7 +41,7 @@ class McpToolError(RuntimeError):
 class McpServerConfig(BaseModel):
     """Configuration for one stdio MCP server."""
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
     name: str = Field(min_length=1)
     command: str = Field(min_length=1)
@@ -46,6 +50,12 @@ class McpServerConfig(BaseModel):
     cwd: str | None = None
     timeout_seconds: float = Field(default=10.0, gt=0, le=120)
     max_output_chars: int = Field(default=12_000, ge=1_000, le=50_000)
+    trust: McpTrust = "untrusted"
+    approval: McpApprovalMode = "auto"
+    allowed_tools: list[str] | None = Field(default=None, alias="allowedTools")
+    blocked_tools: list[str] = Field(default_factory=list, alias="blockedTools")
+    read_only_tools: list[str] = Field(default_factory=list, alias="readOnlyTools")
+    allow_external_cwd: bool = Field(default=False, alias="allowExternalCwd")
 
 
 class McpToolInfo(BaseModel):
@@ -155,11 +165,22 @@ class McpClient:
 
     def _resolve_cwd(self) -> Path:
         if self.config.cwd is None:
-            return self.workspace_root
+            return self.workspace_root.expanduser().resolve()
         path = Path(self.config.cwd).expanduser()
-        if not path.is_absolute():
-            path = self.workspace_root / path
-        return path.resolve()
+        if path.is_absolute():
+            if not self.config.allow_external_cwd:
+                raise McpError(
+                    f"MCP server '{self.config.name}' uses an absolute cwd. "
+                    "Set allowExternalCwd to true to opt in."
+                )
+            return path.resolve()
+        try:
+            return resolve_workspace_path(self.workspace_root, self.config.cwd)
+        except ValueError as e:
+            raise McpError(
+                f"MCP server '{self.config.name}' cwd is outside the workspace: "
+                f"{self.config.cwd}"
+            ) from e
 
     async def _initialize(self) -> None:
         await self._request(
@@ -363,7 +384,9 @@ async def load_mcp_tools(
             manager.clients.append(client)
             tools = await client.list_tools()
             for tool_info in tools:
-                register_mcp_tool(registry, client, config.name, tool_info)
+                if not _should_register_mcp_tool(config, tool_info.name):
+                    continue
+                register_mcp_tool(registry, client, config, tool_info)
                 manager.tool_count += 1
     except Exception:
         await manager.close()
@@ -374,17 +397,17 @@ async def load_mcp_tools(
 def register_mcp_tool(
     registry: ToolRegistry,
     client: McpClient,
-    server_name: str,
+    config: McpServerConfig,
     tool_info: McpToolInfo,
 ) -> None:
     local_name = _unique_tool_name(
-        _build_local_tool_name(server_name, tool_info.name),
+        _build_local_tool_name(config.name, tool_info.name),
         registry,
     )
     description = (
-        f"MCP tool `{tool_info.name}` from server `{server_name}`."
+        f"MCP tool `{tool_info.name}` from server `{config.name}`."
         if not tool_info.description
-        else f"{tool_info.description} (MCP server `{server_name}`, tool `{tool_info.name}`.)"
+        else f"{tool_info.description} (MCP server `{config.name}`, tool `{tool_info.name}`.)"
     )
 
     async def call_mcp_tool(**arguments: Any) -> str:
@@ -398,8 +421,33 @@ def register_mcp_tool(
             fn=call_mcp_tool,
             kind="mcp",
             definition_input_schema=_object_schema(tool_info.input_schema),
+            approval_policy=_mcp_approval_policy(config, tool_info.name),
         )
     )
+
+
+def _should_register_mcp_tool(config: McpServerConfig, tool_name: str) -> bool:
+    blocked_tools = set(config.blocked_tools)
+    if tool_name in blocked_tools:
+        return False
+    if config.allowed_tools is not None and tool_name not in set(config.allowed_tools):
+        return False
+    return True
+
+
+def _mcp_approval_policy(
+    config: McpServerConfig,
+    tool_name: str,
+) -> ToolApprovalPolicy | None:
+    if config.approval == "never":
+        return None
+    if config.approval == "auto" and tool_name in set(config.read_only_tools):
+        return None
+    reason = (
+        f"MCP tool `{tool_name}` from server `{config.name}` requires approval "
+        f"(server trust: {config.trust}, approval: {config.approval})."
+    )
+    return ToolApprovalPolicy(decision="requires_approval", reason=reason)
 
 
 def _iter_raw_server_items(raw_servers: Any) -> list[tuple[str, Any]]:

@@ -23,6 +23,7 @@ from anthropic.types import (
 
 from agent.agent import Agent
 from agent.context import ContextBuilder
+from agent.mcp import McpServerConfig, McpToolInfo, register_mcp_tool
 from agent.memory import (
     MemoryCandidate,
     MemoryContext,
@@ -295,6 +296,30 @@ def create_command_registry(workspace_root: Path) -> ToolRegistry:
             fn=partial(run_command, workspace_root=workspace_root),
             kind="command",
         )
+    )
+    return registry
+
+
+class FakeMcpClient:
+    async def call_tool(self, remote_tool_name: str, arguments: dict[str, Any]) -> str:
+        return f"{remote_tool_name}: {arguments.get('value', '')}"
+
+
+def create_mcp_registry(config: McpServerConfig) -> ToolRegistry:
+    registry = ToolRegistry()
+    register_mcp_tool(
+        registry,
+        cast(Any, FakeMcpClient()),
+        config,
+        McpToolInfo(
+            name="echo",
+            description="Echo value.",
+            inputSchema={
+                "type": "object",
+                "properties": {"value": {"type": "string"}},
+                "required": ["value"],
+            },
+        ),
     )
     return registry
 
@@ -935,6 +960,120 @@ def test_agent_denies_command_requiring_approval_by_default(tmp_path: Path) -> N
     agent.configure_session_recording(session_store, "session-one")
 
     agent_run = asyncio.run(agent.run("Run an unapproved command"))
+
+    tool_result = agent_run.steps[0].tool_results[0]
+    events = session_store.read_events("session-one")
+    assert tool_result.is_error is True
+    assert "approval denied" in tool_result.content
+    assert [
+        event.event_type
+        for event in events
+        if event.event_type.startswith("tool_approval")
+    ] == ["tool_approval_requested", "tool_approval_denied"]
+    assert "tool_started" not in [event.event_type for event in events]
+
+
+def test_agent_runs_mcp_tool_after_required_approval(tmp_path: Path) -> None:
+    registry = create_mcp_registry(
+        McpServerConfig(name="demo", command="python", approval="always")
+    )
+    responses = [
+        make_message(
+            content=[
+                ToolUseBlock(
+                    id="toolu_mcp",
+                    name="mcp_demo__echo",
+                    input={"value": "approved"},
+                    type="tool_use",
+                )
+            ],
+            stop_reason="tool_use",
+        ),
+        make_message(
+            content=[TextBlock(text="MCP tool ran.", type="text")],
+            stop_reason="end_turn",
+        ),
+    ]
+    agent, _ = create_agent(responses, registry=registry)
+    agent.configure_approval_callback(lambda tool_call, policy: True)
+    session_store = SessionStore(tmp_path / "sessions")
+    agent.configure_session_recording(session_store, "session-one")
+
+    agent_run = asyncio.run(agent.run("Run an approved MCP tool"))
+
+    tool_result = agent_run.steps[0].tool_results[0]
+    events = session_store.read_events("session-one")
+    assert tool_result.is_error is False
+    assert tool_result.content == "echo: approved"
+    assert [
+        event.event_type
+        for event in events
+        if event.event_type.startswith("tool_approval")
+    ] == ["tool_approval_requested", "tool_approval_granted"]
+
+
+def test_agent_auto_allows_mcp_read_only_tool(tmp_path: Path) -> None:
+    registry = create_mcp_registry(
+        McpServerConfig(name="demo", command="python", readOnlyTools=["echo"])
+    )
+    responses = [
+        make_message(
+            content=[
+                ToolUseBlock(
+                    id="toolu_mcp",
+                    name="mcp_demo__echo",
+                    input={"value": "read"},
+                    type="tool_use",
+                )
+            ],
+            stop_reason="tool_use",
+        ),
+        make_message(
+            content=[TextBlock(text="MCP read-only tool ran.", type="text")],
+            stop_reason="end_turn",
+        ),
+    ]
+    agent, _ = create_agent(responses, registry=registry)
+    session_store = SessionStore(tmp_path / "sessions")
+    agent.configure_session_recording(session_store, "session-one")
+
+    agent_run = asyncio.run(agent.run("Run a read-only MCP tool"))
+
+    tool_result = agent_run.steps[0].tool_results[0]
+    events = session_store.read_events("session-one")
+    assert tool_result.is_error is False
+    assert tool_result.content == "echo: read"
+    assert [
+        event.event_type
+        for event in events
+        if event.event_type.startswith("tool_approval")
+    ] == []
+
+
+def test_agent_auto_requires_approval_for_unknown_mcp_tool(tmp_path: Path) -> None:
+    registry = create_mcp_registry(McpServerConfig(name="demo", command="python"))
+    responses = [
+        make_message(
+            content=[
+                ToolUseBlock(
+                    id="toolu_mcp",
+                    name="mcp_demo__echo",
+                    input={"value": "blocked"},
+                    type="tool_use",
+                )
+            ],
+            stop_reason="tool_use",
+        ),
+        make_message(
+            content=[TextBlock(text="MCP tool was not approved.", type="text")],
+            stop_reason="end_turn",
+        ),
+    ]
+    agent, _ = create_agent(responses, registry=registry)
+    session_store = SessionStore(tmp_path / "sessions")
+    agent.configure_session_recording(session_store, "session-one")
+
+    agent_run = asyncio.run(agent.run("Run an unknown MCP tool"))
 
     tool_result = agent_run.steps[0].tool_results[0]
     events = session_store.read_events("session-one")

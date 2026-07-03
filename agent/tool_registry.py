@@ -34,7 +34,7 @@ class ToolRegistry:
         if tool is None:
             return f"Unknown tool: '{name}'. Available: {list(self.tools)}", True
 
-        error = self._validate_execution_allowed(name, raw_input, approval_granted)
+        error = self._validate_execution_allowed(tool, raw_input, approval_granted)
         if error is not None:
             return error, True
 
@@ -59,7 +59,7 @@ class ToolRegistry:
         if tool is None:
             return f"Unknown tool: '{name}'. Available: {list(self.tools)}", True
 
-        error = self._validate_execution_allowed(name, raw_input, approval_granted)
+        error = self._validate_execution_allowed(tool, raw_input, approval_granted)
         if error is not None:
             return error, True
 
@@ -74,22 +74,41 @@ class ToolRegistry:
 
     def _validate_execution_allowed(
         self,
-        name: str,
+        tool: Tool,
         raw_input: dict[str, Any],
         approval_granted: bool,
     ) -> str | None:
-        if name == "edit_file":
+        approval_error = self._validate_tool_approval(tool, approval_granted)
+        if approval_error is not None:
+            return approval_error
+        if tool.name == "edit_file":
             error = self._validate_edit_allowed(raw_input)
             if error is not None:
                 return error
-        if name == "write_file":
+        if tool.name == "write_file":
             error = self._validate_write_allowed(raw_input)
             if error is not None:
                 return error
-        if name == "run_command":
+        if tool.name == "run_command":
             error = self._validate_command_allowed(raw_input, approval_granted)
             if error is not None:
                 return error
+        return None
+
+    def _validate_tool_approval(
+        self,
+        tool: Tool,
+        approval_granted: bool,
+    ) -> str | None:
+        policy = tool.approval_policy
+        if policy is None:
+            return None
+        if approval_granted and policy.decision == "requires_approval":
+            return None
+        if policy.decision == "blocked":
+            return f"Tool '{tool.name}' raised ValueError: {policy.reason}"
+        if policy.decision == "requires_approval":
+            return f"Tool '{tool.name}' requires approval: {policy.reason}"
         return None
 
     def _tool_extra_kwargs(

@@ -1,4 +1,5 @@
 import asyncio
+import json
 from collections.abc import Callable
 from pathlib import Path
 from time import perf_counter
@@ -22,7 +23,7 @@ from .schemas import (
     ToolCall,
     ToolResult,
 )
-from .security import CommandPolicyResult, classify_command, redact_text
+from .security import ToolApprovalPolicy, classify_command, redact_text
 from .session import SessionStore, utc_timestamp
 from .token_tracker import TokenTracker
 from .tool_registry import ToolRegistry
@@ -38,7 +39,7 @@ PARALLEL_READ_ONLY_TOOLS = {
     "search_text",
     "get_diff",
 }
-ApprovalCallback = Callable[[ToolCall, CommandPolicyResult], bool]
+ApprovalCallback = Callable[[ToolCall, ToolApprovalPolicy], bool]
 
 
 def format_tool_activity(tool_call: ToolCall) -> str:
@@ -801,19 +802,25 @@ class Agent:
     def _required_approval(
         self,
         tool_call: ToolCall,
-    ) -> CommandPolicyResult | None:
-        if tool_call.name != "run_command":
+    ) -> ToolApprovalPolicy | None:
+        if tool_call.name == "run_command":
+            raw_command = tool_call.input.get("command")
+            if not isinstance(raw_command, str):
+                return None
+            try:
+                policy = classify_command(raw_command)
+            except ValueError:
+                return None
+            if policy.decision != "requires_approval":
+                return None
+            return policy
+
+        tool = self.registry.tools.get(tool_call.name)
+        if tool is None or tool.approval_policy is None:
             return None
-        raw_command = tool_call.input.get("command")
-        if not isinstance(raw_command, str):
+        if tool.approval_policy.decision != "requires_approval":
             return None
-        try:
-            policy = classify_command(raw_command)
-        except ValueError:
-            return None
-        if policy.decision != "requires_approval":
-            return None
-        return policy
+        return tool.approval_policy
 
     def _request_tool_approval(
         self,
@@ -821,7 +828,7 @@ class Agent:
         run_id: str,
         step_number: int,
         tool_call: ToolCall,
-        policy: CommandPolicyResult,
+        policy: ToolApprovalPolicy,
     ) -> bool:
         self._record_tool_approval_event(
             event_type="tool_approval_requested",
@@ -849,10 +856,8 @@ class Agent:
         run_id: str,
         step_number: int,
         tool_call: ToolCall,
-        policy: CommandPolicyResult,
+        policy: ToolApprovalPolicy,
     ) -> None:
-        raw_command = tool_call.input.get("command")
-        command = raw_command if isinstance(raw_command, str) else "[unknown]"
         self._append_session_event(
             SessionEvent(
                 event_type=event_type,
@@ -862,21 +867,33 @@ class Agent:
                 step_number=step_number,
                 tool_name=tool_call.name,
                 tool_use_id=tool_call.tool_use_id,
-                message=f"{policy.reason} Command: {command}",
+                message=f"{policy.reason} {self._approval_detail(tool_call)}",
             )
         )
 
     def _format_approval_denied(
         self,
         tool_call: ToolCall,
-        policy: CommandPolicyResult,
+        policy: ToolApprovalPolicy,
     ) -> str:
-        raw_command = tool_call.input.get("command")
-        command = raw_command if isinstance(raw_command, str) else "[unknown]"
         return (
             f"Tool '{tool_call.name}' approval denied: "
-            f"{policy.reason} Command: {command}"
+            f"{policy.reason} {self._approval_detail(tool_call)}"
         )
+
+    def _approval_detail(self, tool_call: ToolCall) -> str:
+        raw_command = tool_call.input.get("command")
+        if isinstance(raw_command, str):
+            return f"Command: {raw_command}"
+        try:
+            input_text = json.dumps(
+                tool_call.input,
+                ensure_ascii=True,
+                sort_keys=True,
+            )
+        except TypeError:
+            input_text = str(tool_call.input)
+        return f"Input: {self._preview_text(input_text)}"
 
     def _can_execute_tool_calls_concurrently(
         self,
