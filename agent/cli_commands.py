@@ -185,6 +185,11 @@ def handle_command(
             if agent.registry.workspace_root is None
             else agent.registry.workspace_root.as_posix()
         )
+        agent_state = (
+            "[unavailable]"
+            if session_store is None
+            else session_store.sessions_dir.parent.as_posix()
+        )
         pending_action = "[unavailable]"
         if session_store is not None and session_state is not None:
             pending = session_store.read_pending_action(session_state.session_id)
@@ -197,7 +202,8 @@ def handle_command(
         print("Status:")
         print(f"  Session: {session_id}")
         print(f"  Name: {session_name}")
-        print(f"  Workspace: {workspace}")
+        print(f"  Workspace files: {workspace}")
+        print(f"  Agent state: {agent_state}")
         print(f"  Provider: {agent.provider}")
         print(f"  Model: {agent.model}")
         print(f"  Max steps: {agent.max_steps}")

@@ -1,6 +1,7 @@
 import asyncio
 import os
 import sys
+import traceback
 from collections.abc import Sequence
 from datetime import datetime
 from importlib.metadata import PackageNotFoundError, version
@@ -23,7 +24,12 @@ from agent.cli_commands import (
 )
 from agent.mcp import McpError, McpToolManager, load_mcp_tools_from_env
 from agent.memory import MemoryStore, MemorySystem
-from agent.provider import create_provider_adapter, load_provider_config
+from agent.provider import (
+    ProviderRequestError,
+    create_provider_adapter,
+    format_provider_request_error,
+    load_provider_config,
+)
 from agent.schemas import SessionEvent
 from agent.session import SessionStore, utc_timestamp
 from agent.setup import create_registry
@@ -34,9 +40,11 @@ FALLBACK_VERSION = "0.1.0"
 __all__ = [
     "CliSessionState",
     "checkpoint_session",
+    "default_agent_state_dir",
     "default_global_memory_dir",
     "default_project_memory_dir",
     "default_sessions_dir",
+    "ensure_agent_state_gitignore",
     "format_memory_record",
     "generate_session_id",
     "handle_command",
@@ -184,11 +192,21 @@ def print_mcp_error(error: ValueError | McpError) -> None:
 
 
 def default_sessions_dir(workspace_root: Path) -> Path:
-    return workspace_root / ".agents" / "sessions"
+    return default_agent_state_dir(workspace_root) / "sessions"
 
 
 def default_project_memory_dir(workspace_root: Path) -> Path:
-    return workspace_root / ".agents" / "memory"
+    return default_agent_state_dir(workspace_root) / "memory"
+
+
+def default_agent_state_dir(workspace_root: Path) -> Path:
+    configured = os.getenv("AGENT_STATE_DIR")
+    if configured:
+        path = Path(configured).expanduser()
+        if not path.is_absolute():
+            path = workspace_root / path
+        return path.resolve()
+    return workspace_root / ".agents"
 
 
 def default_global_memory_dir() -> Path:
@@ -230,6 +248,31 @@ def create_memory_system(workspace_root: Path) -> MemorySystem:
     return memory_system
 
 
+def ensure_agent_state_gitignore(workspace_root: Path) -> None:
+    state_dir = default_agent_state_dir(workspace_root)
+    workspace_state_dir = (workspace_root / ".agents").resolve()
+    if state_dir.resolve() != workspace_state_dir:
+        return
+    state_dir.mkdir(parents=True, exist_ok=True)
+    gitignore_path = state_dir / ".gitignore"
+    if gitignore_path.exists():
+        return
+    gitignore_path.write_text(
+        "\n".join(
+            [
+                "# Agent runtime state. Keep MCP config files reviewable,",
+                "# but ignore generated sessions, memory, and eval outputs.",
+                "sessions/",
+                "memory/",
+                "evals/",
+                "pending/",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
 def generate_session_id() -> str:
     return datetime.now().strftime("session-%Y%m%d-%H%M%S-%f")
 
@@ -245,7 +288,11 @@ async def run_cli(
             print("Task cannot be empty.")
             return
         print("\nAssistant: ", end="", flush=True)
-        await agent.run(one_shot_task)
+        try:
+            await agent.run(one_shot_task)
+        except ProviderRequestError as error:
+            print_provider_request_error(error)
+            return
         checkpoint_session(agent, session_store, session_state)
         return
 
@@ -265,8 +312,22 @@ async def run_cli(
             continue
 
         print("\nAssistant: ", end="", flush=True)
-        await agent.run(user_task)
+        try:
+            await agent.run(user_task)
+        except ProviderRequestError as error:
+            print_provider_request_error(error)
+            continue
         checkpoint_session(agent, session_store, session_state)
+
+
+def print_provider_request_error(error: ProviderRequestError) -> None:
+    print(format_provider_request_error(error))
+    if provider_debug_enabled():
+        traceback.print_exception(error.__cause__ or error)
+
+
+def provider_debug_enabled() -> bool:
+    return os.getenv("AGENT_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 async def main(argv: Sequence[str] | None = None) -> None:
@@ -301,6 +362,7 @@ async def main(argv: Sequence[str] | None = None) -> None:
         print_configuration_error(error)
         return
     try:
+        ensure_agent_state_gitignore(workspace_root)
         registry = create_registry(workspace_root)
         try:
             mcp_manager = await load_mcp_tools_from_env(registry, workspace_root)

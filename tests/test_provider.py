@@ -17,7 +17,9 @@ from anthropic.types import (
 from agent.provider import (
     AnthropicProviderAdapter,
     OpenAICompatibleProviderAdapter,
+    ProviderRequestError,
     create_provider_adapter,
+    format_provider_request_error,
     load_provider_config,
 )
 from agent.schemas import ProviderCapabilities, ToolDefinition, ToolResult
@@ -87,6 +89,38 @@ class FakeOpenAIHttpClient:
         return FakeOpenAIStreamManager(self.stream_chunks, url)
 
 
+class FailingOpenAIHttpClient:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    def stream(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str],
+        json: dict[str, Any],
+    ) -> "FailingOpenAIStreamManager":
+        del method, url, headers, json
+        return FailingOpenAIStreamManager(self.error)
+
+
+class FailingOpenAIStreamManager:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    async def __aenter__(self) -> "FailingOpenAIStreamManager":
+        raise self.error
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: object,
+    ) -> None:
+        return None
+
+
 class FakeOpenAIStreamManager:
     def __init__(self, stream_chunks: list[dict[str, Any]], url: str) -> None:
         self.response = FakeOpenAIStreamResponse(stream_chunks, url)
@@ -115,6 +149,46 @@ class FakeOpenAIStreamResponse:
         for chunk in self.stream_chunks:
             yield f"data: {json_dumps(chunk)}"
         yield "data: [DONE]"
+
+
+class FakeBadJsonOpenAIHttpClient:
+    def stream(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str],
+        json: dict[str, Any],
+    ) -> "FakeBadJsonOpenAIStreamManager":
+        del method, headers, json
+        return FakeBadJsonOpenAIStreamManager(url)
+
+
+class FakeBadJsonOpenAIStreamManager:
+    def __init__(self, url: str) -> None:
+        self.response = FakeBadJsonOpenAIStreamResponse(url)
+
+    async def __aenter__(self) -> "FakeBadJsonOpenAIStreamResponse":
+        return self.response
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: object,
+    ) -> None:
+        return None
+
+
+class FakeBadJsonOpenAIStreamResponse:
+    def __init__(self, url: str) -> None:
+        self.request = httpx.Request("POST", url)
+
+    def raise_for_status(self) -> None:
+        return None
+
+    async def aiter_lines(self) -> Any:
+        yield "data: {not-json"
 
 
 def json_dumps(value: dict[str, Any]) -> str:
@@ -649,6 +723,92 @@ def test_openai_adapter_rejects_tools_when_capability_is_disabled() -> None:
                 messages=[{"role": "user", "content": "Calculate 1 + 1"}],
             )
         )
+
+
+def test_openai_adapter_wraps_network_errors() -> None:
+    request = httpx.Request("POST", "https://api.deepseek.com/chat/completions")
+    adapter = OpenAICompatibleProviderAdapter(
+        provider="deepseek",
+        model="deepseek-v4-flash",
+        api_key="deepseek-key",
+        base_url="https://api.deepseek.com",
+        http_client=cast(
+            httpx.AsyncClient,
+            FailingOpenAIHttpClient(httpx.ConnectError("DNS failure", request=request)),
+        ),
+    )
+
+    with pytest.raises(ProviderRequestError) as error:
+        asyncio.run(
+            adapter.stream_response(
+                system="system prompt",
+                tools=[],
+                messages=[{"role": "user", "content": "Hello"}],
+            )
+        )
+
+    assert error.value.kind == "network"
+    assert error.value.provider == "deepseek"
+    assert "network connection failed" in format_provider_request_error(error.value)
+
+
+def test_openai_adapter_wraps_rate_limit_status_errors() -> None:
+    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    response = httpx.Response(
+        429,
+        request=request,
+        text='{"error":"rate limit"}',
+    )
+    adapter = OpenAICompatibleProviderAdapter(
+        provider="openai",
+        model="gpt-4o-mini",
+        api_key="openai-key",
+        base_url="https://api.openai.com/v1",
+        http_client=cast(
+            httpx.AsyncClient,
+            FailingOpenAIHttpClient(
+                httpx.HTTPStatusError(
+                    "rate limited",
+                    request=request,
+                    response=response,
+                )
+            ),
+        ),
+    )
+
+    with pytest.raises(ProviderRequestError) as error:
+        asyncio.run(
+            adapter.stream_response(
+                system="system prompt",
+                tools=[],
+                messages=[{"role": "user", "content": "Hello"}],
+            )
+        )
+
+    assert error.value.kind == "rate_limit"
+    assert "rate limit" in format_provider_request_error(error.value)
+
+
+def test_openai_adapter_wraps_bad_stream_json_as_response_format() -> None:
+    adapter = OpenAICompatibleProviderAdapter(
+        provider="openai",
+        model="gpt-4o-mini",
+        api_key="openai-key",
+        base_url="https://api.openai.com/v1",
+        http_client=cast(httpx.AsyncClient, FakeBadJsonOpenAIHttpClient()),
+    )
+
+    with pytest.raises(ProviderRequestError) as error:
+        asyncio.run(
+            adapter.stream_response(
+                system="system prompt",
+                tools=[],
+                messages=[{"role": "user", "content": "Hello"}],
+            )
+        )
+
+    assert error.value.kind == "response_format"
+    assert "unexpected response format" in format_provider_request_error(error.value)
 
 
 def test_openai_adapter_converts_tool_result_history() -> None:

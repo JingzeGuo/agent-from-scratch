@@ -15,7 +15,7 @@ from agent.memory import (
     MemorySummaryResult,
     MemorySystem,
 )
-from agent.provider import AnthropicProviderAdapter
+from agent.provider import AnthropicProviderAdapter, ProviderRequestError
 from agent.schemas import (
     AgentRun,
     AgentStep,
@@ -35,9 +35,11 @@ from agent.tools import calculator
 from main import (
     CliSessionState,
     checkpoint_session,
+    default_agent_state_dir,
     default_global_memory_dir,
     default_project_memory_dir,
     default_sessions_dir,
+    ensure_agent_state_gitignore,
     format_memory_record,
     generate_session_id,
     handle_command,
@@ -88,6 +90,17 @@ class FakeCheckpointAgent(FakeRunAgent):
             provider="anthropic",
             model="claude-haiku-4-5",
             max_steps=10,
+        )
+
+
+class FakeProviderFailureAgent(FakeRunAgent):
+    async def run(self, user_task: str) -> AgentRun:
+        self.tasks.append(user_task)
+        raise ProviderRequestError(
+            kind="network",
+            provider="deepseek",
+            model="deepseek-v4-flash",
+            detail="network connection failed while contacting the provider",
         )
 
 
@@ -463,7 +476,13 @@ def test_cli_reports_configuration_error_without_traceback(
     )
 
 
-def test_default_sessions_dir_is_workspace_local(tmp_path: Path) -> None:
+def test_default_sessions_dir_is_workspace_local(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AGENT_STATE_DIR", raising=False)
+
+    assert default_agent_state_dir(tmp_path) == tmp_path / ".agents"
     assert default_sessions_dir(tmp_path) == tmp_path / ".agents" / "sessions"
 
 
@@ -471,10 +490,48 @@ def test_default_memory_dirs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delenv("AGENT_STATE_DIR", raising=False)
     monkeypatch.setenv("AGENT_MEMORY_GLOBAL_DIR", str(tmp_path / "global-memory"))
 
     assert default_project_memory_dir(tmp_path) == tmp_path / ".agents" / "memory"
     assert default_global_memory_dir() == tmp_path / "global-memory"
+
+
+def test_agent_state_dir_can_be_external(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_dir = tmp_path / "state" / "project-one"
+    monkeypatch.setenv("AGENT_STATE_DIR", str(state_dir))
+
+    assert default_agent_state_dir(tmp_path) == state_dir
+    assert default_sessions_dir(tmp_path) == state_dir / "sessions"
+    assert default_project_memory_dir(tmp_path) == state_dir / "memory"
+
+
+def test_agent_state_gitignore_hint_is_written_for_workspace_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AGENT_STATE_DIR", raising=False)
+
+    ensure_agent_state_gitignore(tmp_path)
+
+    content = (tmp_path / ".agents" / ".gitignore").read_text(encoding="utf-8")
+    assert "sessions/" in content
+    assert "memory/" in content
+    assert "evals/" in content
+
+
+def test_agent_state_gitignore_hint_is_skipped_for_external_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENT_STATE_DIR", str(tmp_path / "external-state"))
+
+    ensure_agent_state_gitignore(tmp_path)
+
+    assert not (tmp_path / ".agents" / ".gitignore").exists()
 
 
 def test_generate_session_id_uses_safe_timestamp_format() -> None:
@@ -500,6 +557,23 @@ def test_run_cli_executes_one_shot_task(
 
     assert fake_agent.tasks == ["Fix the bug"]
     assert capsys.readouterr().out == "\nAssistant: done\n"
+
+
+def test_run_cli_reports_provider_failure_without_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fake_agent = FakeProviderFailureAgent()
+    monkeypatch.delenv("AGENT_DEBUG", raising=False)
+
+    asyncio.run(run_cli(cast(Agent, fake_agent), "Build a site"))
+
+    output = capsys.readouterr().out
+    assert fake_agent.tasks == ["Build a site"]
+    assert "Provider request failed: network connection failed" in output
+    assert "Provider: deepseek/deepseek-v4-flash" in output
+    assert "Set AGENT_DEBUG=1" in output
+    assert "Traceback" not in output
 
 
 def test_run_cli_checkpoints_one_shot_task(
@@ -687,7 +761,8 @@ def test_status_command_shows_current_agent_state(
         "Status:\n"
         "  Session: session-one\n"
         "  Name: day16\n"
-        f"  Workspace: {tmp_path.as_posix()}\n"
+        f"  Workspace files: {tmp_path.as_posix()}\n"
+        f"  Agent state: {(tmp_path / 'sessions').parent.as_posix()}\n"
         "  Provider: anthropic\n"
         "  Model: claude-haiku-4-5\n"
         "  Max steps: 10\n"

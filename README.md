@@ -92,6 +92,7 @@ Supported variables:
 | `OPENAI_MODEL` | OpenAI model, default `gpt-4o-mini` |
 | `OPENAI_BASE_URL` | OpenAI API base URL, default `https://api.openai.com/v1` |
 | `TAVILY_API_KEY` | Optional key for the web search tool |
+| `AGENT_STATE_DIR` | Optional directory for project-scoped agent state. If unset, state lives under workspace `.agents/` |
 | `AGENT_TRACE_REDACT_PATTERNS` | Optional newline-separated regex patterns redacted from trace text |
 | `AGENT_MEMORY_ENABLED` | Enable memory retrieval and reflection, default `true` |
 | `AGENT_MEMORY_GLOBAL_DIR` | Global memory directory, default `~/.agent-from-scratch/memory` |
@@ -152,7 +153,7 @@ Interactive sessions support slash commands:
 | `/model` | Show the current provider and model |
 | `/model <provider> [model]` | Switch provider and optionally model |
 | `/tokens` | Show input tokens, output tokens, total tokens, and estimated cost |
-| `/status` | Show session, workspace, provider, model, files, and token state |
+| `/status` | Show session, workspace files, agent state, provider, files, and token state |
 | `/reset` | Clear the current conversation context |
 | `/save` | Save a session checkpoint |
 | `/diff` | Show all file changes from this session |
@@ -376,7 +377,8 @@ is a controlled read-only delegation path for narrow repository exploration.
 Memory is separate from session checkpoints. Checkpoints preserve resumable
 controller state; memory preserves durable context that may help future tasks.
 
-Project memory lives inside the active workspace:
+Project memory is agent runtime state, not user project output. By default it
+lives inside the active workspace:
 
 ```text
 .agents/memory/
@@ -386,6 +388,17 @@ Project memory lives inside the active workspace:
   topics/
   reflections/
 ```
+
+Set `AGENT_STATE_DIR` to move project-scoped state out of the target
+repository, for example:
+
+```bash
+export AGENT_STATE_DIR=~/.agent-from-scratch/projects/my-repo
+```
+
+When workspace-local state is used, the CLI creates `.agents/.gitignore` so
+generated memory, session, trace, and eval files stay separate from reviewable
+project files such as `.agents/mcp.json`.
 
 Global memory defaults to `~/.agent-from-scratch/memory` and uses the same
 layout. Project memory is for repository-specific facts, session notes,
@@ -406,7 +419,8 @@ main task result is still preserved.
 
 ## Sessions, Checkpoints, and Traces
 
-Session data is stored inside the active workspace:
+Session data is agent runtime state. By default it is stored inside the active
+workspace:
 
 ```text
 .agents/sessions/
@@ -414,6 +428,11 @@ Session data is stored inside the active workspace:
   pending/<session-id>.json
   events/<session-id>.jsonl
 ```
+
+If `AGENT_STATE_DIR` is set, sessions, pending actions, traces, and project
+memory are stored under that external directory instead. The `/status` command
+prints both `Workspace files` and `Agent state` so it is clear which directory
+contains business files and which directory contains agent bookkeeping.
 
 The CLI automatically checkpoints after each completed task. Use `/save` to
 checkpoint manually and `/sessions` to list saved sessions.

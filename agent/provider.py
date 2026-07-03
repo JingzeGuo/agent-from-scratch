@@ -3,6 +3,7 @@ import os
 from collections.abc import Callable
 from typing import Any, Literal, Protocol, cast
 
+import anthropic
 import httpx
 from anthropic import AsyncAnthropic
 from anthropic.types import MessageParam, ToolParam
@@ -18,6 +19,15 @@ from .schemas import (
 )
 
 ProviderName = Literal["anthropic", "deepseek", "openai"]
+ProviderErrorKind = Literal[
+    "authentication",
+    "rate_limit",
+    "timeout",
+    "network",
+    "provider_status",
+    "response_format",
+    "request",
+]
 
 DEFAULT_MODELS: dict[ProviderName, str] = {
     "anthropic": "claude-haiku-4-5",
@@ -37,6 +47,24 @@ class ProviderConfig(BaseModel):
     model: str
     api_key: str
     base_url: str | None = None
+
+
+class ProviderRequestError(RuntimeError):
+    """User-facing provider request failure with a classified cause."""
+
+    def __init__(
+        self,
+        *,
+        kind: ProviderErrorKind,
+        provider: str,
+        model: str,
+        detail: str,
+    ) -> None:
+        self.kind = kind
+        self.provider = provider
+        self.model = model
+        self.detail = detail
+        super().__init__(detail)
 
 
 class ProviderAdapter(Protocol):
@@ -60,6 +88,41 @@ class ProviderAdapter(Protocol):
     def tool_result_message(self, tool_results: list[ToolResult]) -> dict[str, Any]:
         """Build a provider-specific message carrying tool observations."""
         ...
+
+
+def format_provider_request_error(error: ProviderRequestError) -> str:
+    """Return a concise, actionable CLI message for provider failures."""
+    suggestions = {
+        "authentication": (
+            "Please check your API key and provider permissions, then retry."
+        ),
+        "rate_limit": (
+            "Please wait and retry, reduce request volume, or switch models with "
+            "`/model openai gpt-4o-mini`."
+        ),
+        "timeout": (
+            "Please check your network, base URL, or proxy, then retry."
+        ),
+        "network": (
+            "Please check your base URL, DNS/network access, or proxy, then retry."
+        ),
+        "provider_status": (
+            "Please retry later or switch models with `/model openai gpt-4o-mini`."
+        ),
+        "response_format": (
+            "Please retry or switch models; the provider returned an unexpected "
+            "response shape."
+        ),
+        "request": (
+            "Please check your provider configuration, base URL, and model name."
+        ),
+    }
+    return (
+        f"Provider request failed: {error.detail}\n"
+        f"Provider: {error.provider}/{error.model}\n"
+        f"{suggestions[error.kind]}\n"
+        "Set AGENT_DEBUG=1 to print the underlying traceback."
+    )
 
 
 class AnthropicProviderAdapter:
@@ -88,17 +151,24 @@ class AnthropicProviderAdapter:
     ) -> ProviderResponse:
         self._validate_request_capabilities(tools)
         text_blocks: list[str] = []
-        async with self.client.messages.stream(
-            model=self.model,
-            max_tokens=1024,
-            system=system,
-            tools=self._tool_params(tools),
-            messages=cast(list[MessageParam], messages),
-        ) as stream:
-            async for text in stream.text_stream:
-                if on_text_delta is not None:
-                    on_text_delta(text)
-            response = await stream.get_final_message()
+        try:
+            async with self.client.messages.stream(
+                model=self.model,
+                max_tokens=1024,
+                system=system,
+                tools=self._tool_params(tools),
+                messages=cast(list[MessageParam], messages),
+            ) as stream:
+                async for text in stream.text_stream:
+                    if on_text_delta is not None:
+                        on_text_delta(text)
+                response = await stream.get_final_message()
+        except Exception as e:
+            raise classify_provider_exception(
+                e,
+                provider=self.provider,
+                model=self.model,
+            ) from e
 
         tool_calls: list[ToolCall] = []
         for block in response.content:
@@ -215,13 +285,19 @@ class OpenAICompatibleProviderAdapter:
                     self.capabilities.supports_parallel_tool_calls
                 )
 
-        response_data = await self._stream_chat_completions(payload, on_text_delta)
-        choice = response_data["choices"][0]
-        message = choice["message"]
-        finish_reason = choice.get("finish_reason")
-        text = message.get("content") or ""
-
-        tool_calls = self._tool_calls_from_message(message)
+        try:
+            response_data = await self._stream_chat_completions(payload, on_text_delta)
+            choice = response_data["choices"][0]
+            message = choice["message"]
+            finish_reason = choice.get("finish_reason")
+            text = message.get("content") or ""
+            tool_calls = self._tool_calls_from_message(message)
+        except Exception as e:
+            raise classify_provider_exception(
+                e,
+                provider=self.provider,
+                model=self.model,
+            ) from e
         return ProviderResponse(
             message=self._provider_neutral_assistant_message(text, tool_calls),
             stop_reason=self._normalize_finish_reason(finish_reason),
@@ -597,3 +673,127 @@ def create_provider_adapter(config: ProviderConfig) -> ProviderAdapter:
         model=config.model,
         client=create_client(config),
     )
+
+
+def classify_provider_exception(
+    error: Exception,
+    *,
+    provider: str,
+    model: str,
+) -> ProviderRequestError:
+    if isinstance(error, ProviderRequestError):
+        return error
+    if isinstance(error, (httpx.TimeoutException, anthropic.APITimeoutError)):
+        return ProviderRequestError(
+            kind="timeout",
+            provider=provider,
+            model=model,
+            detail="network timeout while contacting the provider",
+        )
+    if isinstance(error, (httpx.NetworkError, anthropic.APIConnectionError)):
+        return ProviderRequestError(
+            kind="network",
+            provider=provider,
+            model=model,
+            detail="network connection failed while contacting the provider",
+        )
+    if isinstance(error, httpx.HTTPStatusError):
+        return _provider_http_status_error(
+            error.response.status_code,
+            _bounded_error_detail(error.response.text),
+            provider=provider,
+            model=model,
+        )
+    if isinstance(
+        error,
+        (
+            anthropic.AuthenticationError,
+            anthropic.PermissionDeniedError,
+            anthropic.WorkloadIdentityError,
+        ),
+    ):
+        return ProviderRequestError(
+            kind="authentication",
+            provider=provider,
+            model=model,
+            detail="authentication failed or provider access was denied",
+        )
+    if isinstance(error, anthropic.RateLimitError):
+        return ProviderRequestError(
+            kind="rate_limit",
+            provider=provider,
+            model=model,
+            detail="provider rate limit was reached",
+        )
+    if isinstance(error, anthropic.APIStatusError):
+        return _provider_http_status_error(
+            error.status_code,
+            _bounded_error_detail(str(error)),
+            provider=provider,
+            model=model,
+        )
+    if isinstance(
+        error,
+        (
+            anthropic.APIResponseValidationError,
+            json.JSONDecodeError,
+            KeyError,
+            IndexError,
+            TypeError,
+        ),
+    ):
+        return ProviderRequestError(
+            kind="response_format",
+            provider=provider,
+            model=model,
+            detail="provider returned an unexpected response format",
+        )
+    return ProviderRequestError(
+        kind="request",
+        provider=provider,
+        model=model,
+        detail=_bounded_error_detail(str(error) or error.__class__.__name__),
+    )
+
+
+def _provider_http_status_error(
+    status_code: int,
+    detail: str,
+    *,
+    provider: str,
+    model: str,
+) -> ProviderRequestError:
+    if status_code in {401, 403}:
+        return ProviderRequestError(
+            kind="authentication",
+            provider=provider,
+            model=model,
+            detail=f"authentication failed with HTTP {status_code}",
+        )
+    if status_code == 429:
+        return ProviderRequestError(
+            kind="rate_limit",
+            provider=provider,
+            model=model,
+            detail="provider rate limit was reached",
+        )
+    if status_code >= 500:
+        return ProviderRequestError(
+            kind="provider_status",
+            provider=provider,
+            model=model,
+            detail=f"provider returned HTTP {status_code}: {detail}",
+        )
+    return ProviderRequestError(
+        kind="request",
+        provider=provider,
+        model=model,
+        detail=f"provider returned HTTP {status_code}: {detail}",
+    )
+
+
+def _bounded_error_detail(detail: str, max_chars: int = 300) -> str:
+    normalized = " ".join(detail.split())
+    if len(normalized) <= max_chars:
+        return normalized
+    return normalized[:max_chars].rstrip() + "... [truncated]"
