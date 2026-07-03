@@ -444,9 +444,10 @@ Run deterministic evaluations:
 .venv/bin/python scripts/evaluate_coding_tasks.py
 ```
 
-The `agent eval` command reports pass rate, average steps, average token cost,
-average tool calls, and failure counts for compile errors, test failures, max
-step exits, and unsafe blocked commands.
+The `agent eval` command runs the default deterministic coding-task suite of
+13 local tasks. It reports pass rate, average steps, average token cost, average
+tool calls, and failure counts for compile errors, test failures, max step
+exits, and unsafe blocked commands.
 
 Run selected cases or a live-provider smoke case:
 

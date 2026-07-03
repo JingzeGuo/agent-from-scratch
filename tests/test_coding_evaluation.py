@@ -13,9 +13,12 @@ from agent.schemas import (
 from scripts.evaluate_coding_tasks import (
     CodingTaskResult,
     FailureReason,
+    build_cases,
     classify_failure_reasons,
+    evaluation_task_prompt,
     load_swe_bench_instances,
     print_results,
+    provider_helpers_share_normalizer,
     summarize_results,
 )
 
@@ -133,6 +136,48 @@ def test_print_results_includes_requested_summary(
     assert "average_token_cost=$0.030000" in output
     assert "average_tool_calls=4.00" in output
     assert "unsafe_command_blocked=1" in output
+
+
+def test_default_coding_tasks_cover_requested_suite_size() -> None:
+    cases = build_cases()
+
+    assert 10 <= len(cases) <= 20
+    assert "parameter_validation" in cases
+    assert "provider_adapter_refactor" in cases
+    assert "readme_evaluation_docs" in cases
+    assert "unsafe_command_blocked" in cases
+
+
+def test_real_model_prompt_includes_eval_checklist() -> None:
+    case, _, _ = build_cases()["small_bug_fix"]
+
+    prompt = evaluation_task_prompt(case, "real_model")
+
+    assert "Acceptance criteria:" in prompt
+    assert "The add function returns a + b." in prompt
+    assert "Expected evidence:" in prompt
+    assert "read_file was used before edit_file." in prompt
+    assert "Recommended verification command(s):" in prompt
+    assert "pytest tests/test_calculator.py" in prompt
+
+
+def test_scripted_prompt_remains_plain_task() -> None:
+    case, _, _ = build_cases()["small_bug_fix"]
+
+    assert evaluation_task_prompt(case, "scripted") == case.task
+
+
+def test_provider_refactor_oracle_accepts_any_shared_helper_name() -> None:
+    content = (
+        "def _clean_model(model: str) -> str:\n"
+        "    return model.strip()\n\n\n"
+        "def anthropic_model_name(model: str) -> str:\n"
+        "    return _clean_model(model)\n\n\n"
+        "def openai_model_name(model: str) -> str:\n"
+        "    return _clean_model(model)\n"
+    )
+
+    assert provider_helpers_share_normalizer(content) is True
 
 
 def test_load_swe_bench_instances_reads_jsonl(

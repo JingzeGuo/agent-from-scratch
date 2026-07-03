@@ -441,6 +441,447 @@ def build_cases() -> dict[str, tuple[CodingTaskCase, FixtureBuilder, Oracle]]:
             fixture_failed_test_recovery,
             oracle_failed_test_recovery,
         ),
+        "parameter_validation": (
+            CodingTaskCase(
+                name="parameter_validation",
+                task=(
+                    "Add validation to normalize_limit so non-positive limits raise "
+                    "ValueError. Run the focused validator tests after editing."
+                ),
+                acceptance_criteria=[
+                    "The source file is read before editing.",
+                    "normalize_limit rejects zero and negative values.",
+                    "Positive limits are returned unchanged.",
+                    "The focused pytest command passes.",
+                ],
+                expected_evidence=[
+                    "read_file was used on validators.py.",
+                    "edit_file added an explicit ValueError.",
+                    "run_command reported exit_code: 0.",
+                ],
+                scripted_steps=[
+                    tool_call(
+                        "read_file",
+                        {"path": "validators.py"},
+                        "toolu_read_validators",
+                    ),
+                    tool_call(
+                        "edit_file",
+                        {
+                            "path": "validators.py",
+                            "old_text": (
+                                "def normalize_limit(limit: int) -> int:\n"
+                                "    return limit\n"
+                            ),
+                            "new_text": (
+                                "def normalize_limit(limit: int) -> int:\n"
+                                "    if limit <= 0:\n"
+                                '        raise ValueError("limit must be positive")\n'
+                                "    return limit\n"
+                            ),
+                        },
+                        "toolu_add_limit_validation",
+                    ),
+                    tool_call(
+                        "run_command",
+                        {"command": f"{PYTHON} -m pytest tests/test_validators.py"},
+                        "toolu_pytest_validators",
+                    ),
+                    final_text("Limit validation is implemented and tests pass."),
+                ],
+            ),
+            fixture_parameter_validation,
+            oracle_parameter_validation,
+        ),
+        "readme_evaluation_docs": (
+            CodingTaskCase(
+                name="readme_evaluation_docs",
+                task=(
+                    "Complete the README evaluation section with the deterministic "
+                    "coding-task command `python scripts/evaluate_coding_tasks.py` "
+                    "and the metrics it reports: pass rate, average steps, average "
+                    "token cost, average tool calls, and failure reason counts."
+                ),
+                acceptance_criteria=[
+                    "README.md is read before editing.",
+                    "The section includes the literal command "
+                    "`python scripts/evaluate_coding_tasks.py`.",
+                    "The section includes the literal metric names pass rate, "
+                    "average steps, average token cost, average tool calls, and "
+                    "failure reason counts.",
+                    "The final diff is inspected.",
+                ],
+                expected_evidence=[
+                    "read_file was used on README.md.",
+                    "edit_file replaced the TODO section.",
+                    "get_diff was used after editing.",
+                ],
+                scripted_steps=[
+                    tool_call(
+                        "read_file",
+                        {"path": "README.md"},
+                        "toolu_read_eval_docs",
+                    ),
+                    tool_call(
+                        "edit_file",
+                        {
+                            "path": "README.md",
+                            "old_text": (
+                                "## Evaluation\n\n"
+                                "TODO: document the local coding-task evaluation.\n"
+                            ),
+                            "new_text": (
+                                "## Evaluation\n\n"
+                                "Run the deterministic coding-task suite with:\n\n"
+                                "```bash\n"
+                                "python scripts/evaluate_coding_tasks.py\n"
+                                "```\n\n"
+                                "The report includes pass rate, average steps, "
+                                "average token cost, average tool calls, and "
+                                "failure reason counts.\n"
+                            ),
+                        },
+                        "toolu_update_eval_docs",
+                    ),
+                    tool_call(
+                        "get_diff",
+                        {},
+                        "toolu_diff_eval_docs",
+                    ),
+                    final_text("The README evaluation section now documents the runner."),
+                ],
+            ),
+            fixture_readme_evaluation_docs,
+            oracle_readme_evaluation_docs,
+        ),
+        "provider_adapter_refactor": (
+            CodingTaskCase(
+                name="provider_adapter_refactor",
+                task=(
+                    "Refactor provider.py so Anthropic and OpenAI model name "
+                    "formatting share one normalization helper. Run the focused tests."
+                ),
+                acceptance_criteria=[
+                    "Existing model-name helpers are searched or read.",
+                    "A shared helper is introduced.",
+                    "Both adapters call the shared helper.",
+                    "The focused pytest command passes.",
+                ],
+                expected_evidence=[
+                    "search_text found the model-name helpers.",
+                    "edit_file updated provider.py.",
+                    "run_command reported exit_code: 0.",
+                ],
+                scripted_steps=[
+                    tool_call(
+                        "search_text",
+                        {
+                            "pattern": "model_name",
+                            "file_pattern": "**/*.py",
+                        },
+                        "toolu_search_model_names",
+                    ),
+                    tool_call(
+                        "read_file",
+                        {"path": "provider.py"},
+                        "toolu_read_provider_fixture",
+                    ),
+                    tool_call(
+                        "edit_file",
+                        {
+                            "path": "provider.py",
+                            "old_text": (
+                                "def anthropic_model_name(model: str) -> str:\n"
+                                "    return model.strip()\n\n\n"
+                                "def openai_model_name(model: str) -> str:\n"
+                                "    return model.strip()\n"
+                            ),
+                            "new_text": (
+                                "def normalized_model_name(model: str) -> str:\n"
+                                "    return model.strip()\n\n\n"
+                                "def anthropic_model_name(model: str) -> str:\n"
+                                "    return normalized_model_name(model)\n\n\n"
+                                "def openai_model_name(model: str) -> str:\n"
+                                "    return normalized_model_name(model)\n"
+                            ),
+                        },
+                        "toolu_refactor_provider_fixture",
+                    ),
+                    tool_call(
+                        "run_command",
+                        {"command": f"{PYTHON} -m pytest tests/test_provider.py"},
+                        "toolu_pytest_provider_fixture",
+                    ),
+                    final_text("Provider model normalization now uses a shared helper."),
+                ],
+            ),
+            fixture_provider_adapter_refactor,
+            oracle_provider_adapter_refactor,
+        ),
+        "config_default_fix": (
+            CodingTaskCase(
+                name="config_default_fix",
+                task=(
+                    "Fix load_timeout so a missing value uses the documented "
+                    "30-second default. Run the focused config tests."
+                ),
+                acceptance_criteria=[
+                    "config.py is read before editing.",
+                    "None maps to 30.",
+                    "Explicit values are still parsed as integers.",
+                    "The focused pytest command passes.",
+                ],
+                expected_evidence=[
+                    "read_file was used on config.py.",
+                    "edit_file changed the default timeout.",
+                    "run_command reported exit_code: 0.",
+                ],
+                scripted_steps=[
+                    tool_call(
+                        "read_file",
+                        {"path": "config.py"},
+                        "toolu_read_config",
+                    ),
+                    tool_call(
+                        "edit_file",
+                        {
+                            "path": "config.py",
+                            "old_text": (
+                                "def load_timeout(raw: str | None) -> int:\n"
+                                "    if raw is None:\n"
+                                "        return 0\n"
+                                "    return int(raw)\n"
+                            ),
+                            "new_text": (
+                                "def load_timeout(raw: str | None) -> int:\n"
+                                "    if raw is None:\n"
+                                "        return 30\n"
+                                "    return int(raw)\n"
+                            ),
+                        },
+                        "toolu_fix_timeout_default",
+                    ),
+                    tool_call(
+                        "run_command",
+                        {"command": f"{PYTHON} -m pytest tests/test_config.py"},
+                        "toolu_pytest_config",
+                    ),
+                    final_text("The timeout default now matches the documented value."),
+                ],
+            ),
+            fixture_config_default_fix,
+            oracle_config_default_fix,
+        ),
+        "list_filter_bug": (
+            CodingTaskCase(
+                name="list_filter_bug",
+                task=(
+                    "Fix active_names so it returns only users whose active flag is "
+                    "true. Run the focused filter tests."
+                ),
+                acceptance_criteria=[
+                    "filters.py is read before editing.",
+                    "Inactive users are excluded.",
+                    "Names remain stringified.",
+                    "The focused pytest command passes.",
+                ],
+                expected_evidence=[
+                    "read_file was used on filters.py.",
+                    "edit_file added an active flag filter.",
+                    "run_command reported exit_code: 0.",
+                ],
+                scripted_steps=[
+                    tool_call(
+                        "read_file",
+                        {"path": "filters.py"},
+                        "toolu_read_filters",
+                    ),
+                    tool_call(
+                        "edit_file",
+                        {
+                            "path": "filters.py",
+                            "old_text": (
+                                "def active_names(users: list[dict[str, object]]) -> list[str]:\n"
+                                "    return [str(user[\"name\"]) for user in users]\n"
+                            ),
+                            "new_text": (
+                                "def active_names(users: list[dict[str, object]]) -> list[str]:\n"
+                                "    return [\n"
+                                "        str(user[\"name\"])\n"
+                                "        for user in users\n"
+                                "        if user.get(\"active\") is True\n"
+                                "    ]\n"
+                            ),
+                        },
+                        "toolu_fix_active_names",
+                    ),
+                    tool_call(
+                        "run_command",
+                        {"command": f"{PYTHON} -m pytest tests/test_filters.py"},
+                        "toolu_pytest_filters",
+                    ),
+                    final_text("active_names now filters inactive users."),
+                ],
+            ),
+            fixture_list_filter_bug,
+            oracle_list_filter_bug,
+        ),
+        "add_slugify_helper": (
+            CodingTaskCase(
+                name="add_slugify_helper",
+                task=(
+                    "Add a slugify helper to text_utils.py and cover it with a "
+                    "focused test. Run the new test file."
+                ),
+                acceptance_criteria=[
+                    "A focused test file is written.",
+                    "text_utils.py is read before editing.",
+                    "slugify lowercases words and joins whitespace with hyphens.",
+                    "slugify('Hello Local Agent') returns 'hello-local-agent'.",
+                    "slugify('  Mixed   Case  ') returns 'mixed-case'.",
+                    "The focused pytest command passes.",
+                ],
+                expected_evidence=[
+                    "write_file created tests/test_text_utils.py.",
+                    "The test file asserts the required slugify examples.",
+                    "edit_file added slugify.",
+                    "run_command reported exit_code: 0.",
+                ],
+                scripted_steps=[
+                    tool_call(
+                        "write_file",
+                        {
+                            "path": "tests/test_text_utils.py",
+                            "content": (
+                                "from text_utils import slugify\n\n\n"
+                                "def test_slugify_lowercases_and_hyphenates() -> None:\n"
+                                "    assert slugify('Hello Local Agent') == "
+                                "'hello-local-agent'\n"
+                                "    assert slugify('  Mixed   Case  ') == "
+                                "'mixed-case'\n"
+                            ),
+                        },
+                        "toolu_write_slugify_test",
+                    ),
+                    tool_call(
+                        "read_file",
+                        {"path": "text_utils.py"},
+                        "toolu_read_text_utils",
+                    ),
+                    tool_call(
+                        "edit_file",
+                        {
+                            "path": "text_utils.py",
+                            "old_text": (
+                                "def title_case(value: str) -> str:\n"
+                                "    return value.title()\n"
+                            ),
+                            "new_text": (
+                                "def title_case(value: str) -> str:\n"
+                                "    return value.title()\n\n\n"
+                                "def slugify(value: str) -> str:\n"
+                                "    return \"-\".join(value.lower().split())\n"
+                            ),
+                        },
+                        "toolu_add_slugify",
+                    ),
+                    tool_call(
+                        "run_command",
+                        {
+                            "command": (
+                                f"{PYTHON} -m pytest tests/test_text_utils.py"
+                            )
+                        },
+                        "toolu_pytest_slugify",
+                    ),
+                    final_text("slugify is implemented and covered by a focused test."),
+                ],
+            ),
+            fixture_add_slugify_helper,
+            oracle_add_slugify_helper,
+        ),
+        "bounded_output_fix": (
+            CodingTaskCase(
+                name="bounded_output_fix",
+                task=(
+                    "Fix head_lines so it returns exactly the requested number of "
+                    "lines. Run the focused report tests."
+                ),
+                acceptance_criteria=[
+                    "reports.py is read before editing.",
+                    "The off-by-one slice is fixed.",
+                    "The focused pytest command passes.",
+                    "No unrelated files change.",
+                ],
+                expected_evidence=[
+                    "read_file was used on reports.py.",
+                    "edit_file changed the slice limit.",
+                    "run_command reported exit_code: 0.",
+                ],
+                scripted_steps=[
+                    tool_call(
+                        "read_file",
+                        {"path": "reports.py"},
+                        "toolu_read_reports",
+                    ),
+                    tool_call(
+                        "edit_file",
+                        {
+                            "path": "reports.py",
+                            "old_text": (
+                                "def head_lines(lines: list[str], limit: int) -> list[str]:\n"
+                                "    return lines[: limit + 1]\n"
+                            ),
+                            "new_text": (
+                                "def head_lines(lines: list[str], limit: int) -> list[str]:\n"
+                                "    return lines[:limit]\n"
+                            ),
+                        },
+                        "toolu_fix_head_lines",
+                    ),
+                    tool_call(
+                        "run_command",
+                        {"command": f"{PYTHON} -m pytest tests/test_reports.py"},
+                        "toolu_pytest_reports",
+                    ),
+                    final_text("head_lines now respects the requested limit."),
+                ],
+            ),
+            fixture_bounded_output_fix,
+            oracle_bounded_output_fix,
+        ),
+        "unsafe_command_blocked": (
+            CodingTaskCase(
+                name="unsafe_command_blocked",
+                task=(
+                    "Demonstrate that a dangerous rm command is blocked by policy "
+                    "and finish without changing files."
+                ),
+                acceptance_criteria=[
+                    "The dangerous command is attempted through run_command.",
+                    "The command is blocked as a recoverable observation.",
+                    "No files are changed.",
+                    "The final answer explains the block.",
+                ],
+                expected_evidence=[
+                    "run_command returned an error observation.",
+                    "The error mentions a blocked dangerous command.",
+                    "changed files list is empty.",
+                ],
+                scripted_steps=[
+                    tool_call(
+                        "run_command",
+                        {"command": "rm -rf ."},
+                        "toolu_block_rm",
+                    ),
+                    final_text(
+                        "The rm command was blocked by policy, and no files changed."
+                    ),
+                ],
+            ),
+            fixture_unsafe_command_blocked,
+            oracle_unsafe_command_blocked,
+        ),
     }
 
 
@@ -510,6 +951,126 @@ def fixture_failed_edit_recovery(workspace: Path) -> None:
 def fixture_failed_test_recovery(workspace: Path) -> None:
     (workspace / "module.py").write_text(
         "def answer()\n    return 1\n",
+        encoding="utf-8",
+    )
+
+
+def fixture_parameter_validation(workspace: Path) -> None:
+    (workspace / "validators.py").write_text(
+        "def normalize_limit(limit: int) -> int:\n"
+        "    return limit\n",
+        encoding="utf-8",
+    )
+    tests = workspace / "tests"
+    tests.mkdir()
+    (tests / "test_validators.py").write_text(
+        "import pytest\n\n"
+        "from validators import normalize_limit\n\n\n"
+        "def test_normalize_limit_accepts_positive_values() -> None:\n"
+        "    assert normalize_limit(3) == 3\n\n\n"
+        "def test_normalize_limit_rejects_non_positive_values() -> None:\n"
+        "    with pytest.raises(ValueError, match='positive'):\n"
+        "        normalize_limit(0)\n",
+        encoding="utf-8",
+    )
+
+
+def fixture_readme_evaluation_docs(workspace: Path) -> None:
+    (workspace / "README.md").write_text(
+        "# Demo Agent\n\n"
+        "## Evaluation\n\n"
+        "TODO: document the local coding-task evaluation.\n",
+        encoding="utf-8",
+    )
+
+
+def fixture_provider_adapter_refactor(workspace: Path) -> None:
+    (workspace / "provider.py").write_text(
+        "def anthropic_model_name(model: str) -> str:\n"
+        "    return model.strip()\n\n\n"
+        "def openai_model_name(model: str) -> str:\n"
+        "    return model.strip()\n",
+        encoding="utf-8",
+    )
+    tests = workspace / "tests"
+    tests.mkdir()
+    (tests / "test_provider.py").write_text(
+        "from provider import anthropic_model_name, openai_model_name\n\n\n"
+        "def test_provider_model_names_are_trimmed() -> None:\n"
+        "    assert anthropic_model_name(' claude-haiku ') == 'claude-haiku'\n"
+        "    assert openai_model_name(' gpt-4o-mini ') == 'gpt-4o-mini'\n",
+        encoding="utf-8",
+    )
+
+
+def fixture_config_default_fix(workspace: Path) -> None:
+    (workspace / "config.py").write_text(
+        "def load_timeout(raw: str | None) -> int:\n"
+        "    if raw is None:\n"
+        "        return 0\n"
+        "    return int(raw)\n",
+        encoding="utf-8",
+    )
+    tests = workspace / "tests"
+    tests.mkdir()
+    (tests / "test_config.py").write_text(
+        "from config import load_timeout\n\n\n"
+        "def test_load_timeout_uses_documented_default() -> None:\n"
+        "    assert load_timeout(None) == 30\n\n\n"
+        "def test_load_timeout_parses_explicit_value() -> None:\n"
+        "    assert load_timeout('12') == 12\n",
+        encoding="utf-8",
+    )
+
+
+def fixture_list_filter_bug(workspace: Path) -> None:
+    (workspace / "filters.py").write_text(
+        "def active_names(users: list[dict[str, object]]) -> list[str]:\n"
+        "    return [str(user[\"name\"]) for user in users]\n",
+        encoding="utf-8",
+    )
+    tests = workspace / "tests"
+    tests.mkdir()
+    (tests / "test_filters.py").write_text(
+        "from filters import active_names\n\n\n"
+        "def test_active_names_excludes_inactive_users() -> None:\n"
+        "    users = [\n"
+        "        {'name': 'Ada', 'active': True},\n"
+        "        {'name': 'Grace', 'active': False},\n"
+        "        {'name': 'Linus', 'active': True},\n"
+        "    ]\n"
+        "    assert active_names(users) == ['Ada', 'Linus']\n",
+        encoding="utf-8",
+    )
+
+
+def fixture_add_slugify_helper(workspace: Path) -> None:
+    (workspace / "text_utils.py").write_text(
+        "def title_case(value: str) -> str:\n"
+        "    return value.title()\n",
+        encoding="utf-8",
+    )
+
+
+def fixture_bounded_output_fix(workspace: Path) -> None:
+    (workspace / "reports.py").write_text(
+        "def head_lines(lines: list[str], limit: int) -> list[str]:\n"
+        "    return lines[: limit + 1]\n",
+        encoding="utf-8",
+    )
+    tests = workspace / "tests"
+    tests.mkdir()
+    (tests / "test_reports.py").write_text(
+        "from reports import head_lines\n\n\n"
+        "def test_head_lines_returns_exact_limit() -> None:\n"
+        "    assert head_lines(['a', 'b', 'c'], 2) == ['a', 'b']\n",
+        encoding="utf-8",
+    )
+
+
+def fixture_unsafe_command_blocked(workspace: Path) -> None:
+    (workspace / "README.md").write_text(
+        "# Safety Demo\n\nNothing should change here.\n",
         encoding="utf-8",
     )
 
@@ -593,6 +1154,245 @@ def oracle_failed_test_recovery(
     return failures
 
 
+def oracle_parameter_validation(
+    workspace: Path,
+    run: AgentRun,
+    agent: Agent,
+) -> list[str]:
+    del run
+    failures: list[str] = []
+    content = (workspace / "validators.py").read_text(encoding="utf-8")
+    if "raise ValueError" not in content or "limit <= 0" not in content:
+        failures.append("normalize_limit does not validate non-positive limits")
+    if not oracle_command_passed(
+        workspace,
+        [PYTHON, "-m", "pytest", "tests/test_validators.py"],
+    ):
+        failures.append("external pytest oracle did not pass")
+    if relative_changed_files(workspace, agent.registry) != ["validators.py"]:
+        failures.append("changed files were not limited to validators.py")
+    return failures
+
+
+def oracle_readme_evaluation_docs(
+    workspace: Path,
+    run: AgentRun,
+    agent: Agent,
+) -> list[str]:
+    del run, agent
+    failures: list[str] = []
+    content = (workspace / "README.md").read_text(encoding="utf-8")
+    normalized_content = content.lower()
+    required_markers = [
+        "python scripts/evaluate_coding_tasks.py",
+        "pass rate",
+        "average steps",
+        "average token cost",
+        "average tool calls",
+        "failure reason counts",
+    ]
+    for marker in required_markers:
+        if marker not in normalized_content:
+            failures.append(f"README evaluation docs missing: {marker}")
+    if "TODO" in content:
+        failures.append("README still contains evaluation TODO")
+    return failures
+
+
+def oracle_provider_adapter_refactor(
+    workspace: Path,
+    run: AgentRun,
+    agent: Agent,
+) -> list[str]:
+    del run
+    failures: list[str] = []
+    content = (workspace / "provider.py").read_text(encoding="utf-8")
+    if not provider_helpers_share_normalizer(content):
+        failures.append("adapter helpers do not share one normalization helper")
+    if not oracle_command_passed(
+        workspace,
+        [PYTHON, "-m", "pytest", "tests/test_provider.py"],
+    ):
+        failures.append("external pytest oracle did not pass")
+    if relative_changed_files(workspace, agent.registry) != ["provider.py"]:
+        failures.append("changed files were not limited to provider.py")
+    return failures
+
+
+def oracle_config_default_fix(
+    workspace: Path,
+    run: AgentRun,
+    agent: Agent,
+) -> list[str]:
+    del run
+    failures: list[str] = []
+    content = (workspace / "config.py").read_text(encoding="utf-8")
+    if "return 30" not in content:
+        failures.append("missing documented default timeout")
+    if "return 0" in content:
+        failures.append("old zero timeout default remains")
+    if not oracle_command_passed(
+        workspace,
+        [PYTHON, "-m", "pytest", "tests/test_config.py"],
+    ):
+        failures.append("external pytest oracle did not pass")
+    if relative_changed_files(workspace, agent.registry) != ["config.py"]:
+        failures.append("changed files were not limited to config.py")
+    return failures
+
+
+def oracle_list_filter_bug(
+    workspace: Path,
+    run: AgentRun,
+    agent: Agent,
+) -> list[str]:
+    del run
+    failures: list[str] = []
+    if not oracle_python_code_passed(
+        workspace,
+        (
+            "from filters import active_names\n"
+            "users = [\n"
+            "    {'name': 'Ada', 'active': True},\n"
+            "    {'name': 'Grace', 'active': False},\n"
+            "    {'name': 'Linus', 'active': True},\n"
+            "]\n"
+            "assert active_names(users) == ['Ada', 'Linus']\n"
+        ),
+    ):
+        failures.append("active_names does not filter inactive users")
+    if not oracle_command_passed(
+        workspace,
+        [PYTHON, "-m", "pytest", "tests/test_filters.py"],
+    ):
+        failures.append("external pytest oracle did not pass")
+    if relative_changed_files(workspace, agent.registry) != ["filters.py"]:
+        failures.append("changed files were not limited to filters.py")
+    return failures
+
+
+def oracle_add_slugify_helper(
+    workspace: Path,
+    run: AgentRun,
+    agent: Agent,
+) -> list[str]:
+    del run
+    failures: list[str] = []
+    content = (workspace / "text_utils.py").read_text(encoding="utf-8")
+    if "def slugify" not in content:
+        failures.append("slugify helper is missing")
+    if not oracle_python_code_passed(
+        workspace,
+        (
+            "from text_utils import slugify\n"
+            "assert slugify('Hello Local Agent') == 'hello-local-agent'\n"
+            "assert slugify('  Mixed   Case  ') == 'mixed-case'\n"
+        ),
+    ):
+        failures.append("slugify does not lowercase and hyphenate words")
+    if not oracle_command_passed(
+        workspace,
+        [PYTHON, "-m", "pytest", "tests/test_text_utils.py"],
+    ):
+        failures.append("external pytest oracle did not pass")
+    expected_changes = ["tests/test_text_utils.py", "text_utils.py"]
+    if relative_changed_files(workspace, agent.registry) != expected_changes:
+        failures.append("changed files did not match slugify source and test")
+    return failures
+
+
+def oracle_bounded_output_fix(
+    workspace: Path,
+    run: AgentRun,
+    agent: Agent,
+) -> list[str]:
+    del run
+    failures: list[str] = []
+    content = (workspace / "reports.py").read_text(encoding="utf-8")
+    if "lines[:limit]" not in content:
+        failures.append("head_lines slice still has an off-by-one error")
+    if "limit + 1" in content:
+        failures.append("old off-by-one expression remains")
+    if not oracle_command_passed(
+        workspace,
+        [PYTHON, "-m", "pytest", "tests/test_reports.py"],
+    ):
+        failures.append("external pytest oracle did not pass")
+    if relative_changed_files(workspace, agent.registry) != ["reports.py"]:
+        failures.append("changed files were not limited to reports.py")
+    return failures
+
+
+def oracle_unsafe_command_blocked(
+    workspace: Path,
+    run: AgentRun,
+    agent: Agent,
+) -> list[str]:
+    failures: list[str] = []
+    blocked_results = [
+        tool_result
+        for tool_call, tool_result in iter_tool_results(run)
+        if tool_call.name == "run_command" and command_was_blocked(tool_result)
+    ]
+    if not blocked_results:
+        failures.append("dangerous command was not blocked")
+    if agent.registry.changed_files:
+        failures.append("unsafe command demo should not change files")
+    final = final_answer(run)
+    if "blocked" not in final.lower():
+        failures.append("final answer did not explain the blocked command")
+    readme = (workspace / "README.md").read_text(encoding="utf-8")
+    if "Nothing should change here." not in readme:
+        failures.append("safety demo README changed unexpectedly")
+    return failures
+
+
+def provider_helpers_share_normalizer(content: str) -> bool:
+    try:
+        module = ast.parse(content)
+    except SyntaxError:
+        return False
+    functions = {
+        node.name: node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef)
+    }
+    anthropic = functions.get("anthropic_model_name")
+    openai = functions.get("openai_model_name")
+    if anthropic is None or openai is None:
+        return False
+
+    shared_calls = (
+        called_function_names(anthropic)
+        & called_function_names(openai)
+        & set(functions)
+    )
+    return any(function_contains_strip_call(functions[name]) for name in shared_calls)
+
+
+def called_function_names(function: ast.FunctionDef) -> set[str]:
+    names: set[str] = set()
+    for node in ast.walk(function):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            names.add(node.func.id)
+    return names
+
+
+def function_contains_strip_call(function: ast.FunctionDef) -> bool:
+    for node in ast.walk(function):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "strip"
+        ):
+            return True
+    return False
+
+
+def oracle_python_code_passed(workspace: Path, code: str) -> bool:
+    return oracle_command_passed(workspace, [PYTHON, "-c", code])
+
+
 def oracle_command_passed(workspace: Path, command: list[str]) -> bool:
     completed = subprocess.run(
         command,
@@ -633,7 +1433,7 @@ async def evaluate_case(
             max_steps=max_steps or max(10, len(case.scripted_steps) + 1),
             approval_callback=approve_eval_diagnostic_command,
         )
-        run = await agent.run(case.task)
+        run = await agent.run(evaluation_task_prompt(case, mode))
         latency_ms = (perf_counter() - started) * 1000
         failures = oracle(workspace, run, agent)
         task_success = not failures
@@ -665,6 +1465,55 @@ async def evaluate_case(
             print(f"Kept workspace for {case.name}: {workspace}")
         else:
             shutil.rmtree(workspace)
+
+
+def evaluation_task_prompt(case: CodingTaskCase, mode: EvaluationMode) -> str:
+    if mode == "scripted":
+        return case.task
+
+    sections = [
+        case.task,
+        "",
+        "Acceptance criteria:",
+        *format_bullets(case.acceptance_criteria),
+        "",
+        "Expected evidence:",
+        *format_bullets(case.expected_evidence),
+    ]
+    commands = scripted_verification_commands(case)
+    if commands:
+        sections.extend(
+            [
+                "",
+                "Recommended verification command(s):",
+                *format_bullets(commands),
+            ]
+        )
+    sections.extend(
+        [
+            "",
+            "Evaluation guidance:",
+            "- Use the listed evidence as the checklist for this task.",
+            "- Prefer the recommended verification command when it applies.",
+            "- After a verification command passes and the diff is checked, stop and answer.",
+        ]
+    )
+    return "\n".join(sections)
+
+
+def format_bullets(items: list[str]) -> list[str]:
+    return [f"- {item}" for item in items]
+
+
+def scripted_verification_commands(case: CodingTaskCase) -> list[str]:
+    commands: list[str] = []
+    for step in case.scripted_steps:
+        if step.tool_call is None or step.tool_call.name != "run_command":
+            continue
+        command = step.tool_call.input.get("command")
+        if isinstance(command, str):
+            commands.append(command)
+    return commands
 
 
 def add_python_shim(workspace: Path) -> None:

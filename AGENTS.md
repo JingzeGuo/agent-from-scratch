@@ -126,6 +126,8 @@ verify the behavior.
 - Review the diff before committing.
 - Keep unrelated changes out of the commit.
 - Do not rewrite or discard user changes.
+- Do not record or commit files under `docs/`; the repository intentionally
+  keeps `docs/` ignored.
 
 ## Pricing Scope
 

@@ -163,7 +163,13 @@ async def run_eval_command(
     *,
     api_key: str | None = None,
 ) -> int:
-    from scripts.evaluate_coding_tasks import run_eval_cli
+    try:
+        from scripts.evaluate_coding_tasks import run_eval_cli
+    except ModuleNotFoundError as error:
+        if error.name != "scripts":
+            raise
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from scripts.evaluate_coding_tasks import run_eval_cli
 
     return await run_eval_cli(eval_args, api_key=api_key)
 
