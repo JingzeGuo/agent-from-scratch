@@ -100,13 +100,6 @@ def prompt_tool_approval(
     return answer in {"y", "yes"}
 
 
-def deny_tool_approval(
-    tool_call: ToolCall,
-    policy: ToolApprovalPolicy,
-) -> bool:
-    return False
-
-
 def _format_tool_approval_input(tool_input: dict[str, object]) -> str:
     try:
         text = json.dumps(tool_input, ensure_ascii=True, sort_keys=True)

@@ -45,7 +45,6 @@ from main import (
     handle_command,
     handle_command_async,
     parse_cli_args,
-    parse_one_shot_task,
     prompt_tool_approval,
     report_interrupted_action,
     run_cli,
@@ -320,18 +319,11 @@ def test_trace_command_reports_empty_trace(
     assert capsys.readouterr().out == "[No trace events]\n"
 
 
-def test_parse_one_shot_task() -> None:
-    assert parse_one_shot_task([]) is None
-    assert parse_one_shot_task(["Fix", "the", "bug"]) == "Fix the bug"
-    assert parse_one_shot_task(["  "]) == ""
-
-
-def test_parse_cli_args_supports_resume_and_one_shot_task() -> None:
-    args = parse_cli_args(["--resume", "day10", "Fix", "the", "bug"])
+def test_parse_cli_args_supports_resume() -> None:
+    args = parse_cli_args(["--resume", "day10"])
 
     assert args.resume_session_id == "day10"
     assert args.api_key is None
-    assert args.one_shot_task == "Fix the bug"
 
 
 def test_parse_cli_args_supports_equals_resume_form() -> None:
@@ -339,15 +331,13 @@ def test_parse_cli_args_supports_equals_resume_form() -> None:
 
     assert args.resume_session_id == "day10"
     assert args.api_key is None
-    assert args.one_shot_task is None
 
 
-def test_parse_cli_args_supports_api_key_and_one_shot_task() -> None:
-    args = parse_cli_args(["--api-key", "cli-key", "Fix", "the", "bug"])
+def test_parse_cli_args_supports_api_key() -> None:
+    args = parse_cli_args(["--api-key", "cli-key"])
 
     assert args.resume_session_id is None
     assert args.api_key == "cli-key"
-    assert args.one_shot_task == "Fix the bug"
 
 
 def test_parse_cli_args_supports_equals_api_key_form() -> None:
@@ -355,7 +345,6 @@ def test_parse_cli_args_supports_equals_api_key_form() -> None:
 
     assert args.resume_session_id is None
     assert args.api_key == "cli-key"
-    assert args.one_shot_task is None
 
 
 def test_parse_cli_args_supports_help_and_version() -> None:
@@ -364,10 +353,8 @@ def test_parse_cli_args_supports_help_and_version() -> None:
 
     assert help_args.show_help is True
     assert help_args.show_version is False
-    assert help_args.one_shot_task is None
     assert version_args.show_help is False
     assert version_args.show_version is True
-    assert version_args.one_shot_task is None
 
 
 def test_parse_cli_args_supports_eval_command() -> None:
@@ -375,7 +362,11 @@ def test_parse_cli_args_supports_eval_command() -> None:
 
     assert args.api_key == "cli-key"
     assert args.eval_args == ["--list"]
-    assert args.one_shot_task is None
+
+
+def test_parse_cli_args_rejects_positional_task() -> None:
+    with pytest.raises(ValueError, match="Unexpected argument"):
+        parse_cli_args(["Fix", "the", "bug"])
 
 
 def test_parse_cli_args_rejects_invalid_resume_usage() -> None:
@@ -542,21 +533,19 @@ def test_generate_session_id_uses_safe_timestamp_format() -> None:
     assert " " not in session_id
 
 
-def test_run_cli_executes_one_shot_task(
+def test_run_cli_executes_interactive_task(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     fake_agent = FakeRunAgent()
+    inputs = iter(["Fix the bug", "/exit"])
 
-    def fail_input(prompt: str) -> str:
-        raise AssertionError(f"Unexpected prompt: {prompt}")
+    monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
 
-    monkeypatch.setattr("builtins.input", fail_input)
-
-    asyncio.run(run_cli(cast(Agent, fake_agent), "Fix the bug"))
+    asyncio.run(run_cli(cast(Agent, fake_agent)))
 
     assert fake_agent.tasks == ["Fix the bug"]
-    assert capsys.readouterr().out == "\nAssistant: done\n"
+    assert capsys.readouterr().out == "\nAssistant: done\nGoodbye.\n"
 
 
 def test_run_cli_reports_provider_failure_without_traceback(
@@ -565,8 +554,11 @@ def test_run_cli_reports_provider_failure_without_traceback(
 ) -> None:
     fake_agent = FakeProviderFailureAgent()
     monkeypatch.delenv("AGENT_DEBUG", raising=False)
+    inputs = iter(["Build a site", "/exit"])
 
-    asyncio.run(run_cli(cast(Agent, fake_agent), "Build a site"))
+    monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
+
+    asyncio.run(run_cli(cast(Agent, fake_agent)))
 
     output = capsys.readouterr().out
     assert fake_agent.tasks == ["Build a site"]
@@ -576,7 +568,7 @@ def test_run_cli_reports_provider_failure_without_traceback(
     assert "Traceback" not in output
 
 
-def test_run_cli_checkpoints_one_shot_task(
+def test_run_cli_checkpoints_interactive_task(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -584,16 +576,13 @@ def test_run_cli_checkpoints_one_shot_task(
     fake_agent = FakeCheckpointAgent()
     session_store = SessionStore(tmp_path / "sessions")
     session_state = CliSessionState(session_id="session-one", session_name="day10")
+    inputs = iter(["Fix the bug", "/exit"])
 
-    def fail_input(prompt: str) -> str:
-        raise AssertionError(f"Unexpected prompt: {prompt}")
-
-    monkeypatch.setattr("builtins.input", fail_input)
+    monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
 
     asyncio.run(
         run_cli(
             cast(Agent, fake_agent),
-            "Fix the bug",
             session_store,
             session_state,
         )
@@ -610,6 +599,7 @@ def test_run_cli_checkpoints_one_shot_task(
     assert capsys.readouterr().out == (
         "\nAssistant: done\n"
         "Checkpoint saved: session-one\n"
+        "Goodbye.\n"
     )
 
 

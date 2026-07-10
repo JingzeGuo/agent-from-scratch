@@ -17,7 +17,7 @@ cost tracking.
 The agent supports:
 
 - Multi-step tool use with a maximum step limit
-- Multi-turn CLI conversations and one-shot task mode
+- Multi-turn CLI conversations
 - Anthropic, DeepSeek, and OpenAI-compatible provider adapters
 - Pydantic schemas for tool inputs and internal agent data
 - Tool validation and model-visible error observations

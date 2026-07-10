@@ -15,7 +15,6 @@ from agent.cli_commands import (
     COMMANDS,
     CliSessionState,
     checkpoint_session,
-    deny_tool_approval,
     format_memory_record,
     handle_command,
     handle_command_async,
@@ -51,7 +50,6 @@ __all__ = [
     "handle_command_async",
     "main",
     "parse_cli_args",
-    "parse_one_shot_task",
     "prompt_tool_approval",
     "report_interrupted_action",
     "run_eval_command",
@@ -63,19 +61,11 @@ class CliArgs(BaseModel):
     resume_session_id: str | None
     api_key: str | None
     eval_args: list[str] | None
-    one_shot_task: str | None
     show_help: bool = False
     show_version: bool = False
 
 
-def parse_one_shot_task(argv: Sequence[str]) -> str | None:
-    if not argv:
-        return None
-    return " ".join(argv).strip()
-
-
 def parse_cli_args(argv: Sequence[str]) -> CliArgs:
-    remaining_args: list[str] = []
     resume_session_id: str | None = None
     api_key: str | None = None
     eval_args: list[str] | None = None
@@ -85,7 +75,7 @@ def parse_cli_args(argv: Sequence[str]) -> CliArgs:
 
     while index < len(argv):
         arg = argv[index]
-        if arg == "eval" and not remaining_args:
+        if arg == "eval":
             eval_args = list(argv[index + 1 :])
             break
         if arg in {"--help", "-h"}:
@@ -129,14 +119,12 @@ def parse_cli_args(argv: Sequence[str]) -> CliArgs:
             index += 1
             continue
 
-        remaining_args.append(arg)
-        index += 1
+        raise ValueError(f"Unexpected argument: {arg}")
 
     return CliArgs(
         resume_session_id=resume_session_id,
         api_key=api_key,
         eval_args=eval_args,
-        one_shot_task=parse_one_shot_task(remaining_args),
         show_help=show_help,
         show_version=show_version,
     )
@@ -151,7 +139,7 @@ def package_version() -> str:
 
 def print_cli_help() -> None:
     print("Usage:")
-    print("  agent [options] [task]")
+    print("  agent [options]")
     print("  agent eval [eval-options] [cases...]")
     print("")
     print("Options:")
@@ -279,23 +267,9 @@ def generate_session_id() -> str:
 
 async def run_cli(
     agent: Agent,
-    one_shot_task: str | None = None,
     session_store: SessionStore | None = None,
     session_state: CliSessionState | None = None,
 ) -> None:
-    if one_shot_task is not None:
-        if not one_shot_task:
-            print("Task cannot be empty.")
-            return
-        print("\nAssistant: ", end="", flush=True)
-        try:
-            await agent.run(one_shot_task)
-        except ProviderRequestError as error:
-            print_provider_request_error(error)
-            return
-        checkpoint_session(agent, session_store, session_state)
-        return
-
     while True:
         user_task = input("\nYou: ").strip()
         if not user_task:
@@ -346,7 +320,7 @@ async def main(argv: Sequence[str] | None = None) -> None:
         return
     if cli_args.eval_args is not None:
         if cli_args.resume_session_id is not None:
-            print("Use --resume with interactive or one-shot tasks, not eval.")
+            print("Use --resume with interactive tasks, not eval.")
             return
         exit_code = await run_eval_command(cli_args.eval_args, api_key=cli_args.api_key)
         if exit_code:
@@ -376,10 +350,7 @@ async def main(argv: Sequence[str] | None = None) -> None:
             provider=config.provider,
         )
         agent.configure_memory(create_memory_system(workspace_root))
-        if cli_args.one_shot_task is None:
-            agent.configure_approval_callback(prompt_tool_approval)
-        else:
-            agent.configure_approval_callback(deny_tool_approval)
+        agent.configure_approval_callback(prompt_tool_approval)
         session_state = CliSessionState(session_id=generate_session_id())
         if cli_args.resume_session_id is not None:
             snapshot = session_store.find(cli_args.resume_session_id)
@@ -418,7 +389,7 @@ async def main(argv: Sequence[str] | None = None) -> None:
             )
         agent.configure_session_recording(session_store, session_state.session_id)
         print(f"Provider: {agent.provider} | Model: {agent.model}")
-        await run_cli(agent, cli_args.one_shot_task, session_store, session_state)
+        await run_cli(agent, session_store, session_state)
     finally:
         await mcp_manager.close()
 

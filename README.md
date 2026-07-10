@@ -9,7 +9,6 @@ session state, and tracks token usage and estimated cost.
 ## Features
 
 - Streaming terminal conversation
-- One-shot task mode
 - Anthropic, DeepSeek, and OpenAI-compatible provider adapters
 - Multi-step tool use with a maximum step limit
 - Multi-turn conversation state
@@ -117,12 +116,6 @@ agent
 
 The current working directory becomes the agent workspace. File and command
 tools are confined to that workspace.
-
-Run one task and exit:
-
-```bash
-agent "Read the tests and summarize what behavior they cover."
-```
 
 Resume a saved session by id or session name:
 
