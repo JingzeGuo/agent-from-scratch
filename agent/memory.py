@@ -149,7 +149,6 @@ class MemorySearchResult(BaseModel):
     record: MemoryRecord
     score: float
     lexical_score: float
-    vector_score: float
     boost_score: float
 
 
@@ -479,7 +478,6 @@ class LocalBM25Retriever:
                     record=record,
                     score=score,
                     lexical_score=bm25_score,
-                    vector_score=0.0,
                     boost_score=boost_score,
                 )
             )
@@ -503,10 +501,6 @@ class LocalBM25Retriever:
         }
         recency = _recency_score(record.created_at)
         return min(1.0, (0.8 * kind_boosts.get(record.kind, 0.0)) + (0.2 * recency))
-
-
-# Backward-compatible import for callers that used the previous class name.
-LocalHybridRetriever = LocalBM25Retriever
 
 
 class MemorySummarizer:

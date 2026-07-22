@@ -162,7 +162,6 @@ def test_local_bm25_retriever_excludes_unrelated_memory() -> None:
 
     assert [result.record.id for result in context.results] == ["context-memory"]
     assert context.results[0].lexical_score > 0
-    assert context.results[0].vector_score == 0
 
 
 class FakeSummarizer:
@@ -455,7 +454,6 @@ def test_memory_context_packs_multiple_results_within_character_budget() -> None
             ),
             score=1.0 - (index / 10),
             lexical_score=1.0,
-            vector_score=0.0,
             boost_score=0.5,
         )
         for index in range(2)

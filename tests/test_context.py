@@ -306,7 +306,6 @@ def test_context_builder_inserts_memory_after_checkpoint() -> None:
                 ),
                 score=0.9,
                 lexical_score=1.0,
-                vector_score=0.8,
                 boost_score=0.4,
             )
         ]
