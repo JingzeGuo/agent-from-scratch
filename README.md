@@ -21,7 +21,7 @@ session state, and tracks token usage and estimated cost.
 - Session checkpoints, listing, resume, and rename
 - Context compaction reporting
 - Project and global memory stores for durable agent context
-- Local hybrid memory retrieval with BM25-like lexical scoring and TF-IDF cosine
+- Local memory retrieval with standard Okapi BM25 and bounded metadata boosting
 - Automatic run reflection into session, topic, profile, and cross-project memories
 - Structured JSONL trace events with secret redaction
 - Token and estimated cost tracking
@@ -399,16 +399,20 @@ debugging history, and reflections. Global memory is reserved for stable user
 preferences and cross-project notes that should still matter in another
 repository.
 
-On each task, the agent searches project and global memory using local hybrid
-retrieval: BM25-like lexical scoring plus TF-IDF cosine scoring over local
-tokens. Retrieved memory is inserted as supporting context after the structured
+On each task, the agent searches project and global memory using a local,
+dependency-free Okapi BM25 implementation. Unicode normalization, Chinese
+character bigrams, and code-identifier splitting improve matching without
+binding memory to one provider's model tokenizer. Records with no BM25 match are
+excluded; a small kind/recency boost only reorders matched records. Retrieved
+memory is inserted as bounded, untrusted supporting context after the structured
 checkpoint and does not override system or project rules.
 
 After a run finishes, the agent asks the configured model to propose concise
 memory candidates. The controller filters candidates before persistence, redacts
-secret-like text, rejects project-specific global memories, and stores accepted
-records as Markdown plus `index.json` entries. If memory reflection fails, the
-main task result is still preserved.
+secret-like text, rejects project-specific global memories, skips exact
+duplicates, and updates facts or preferences that reuse a stable memory key.
+Accepted records are stored as Markdown plus `index.json` entries. If memory
+reflection fails, the main task result is still preserved.
 
 ## Sessions, Checkpoints, and Traces
 

@@ -424,9 +424,10 @@ def format_memory_record(record: MemoryRecord) -> str:
         f"ID: {record.id}",
         f"Scope: {record.scope}",
         f"Kind: {record.kind}",
-        f"Title: {record.title}",
-        f"Tags: {tags}",
     ]
+    if record.key is not None:
+        lines.append(f"Key: {record.key}")
+    lines.extend([f"Title: {record.title}", f"Tags: {tags}"])
     if record.confidence is not None:
         lines.append(f"Confidence: {record.confidence}")
     if record.evidence:
