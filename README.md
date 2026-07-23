@@ -375,11 +375,7 @@ lives inside the active workspace:
 
 ```text
 .agents/memory/
-  profile.md
   index.json
-  sessions/
-  topics/
-  reflections/
 ```
 
 Set `AGENT_STATE_DIR` to move project-scoped state out of the target
@@ -411,8 +407,9 @@ After a run finishes, the agent asks the configured model to propose concise
 memory candidates. The controller filters candidates before persistence, redacts
 secret-like text, rejects project-specific global memories, skips exact
 duplicates, and updates facts or preferences that reuse a stable memory key.
-Accepted records are stored as Markdown plus `index.json` entries. If memory
-reflection fails, the main task result is still preserved.
+Accepted records are stored in `index.json`, the single source of truth for each
+memory store. If memory reflection fails, the main task result is still
+preserved.
 
 ## Sessions, Checkpoints, and Traces
 

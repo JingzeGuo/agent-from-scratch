@@ -28,11 +28,6 @@ MemoryKind = Literal[
 ]
 MemoryConfidence = Literal["low", "medium", "high"]
 
-PROFILE_KINDS: set[MemoryKind] = {
-    "profile",
-    "preference",
-    "cross_project_lesson",
-}
 PROJECT_KINDS: set[MemoryKind] = {
     "profile",
     "project_fact",
@@ -129,7 +124,6 @@ class MemoryRecord(BaseModel):
     evidence: str | None = None
     created_at: str
     updated_at: str
-    path: str | None = None
 
 
 class MemoryCandidate(BaseModel):
@@ -207,7 +201,7 @@ class MemoryIndex(BaseModel):
 
 
 class MemoryStore:
-    """Filesystem-backed memory store with Markdown records and a JSON index."""
+    """Filesystem-backed JSON memory store."""
 
     def __init__(self, root: Path, scope: MemoryScope) -> None:
         self.root = root.expanduser()
@@ -215,10 +209,6 @@ class MemoryStore:
 
     def initialize(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
-        for directory in ("sessions", "topics", "reflections"):
-            (self.root / directory).mkdir(parents=True, exist_ok=True)
-        if not self.profile_path.exists():
-            self.profile_path.write_text("# Memory Profile\n", encoding="utf-8")
         if not self.index_path.exists():
             self._write_index(MemoryIndex())
 
@@ -226,36 +216,8 @@ class MemoryStore:
     def index_path(self) -> Path:
         return self.root / "index.json"
 
-    @property
-    def profile_path(self) -> Path:
-        return self.root / "profile.md"
-
     def list_records(self) -> list[MemoryRecord]:
-        records = self._read_index().records
-        if self.profile_path.exists() and not any(
-            record.path == "profile.md" for record in records
-        ):
-            content = self.profile_path.read_text(encoding="utf-8")
-            if content.strip() and content.strip() != "# Memory Profile":
-                profile_updated_at = datetime.fromtimestamp(
-                    self.profile_path.stat().st_mtime,
-                    tz=UTC,
-                ).isoformat()
-                records.append(
-                    MemoryRecord(
-                        id=f"{self.scope}-profile",
-                        scope=self.scope,
-                        kind="profile",
-                        title=f"{self.scope.title()} memory profile",
-                        content=redact_text(content),
-                        tags=["profile"],
-                        source="profile.md",
-                        created_at=profile_updated_at,
-                        updated_at=profile_updated_at,
-                        path="profile.md",
-                    )
-                )
-        return records
+        return self._read_index().records
 
     def get_record(self, record_id: str) -> MemoryRecord | None:
         for record in self.list_records():
@@ -271,10 +233,6 @@ class MemoryStore:
         self.initialize()
         index = self._read_index(strict=True)
         safe_record = self._redact_record(record)
-        path = self._write_record_markdown(safe_record)
-        safe_record = safe_record.model_copy(
-            update={"path": path.relative_to(self.root).as_posix()}
-        )
         records = [entry for entry in index.records if entry.id != safe_record.id]
         records.append(safe_record)
         self._write_index(MemoryIndex(records=records))
@@ -302,67 +260,6 @@ class MemoryStore:
             encoding="utf-8",
         )
         temporary_path.replace(self.index_path)
-
-    def _write_record_markdown(self, record: MemoryRecord) -> Path:
-        if record.kind in PROFILE_KINDS:
-            self._append_profile_record(record)
-            return self.profile_path
-
-        directory = self._directory_for_kind(record.kind)
-        directory.mkdir(parents=True, exist_ok=True)
-        slug = _slugify(record.title)
-        path = directory / f"{record.created_at[:10]}-{slug}-{record.id[-8:]}.md"
-        path.write_text(self._format_record_markdown(record), encoding="utf-8")
-        return path
-
-    def _append_profile_record(self, record: MemoryRecord) -> None:
-        if not self.profile_path.exists():
-            self.profile_path.parent.mkdir(parents=True, exist_ok=True)
-            self.profile_path.write_text("# Memory Profile\n", encoding="utf-8")
-        with self.profile_path.open("a", encoding="utf-8") as file:
-            file.write("\n")
-            file.write(f"## {record.title}\n\n")
-            file.write(f"- id: `{record.id}`\n")
-            file.write(f"- kind: `{record.kind}`\n")
-            if record.key is not None:
-                file.write(f"- key: `{record.key}`\n")
-            if record.confidence is not None:
-                file.write(f"- confidence: `{record.confidence}`\n")
-            if record.evidence:
-                file.write(f"- evidence: {record.evidence}\n")
-            if record.tags:
-                file.write(f"- tags: {', '.join(record.tags)}\n")
-            file.write("\n")
-            file.write(record.content.strip() + "\n")
-
-    def _directory_for_kind(self, kind: MemoryKind) -> Path:
-        if kind == "session":
-            return self.root / "sessions"
-        if kind == "reflection":
-            return self.root / "reflections"
-        return self.root / "topics"
-
-    def _format_record_markdown(self, record: MemoryRecord) -> str:
-        frontmatter = {
-            "id": record.id,
-            "scope": record.scope,
-            "kind": record.kind,
-            "key": record.key,
-            "tags": record.tags,
-            "source": record.source,
-            "confidence": record.confidence,
-            "evidence": record.evidence,
-            "created_at": record.created_at,
-            "updated_at": record.updated_at,
-        }
-        return (
-            "---\n"
-            + json.dumps(frontmatter, indent=2, ensure_ascii=False)
-            + "\n---\n\n"
-            + f"# {record.title}\n\n"
-            + record.content.strip()
-            + "\n"
-        )
 
     def _redact_record(self, record: MemoryRecord) -> MemoryRecord:
         return record.model_copy(

@@ -41,7 +41,7 @@ def make_record(
     )
 
 
-def test_memory_store_saves_markdown_and_index_with_redaction(tmp_path: Path) -> None:
+def test_memory_store_saves_redacted_record_in_json_index(tmp_path: Path) -> None:
     store = MemoryStore(tmp_path / "memory", "project")
     record = make_record(
         "project-session-one",
@@ -52,14 +52,14 @@ def test_memory_store_saves_markdown_and_index_with_redaction(tmp_path: Path) ->
 
     saved = store.save_record(record)
 
-    assert saved.path is not None
-    markdown = (tmp_path / "memory" / saved.path).read_text(encoding="utf-8")
-    assert "sk-secret123456" not in markdown
-    assert "api_key=[REDACTED]" in markdown
+    index = store.index_path.read_text(encoding="utf-8")
+    assert "sk-secret123456" not in index
+    assert "api_key=[REDACTED]" in index
+    assert {path.name for path in store.root.iterdir()} == {"index.json"}
     assert store.get_record("project-session-one") == saved
 
 
-def test_memory_store_appends_profile_records(tmp_path: Path) -> None:
+def test_memory_store_saves_profile_kinds_in_json_index(tmp_path: Path) -> None:
     store = MemoryStore(tmp_path / "memory", "global")
     record = make_record(
         "global-preference-one",
@@ -71,13 +71,9 @@ def test_memory_store_appends_profile_records(tmp_path: Path) -> None:
 
     saved = store.save_record(record)
 
-    assert saved.path == "profile.md"
-    profile = (tmp_path / "memory" / "profile.md").read_text(encoding="utf-8")
-    assert "Chinese explanations" in profile
-    assert "global-preference-one" in profile
-
     records = store.list_records()
-    assert [entry.id for entry in records] == ["global-preference-one"]
+    assert records == [saved]
+    assert {path.name for path in store.root.iterdir()} == {"index.json"}
 
 
 def test_memory_store_rejects_record_from_another_scope(tmp_path: Path) -> None:
