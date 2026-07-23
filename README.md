@@ -225,6 +225,9 @@ settings:
 Each configured server is launched without a shell, initialized over stdio, and
 queried with `tools/list`. Exposed tools are registered as
 `mcp_<server>__<tool>` and tool calls are forwarded with `tools/call`.
+Discovered input schemas are checked when tools are registered, and each MCP
+tool call is validated locally against its advertised schema before it is sent
+to the server.
 
 Tool registration follows `blockedTools > allowedTools > discovered tools`.
 `blockedTools` are never registered. If `allowedTools` is omitted, every

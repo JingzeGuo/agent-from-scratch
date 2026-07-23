@@ -123,6 +123,47 @@ def test_load_mcp_tools_registers_stdio_server_tools(tmp_path: Path) -> None:
     assert is_error is False
 
 
+@pytest.mark.parametrize(
+    ("arguments", "expected_error"),
+    [
+        ({}, "'text' is a required property"),
+        ({"text": 123}, "123 is not of type 'string'"),
+    ],
+)
+def test_mcp_tool_validates_arguments_before_calling_server(
+    tmp_path: Path,
+    arguments: dict[str, object],
+    expected_error: str,
+) -> None:
+    server_path = tmp_path / "fake_mcp_server.py"
+    server_path.write_text(_fake_mcp_server_source(), encoding="utf-8")
+    registry = ToolRegistry(tmp_path)
+
+    async def run_case() -> tuple[str, bool]:
+        manager = await load_mcp_tools(
+            registry,
+            tmp_path,
+            [
+                McpServerConfig(
+                    name="demo",
+                    command=sys.executable,
+                    args=[str(server_path)],
+                    readOnlyTools=["echo"],
+                )
+            ],
+        )
+        try:
+            return await registry.execute_async("mcp_demo__echo", arguments)
+        finally:
+            await manager.close()
+
+    output, is_error = asyncio.run(run_case())
+
+    assert is_error is True
+    assert "McpToolInputValidationError" in output
+    assert expected_error in output
+
+
 def test_load_mcp_tools_skips_blocked_tools_before_allowed_tools(
     tmp_path: Path,
 ) -> None:

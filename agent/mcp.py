@@ -10,6 +10,10 @@ from asyncio.subprocess import Process
 from pathlib import Path
 from typing import Any, Literal, cast
 
+from jsonschema.exceptions import SchemaError
+from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
+from jsonschema.protocols import Validator
+from jsonschema.validators import validator_for
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model
 
 from .security import ToolApprovalPolicy
@@ -36,6 +40,10 @@ class McpError(RuntimeError):
 
 class McpToolError(RuntimeError):
     """Raised when an MCP tool reports an error result."""
+
+
+class McpToolInputValidationError(ValueError):
+    """Raised when an MCP tool call does not match its advertised input schema."""
 
 
 class McpServerConfig(BaseModel):
@@ -400,6 +408,12 @@ def register_mcp_tool(
     config: McpServerConfig,
     tool_info: McpToolInfo,
 ) -> None:
+    definition_input_schema = _object_schema(tool_info.input_schema)
+    input_validator = _create_input_validator(
+        config,
+        tool_info,
+        definition_input_schema,
+    )
     local_name = _unique_tool_name(
         _build_local_tool_name(config.name, tool_info.name),
         registry,
@@ -411,6 +425,12 @@ def register_mcp_tool(
     )
 
     async def call_mcp_tool(**arguments: Any) -> str:
+        try:
+            input_validator.validate(arguments)
+        except JsonSchemaValidationError as e:
+            raise McpToolInputValidationError(
+                _format_input_validation_error(config, tool_info, e)
+            ) from e
         return await client.call_tool(tool_info.name, arguments)
 
     registry.register(
@@ -420,7 +440,7 @@ def register_mcp_tool(
             input_schema=MCP_INPUT_MODEL,
             fn=call_mcp_tool,
             kind="mcp",
-            definition_input_schema=_object_schema(tool_info.input_schema),
+            definition_input_schema=definition_input_schema,
             approval_policy=_mcp_approval_policy(config, tool_info.name),
         )
     )
@@ -501,6 +521,35 @@ def _object_schema(schema: dict[str, Any]) -> dict[str, Any]:
         normalized["type"] = "object"
     normalized.setdefault("properties", {})
     return normalized
+
+
+def _create_input_validator(
+    config: McpServerConfig,
+    tool_info: McpToolInfo,
+    schema: dict[str, Any],
+) -> Validator:
+    validator_class = validator_for(schema)
+    try:
+        validator_class.check_schema(schema)
+    except SchemaError as e:
+        raise McpError(
+            f"MCP server '{config.name}' returned an invalid input schema "
+            f"for tool '{tool_info.name}': {e.message}"
+        ) from e
+    return validator_class(schema)
+
+
+def _format_input_validation_error(
+    config: McpServerConfig,
+    tool_info: McpToolInfo,
+    error: JsonSchemaValidationError,
+) -> str:
+    path = ".".join(str(part) for part in error.absolute_path)
+    location = f" at '{path}'" if path else ""
+    return (
+        f"Invalid input for MCP tool '{tool_info.name}' from server "
+        f"'{config.name}'{location}: {error.message}"
+    )
 
 
 def _format_tool_call_result(result: dict[str, Any], max_chars: int) -> str:
