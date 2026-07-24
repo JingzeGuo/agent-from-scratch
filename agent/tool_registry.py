@@ -38,7 +38,12 @@ class ToolRegistry:
         if error is not None:
             return error, True
 
-        original_snapshot = self._snapshot_before_mutation(name, raw_input)
+        snapshot_error, original_snapshot = self._prepare_mutation_snapshot(
+            name,
+            raw_input,
+        )
+        if snapshot_error is not None:
+            return snapshot_error, True
         output, is_error = tool.execute(
             raw_input,
             self._tool_extra_kwargs(name, approval_granted, extra_kwargs),
@@ -63,7 +68,12 @@ class ToolRegistry:
         if error is not None:
             return error, True
 
-        original_snapshot = self._snapshot_before_mutation(name, raw_input)
+        snapshot_error, original_snapshot = self._prepare_mutation_snapshot(
+            name,
+            raw_input,
+        )
+        if snapshot_error is not None:
+            return snapshot_error, True
         output, is_error = await tool.execute_async(
             raw_input,
             self._tool_extra_kwargs(name, approval_granted, extra_kwargs),
@@ -223,6 +233,16 @@ class ToolRegistry:
         ):
             return None
         return path, path.read_text(encoding="utf-8")
+
+    def _prepare_mutation_snapshot(
+        self,
+        name: str,
+        raw_input: dict[str, Any],
+    ) -> tuple[str | None, tuple[Path, str | None] | None]:
+        try:
+            return None, self._snapshot_before_mutation(name, raw_input)
+        except Exception as e:
+            return f"Tool '{name}' raised {type(e).__name__}: {e}", None
 
     def _record_successful_file_action(
         self,

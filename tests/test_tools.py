@@ -1,3 +1,4 @@
+import asyncio
 import shlex
 import sys
 from pathlib import Path
@@ -433,6 +434,29 @@ def test_edit_file_rejects_file_outside_workspace(tmp_path: Path) -> None:
     assert is_error is True
 
 
+def test_edit_file_invalid_utf8_snapshot_returns_tool_error(tmp_path: Path) -> None:
+    target = tmp_path / "binary.txt"
+    original_bytes = b"\xff\xfe\xfa"
+    target.write_bytes(original_bytes)
+    registry = create_registry(tmp_path)
+    registry.read_files.add(target.resolve())
+
+    output, is_error = registry.execute(
+        "edit_file",
+        {
+            "path": "binary.txt",
+            "old_text": "missing",
+            "new_text": "replacement",
+        },
+    )
+
+    assert target.read_bytes() == original_bytes
+    assert target.resolve() not in registry.changed_files
+    assert target.resolve() not in registry.original_file_contents
+    assert "Tool 'edit_file' raised UnicodeDecodeError" in output
+    assert is_error is True
+
+
 def test_write_file_creates_new_file_and_returns_diff(tmp_path: Path) -> None:
     target = tmp_path / "notes.txt"
     registry = create_registry(tmp_path)
@@ -534,6 +558,58 @@ def test_write_file_overwrites_after_read(tmp_path: Path) -> None:
         "+replacement"
     )
     assert is_error is False
+
+
+def test_write_file_overwrite_invalid_utf8_snapshot_returns_tool_error(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "binary.txt"
+    original_bytes = b"\xff\xfe\xfa"
+    target.write_bytes(original_bytes)
+    registry = create_registry(tmp_path)
+    registry.read_files.add(target.resolve())
+
+    output, is_error = registry.execute(
+        "write_file",
+        {
+            "path": "binary.txt",
+            "content": "replacement\n",
+            "overwrite": True,
+        },
+    )
+
+    assert target.read_bytes() == original_bytes
+    assert target.resolve() not in registry.changed_files
+    assert target.resolve() not in registry.original_file_contents
+    assert "Tool 'write_file' raised UnicodeDecodeError" in output
+    assert is_error is True
+
+
+def test_execute_async_invalid_utf8_snapshot_returns_tool_error(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "binary.txt"
+    original_bytes = b"\xff\xfe\xfa"
+    target.write_bytes(original_bytes)
+    registry = create_registry(tmp_path)
+    registry.read_files.add(target.resolve())
+
+    output, is_error = asyncio.run(
+        registry.execute_async(
+            "edit_file",
+            {
+                "path": "binary.txt",
+                "old_text": "missing",
+                "new_text": "replacement",
+            },
+        )
+    )
+
+    assert target.read_bytes() == original_bytes
+    assert target.resolve() not in registry.changed_files
+    assert target.resolve() not in registry.original_file_contents
+    assert "Tool 'edit_file' raised UnicodeDecodeError" in output
+    assert is_error is True
 
 
 def test_write_file_tracks_changed_file(tmp_path: Path) -> None:
