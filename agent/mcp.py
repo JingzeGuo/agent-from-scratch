@@ -26,7 +26,6 @@ MCP_PROTOCOL_VERSION = "2024-11-05"
 DEFAULT_MCP_CONFIG_PATH = Path(".agents") / "mcp.json"
 JSONRPC_VERSION = "2.0"
 MAX_TOOL_NAME_LENGTH = 64
-McpTrust = Literal["trusted", "untrusted"]
 McpApprovalMode = Literal["auto", "always", "never"]
 MCP_INPUT_MODEL = cast(
     type[BaseModel],
@@ -58,7 +57,6 @@ class McpServerConfig(BaseModel):
     cwd: str | None = None
     timeout_seconds: float = Field(default=10.0, gt=0, le=120)
     max_output_chars: int = Field(default=12_000, ge=1_000, le=50_000)
-    trust: McpTrust = "untrusted"
     approval: McpApprovalMode = "auto"
     allowed_tools: list[str] | None = Field(default=None, alias="allowedTools")
     blocked_tools: list[str] = Field(default_factory=list, alias="blockedTools")
@@ -84,7 +82,6 @@ class McpToolManager:
 
     def __init__(self) -> None:
         self.clients: list[McpClient] = []
-        self.tool_count = 0
 
     async def close(self) -> None:
         for client in self.clients:
@@ -395,7 +392,6 @@ async def load_mcp_tools(
                 if not _should_register_mcp_tool(config, tool_info.name):
                     continue
                 register_mcp_tool(registry, client, config, tool_info)
-                manager.tool_count += 1
     except Exception:
         await manager.close()
         raise
@@ -464,7 +460,7 @@ def _mcp_approval_policy(
         return None
     reason = (
         f"MCP tool `{tool_name}` from server `{config.name}` requires approval "
-        f"(server trust: {config.trust}, approval: {config.approval})."
+        f"(approval: {config.approval})."
     )
     return ToolApprovalPolicy(decision="requires_approval", reason=reason)
 

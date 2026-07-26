@@ -276,8 +276,6 @@ class PendingAction(BaseModel):
     step_number: int = Field(ge=1)
     tool_name: str
     tool_use_id: str
-    tool_input: dict[str, Any]
-    started_at: str
 
 
 class ContextCheckpoint(BaseModel):
@@ -370,7 +368,6 @@ class SessionEvent(BaseModel):
     text_preview: str | None = None
     output_preview: str | None = None
     output_chars: int | None = Field(default=None, ge=0)
-    error_type: str | None = None
     native_metadata: dict[str, Any] | None = None
     message: str | None = None
 

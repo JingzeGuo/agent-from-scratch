@@ -2083,7 +2083,6 @@ def test_agent_records_pending_action_and_tool_events(tmp_path: Path) -> None:
     assert pending_action.step_number == 1
     assert pending_action.tool_name == "calculator"
     assert pending_action.tool_use_id == "toolu_test"
-    assert pending_action.tool_input == {"expression": "1 + 1"}
     assert [event.event_type for event in events] == [
         "run_started",
         "model_request_started",
@@ -2206,7 +2205,6 @@ def test_agent_records_tool_failure_evidence_in_trace(tmp_path: Path) -> None:
         if event.event_type == "tool_finished"
     ][0]
     assert tool_finished.is_error is True
-    assert tool_finished.error_type == "tool_error"
     assert tool_finished.output_chars is not None
     assert tool_finished.output_chars > 0
     assert tool_finished.output_preview is not None

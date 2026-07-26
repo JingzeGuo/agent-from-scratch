@@ -257,8 +257,6 @@ def test_trace_command_prints_current_session_events(
         step_number=1,
         tool_name="calculator",
         tool_use_id="toolu_one",
-        tool_input={"expression": "1 + 1"},
-        started_at=utc_timestamp(),
     )
     session_store.write_pending_action(pending_action)
 
@@ -621,8 +619,6 @@ def test_checkpoint_session_clears_existing_pending_action(tmp_path: Path) -> No
             step_number=1,
             tool_name="calculator",
             tool_use_id="toolu_calc",
-            tool_input={"expression": "1 + 1"},
-            started_at="2026-06-25T00:00:00+00:00",
         )
     )
 
@@ -645,8 +641,6 @@ def test_report_interrupted_action_warns_and_clears_marker(
             step_number=2,
             tool_name="edit_file",
             tool_use_id="toolu_edit",
-            tool_input={"path": "agent.py"},
-            started_at="2026-06-25T00:00:00+00:00",
         )
     )
 
@@ -734,8 +728,6 @@ def test_status_command_shows_current_agent_state(
             step_number=1,
             tool_name="read_file",
             tool_use_id="toolu_read",
-            tool_input={"path": "agent.py"},
-            started_at="2026-06-28T00:00:00+00:00",
         )
     )
 

@@ -142,8 +142,6 @@ class MemoryCandidate(BaseModel):
 class MemorySearchResult(BaseModel):
     record: MemoryRecord
     score: float
-    lexical_score: float
-    boost_score: float
 
 
 class MemoryContext(BaseModel):
@@ -374,8 +372,6 @@ class LocalBM25Retriever:
                 MemorySearchResult(
                     record=record,
                     score=score,
-                    lexical_score=bm25_score,
-                    boost_score=boost_score,
                 )
             )
 

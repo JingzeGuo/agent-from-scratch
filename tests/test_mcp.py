@@ -24,7 +24,6 @@ def test_parse_mcp_server_configs_supports_mcp_servers_format() -> None:
                     "args": ["server.py"],
                     "env": {"TOKEN": "test-token"},
                     "cwd": "tools",
-                    "trust": "trusted",
                     "approval": "never",
                     "allowedTools": ["echo"],
                     "blockedTools": ["delete"],
@@ -42,7 +41,6 @@ def test_parse_mcp_server_configs_supports_mcp_servers_format() -> None:
             args=["server.py"],
             env={"TOKEN": "test-token"},
             cwd="tools",
-            trust="trusted",
             approval="never",
             allowedTools=["echo"],
             blockedTools=["delete"],
@@ -90,7 +88,6 @@ def test_load_mcp_tools_registers_stdio_server_tools(tmp_path: Path) -> None:
             ],
         )
         try:
-            assert manager.tool_count == 1
             definitions = {
                 definition.name: definition
                 for definition in registry.to_tool_definitions()
@@ -188,7 +185,6 @@ def test_load_mcp_tools_skips_blocked_tools_before_allowed_tools(
             ],
         )
         try:
-            assert manager.tool_count == 1
             return sorted(definition.name for definition in registry.to_tool_definitions())
         finally:
             await manager.close()
@@ -220,7 +216,6 @@ def test_load_mcp_tools_registers_all_unblocked_tools_when_allowed_tools_omitted
             ],
         )
         try:
-            assert manager.tool_count == 2
             return sorted(definition.name for definition in registry.to_tool_definitions())
         finally:
             await manager.close()

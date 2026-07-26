@@ -113,8 +113,6 @@ def test_session_store_persists_pending_action(tmp_path: Path) -> None:
         step_number=2,
         tool_name="edit_file",
         tool_use_id="toolu_edit",
-        tool_input={"path": "agent.py"},
-        started_at="2026-06-25T00:00:00+00:00",
     )
 
     path = store.write_pending_action(pending_action)
@@ -131,8 +129,6 @@ def test_session_store_clears_pending_action(tmp_path: Path) -> None:
         step_number=1,
         tool_name="calculator",
         tool_use_id="toolu_calc",
-        tool_input={"expression": "1 + 1"},
-        started_at="2026-06-25T00:00:00+00:00",
     )
     store.write_pending_action(pending_action)
 

@@ -185,8 +185,6 @@ def test_context_builder_extracts_structured_checkpoint() -> None:
         step_number=3,
         tool_name="run_command",
         tool_use_id="toolu_pending",
-        tool_input={"command": ".venv/bin/python -m pytest"},
-        started_at="2026-06-25T00:00:00+00:00",
     )
     checkpoint = builder.build_checkpoint(
         steps,
@@ -245,8 +243,6 @@ def test_context_builder_prepends_structured_checkpoint_message() -> None:
         step_number=2,
         tool_name="run_command",
         tool_use_id="toolu_pending",
-        tool_input={"command": ".venv/bin/python -m pytest"},
-        started_at="2026-06-25T00:00:00+00:00",
     )
 
     context = builder.build(
@@ -305,8 +301,6 @@ def test_context_builder_inserts_memory_after_checkpoint() -> None:
                     updated_at="2026-06-28T00:00:00+00:00",
                 ),
                 score=0.9,
-                lexical_score=1.0,
-                boost_score=0.4,
             )
         ]
     )
@@ -554,8 +548,6 @@ def test_context_builder_records_reduction_for_synthetic_long_trajectory() -> No
         step_number=10,
         tool_name="run_command",
         tool_use_id="toolu_pending",
-        tool_input={"command": ".venv/bin/python -m pytest"},
-        started_at="2026-06-25T00:00:00+00:00",
     )
     builder = ContextBuilder(
         max_tool_result_chars=100,

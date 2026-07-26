@@ -198,8 +198,7 @@ default, it looks for `.agents/mcp.json` in the active workspace. Set
 `AGENT_MCP_CONFIG` to use a different JSON file, or set it to an empty value to
 disable MCP config loading explicitly.
 
-The config uses the common `mcpServers` shape with explicit trust and approval
-settings:
+The config uses the common `mcpServers` shape with explicit approval settings:
 
 ```json
 {
@@ -211,7 +210,6 @@ settings:
         "TOKEN": "..."
       },
       "cwd": "tools",
-      "trust": "untrusted",
       "approval": "auto",
       "allowedTools": ["list_items", "get_item"],
       "blockedTools": ["delete_item"],
@@ -234,14 +232,13 @@ Tool registration follows `blockedTools > allowedTools > discovered tools`.
 discovered tool that is not blocked is registered. If `allowedTools` is present,
 only listed tools are registered.
 
-By default, MCP servers use `trust: "untrusted"` and `approval: "auto"`.
-Approval modes are:
+By default, MCP servers use `approval: "auto"`. Approval modes are:
 
 - `always`: every MCP tool call requires user approval.
 - `auto`: tools listed in `readOnlyTools` run without approval; other MCP tools
   require approval.
 - `never`: MCP tool calls run without approval. Use this only for servers you
-  trust.
+  control and have reviewed.
 
 `readOnlyTools` is a user configuration claim used only for approval decisions;
 it does not affect registration and is not inferred from server-provided tool

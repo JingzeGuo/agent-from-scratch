@@ -505,20 +505,19 @@ class Agent:
     ) -> None:
         if self.session_store is None or self.session_id is None:
             return
+        created_at = utc_timestamp()
         pending_action = PendingAction(
             session_id=self.session_id,
             step_number=step_number,
             tool_name=tool_call.name,
             tool_use_id=tool_call.tool_use_id,
-            tool_input=tool_call.input,
-            started_at=utc_timestamp(),
         )
         self.session_store.write_pending_action(pending_action)
         self._append_session_event(
             SessionEvent(
                 event_type="tool_started",
                 session_id=self.session_id,
-                created_at=pending_action.started_at,
+                created_at=created_at,
                 run_id=run_id,
                 step_number=step_number,
                 tool_name=tool_call.name,
@@ -950,7 +949,6 @@ class Agent:
                 latency_ms=latency_ms,
                 output_preview=self._preview_text(output),
                 output_chars=len(output),
-                error_type="tool_error" if is_error else None,
             )
         )
 
