@@ -1817,8 +1817,8 @@ def test_sub_agent_runs_with_isolated_read_only_context(
         "read_file",
         "glob_files",
         "search_text",
-        "get_diff",
     }
+    assert "Do not modify files, execute commands" in child_request["system"]
     assert child_request["messages"] == [
         {"role": "user", "content": "Find session resume code."}
     ]

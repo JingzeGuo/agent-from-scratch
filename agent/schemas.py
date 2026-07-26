@@ -155,11 +155,11 @@ class SubAgentInput(BaseModel):
         default="read_only_explorer",
         description="The capability profile for the child agent.",
     )
-    max_steps: int = Field(
-        default=6,
+    max_steps: int | None = Field(
+        default=None,
         ge=1,
         le=8,
-        description="Maximum child-agent steps. Defaults to 6.",
+        description="Maximum child-agent steps. Uses the profile default when omitted.",
     )
 
 

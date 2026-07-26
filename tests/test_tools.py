@@ -3,7 +3,9 @@ import shlex
 import sys
 from pathlib import Path
 
-from agent.setup import create_read_only_registry, create_registry
+import pytest
+
+from agent.setup import AGENT_PROFILES, create_registry
 
 
 def test_glob_files_matches_files_by_pattern(tmp_path: Path) -> None:
@@ -719,22 +721,35 @@ def test_sub_agent_rejects_excessive_step_budget(tmp_path: Path) -> None:
     assert is_error is True
 
 
-def test_read_only_registry_excludes_mutating_and_recursive_tools(
+def test_read_only_profile_excludes_mutating_and_recursive_tools(
     tmp_path: Path,
 ) -> None:
-    registry = create_read_only_registry(tmp_path)
+    profile = AGENT_PROFILES["read_only_explorer"]
+    registry = create_registry(
+        tmp_path,
+        allowed_tools=profile.allowed_tools,
+        forbidden_tool_kinds=profile.forbidden_tool_kinds,
+    )
 
     assert set(registry.tools) == {
         "calculator",
         "read_file",
         "glob_files",
         "search_text",
-        "get_diff",
     }
     assert "edit_file" not in registry.tools
     assert "write_file" not in registry.tools
     assert "run_command" not in registry.tools
     assert "sub_agent" not in registry.tools
+
+
+def test_registry_rejects_forbidden_tool_kind(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="forbidden tool kinds.*edit_file"):
+        create_registry(
+            tmp_path,
+            allowed_tools=frozenset({"edit_file"}),
+            forbidden_tool_kinds=frozenset({"write"}),
+        )
 
 
 def test_get_diff_returns_no_changes_message(tmp_path: Path) -> None:

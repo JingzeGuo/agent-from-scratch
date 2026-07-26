@@ -537,7 +537,7 @@ def _normalize_subprocess_output(output: str | bytes | None) -> str:
 async def sub_agent(
     task: str,
     profile: Literal["read_only_explorer"] = "read_only_explorer",
-    max_steps: int = 6,
+    max_steps: int | None = None,
     *,
     parent_agent: Any | None = None,
     run_id: str | None = None,
@@ -554,12 +554,22 @@ async def sub_agent(
 
     from .agent import Agent
     from .schemas import SubAgentInput, TokenUsage
-    from .setup import create_read_only_registry
+    from .setup import AGENT_PROFILES, create_registry
+
+    profile_config = AGENT_PROFILES[profile]
+    effective_max_steps = (
+        profile_config.default_max_steps if max_steps is None else max_steps
+    )
+    if effective_max_steps > profile_config.max_steps_cap:
+        raise ValueError(
+            f"Profile '{profile}' allows at most "
+            f"{profile_config.max_steps_cap} steps."
+        )
 
     parsed_input = SubAgentInput(
         task=task,
         profile=profile,
-        max_steps=max_steps,
+        max_steps=effective_max_steps,
     )
     parent_agent._record_sub_agent_started(
         run_id=run_id,
@@ -570,11 +580,16 @@ async def sub_agent(
 
     child_agent = Agent(
         provider_adapter=parent_agent.provider_adapter,
-        registry=create_read_only_registry(parent_agent.registry.workspace_root),
+        registry=create_registry(
+            parent_agent.registry.workspace_root,
+            allowed_tools=profile_config.allowed_tools,
+            forbidden_tool_kinds=profile_config.forbidden_tool_kinds,
+        ),
         model=parent_agent.model,
         provider=parent_agent.provider,
-        max_steps=max_steps,
+        max_steps=effective_max_steps,
         stream_output=False,
+        system_prompt_suffix=profile_config.system_prompt_suffix,
     )
     child_run = await child_agent.run(task)
     parent_agent.token_tracker.add(

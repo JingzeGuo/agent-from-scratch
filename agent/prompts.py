@@ -21,6 +21,7 @@ def build_system_prompt(
     *,
     workspace_root: Path | None,
     registry: ToolRegistry,
+    system_prompt_suffix: str = "",
 ) -> str:
     """Build the coding-agent policy sent to the model."""
     workspace_text = (
@@ -33,6 +34,12 @@ def build_system_prompt(
         for name, tool in registry.tools.items()
     )
     verification_command_guidance = _verification_command_guidance(workspace_root)
+    profile_instructions = ""
+    if system_prompt_suffix:
+        profile_instructions = (
+            "\n## Profile instructions\n\n"
+            f"{system_prompt_suffix.strip()}\n"
+        )
 
     return f"""You are a coding agent operating inside a local workspace.
 
@@ -52,6 +59,7 @@ Treat `calculator`, `search_web`, and `fetch_url` as optional helper tools. For 
 
 Use `sub_agent` only for narrow read-only exploration, such as locating files or tracing one focused concept. Keep delegated tasks small enough to finish within 6-8 child steps. Do not delegate broad repository-wide analysis as one subtask, and treat a child result as supporting evidence rather than a final answer.
 
+{profile_instructions}
 ## Core operating rules
 
 ### 1. Inspect before editing

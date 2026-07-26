@@ -255,8 +255,8 @@ values are rejected unless `allowExternalCwd` is set to `true`.
 `sub_agent` is a delegated tool rather than a normal file or command helper.
 When the main controller executes it, the tool creates an isolated child agent
 with a fresh conversation, the same provider adapter, and a read-only registry
-containing `calculator`, `read_file`, `glob_files`, `search_text`, and
-`get_diff`. The child agent cannot edit files, run commands, use network tools,
+containing `calculator`, `read_file`, `glob_files`, and `search_text`. The
+child agent cannot edit files, run commands, use network tools,
 or recursively spawn another sub-agent.
 
 ## Python API

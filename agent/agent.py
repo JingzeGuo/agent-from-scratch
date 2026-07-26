@@ -71,6 +71,7 @@ class Agent:
         max_steps: int = 10,
         stream_output: bool = True,
         approval_callback: ApprovalCallback | None = None,
+        system_prompt_suffix: str = "",
     ) -> None:
         self.provider_adapter = provider_adapter
         self.registry = registry
@@ -79,6 +80,7 @@ class Agent:
         self.max_steps = max_steps
         self.stream_output = stream_output
         self.approval_callback = approval_callback
+        self.system_prompt_suffix = system_prompt_suffix
         self.messages: list[dict[str, Any]] = []
         self.steps: list[AgentStep] = []
         self.completed_runs: list[AgentRun] = []
@@ -90,6 +92,7 @@ class Agent:
         self.system_prompt = build_system_prompt(
             workspace_root=registry.workspace_root,
             registry=registry,
+            system_prompt_suffix=system_prompt_suffix,
         )
         self._validate_provider_capabilities(provider_adapter)
 
@@ -184,6 +187,7 @@ class Agent:
         self.system_prompt = build_system_prompt(
             workspace_root=self.registry.workspace_root,
             registry=self.registry,
+            system_prompt_suffix=self.system_prompt_suffix,
         )
 
     async def run(self, user_task: str) -> AgentRun:
