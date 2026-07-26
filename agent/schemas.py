@@ -10,17 +10,6 @@ RunOutcome = Literal[
     "refused",
     "protocol_error",
 ]
-ToolKind = Literal[
-    "pure",
-    "read_only",
-    "write",
-    "command",
-    "network",
-    "delegated",
-    "mcp",
-]
-
-
 class CalculatorInput(BaseModel):
     """Input schema for the calculator tool."""
 
@@ -199,7 +188,6 @@ class ToolDefinition(BaseModel):
     name: str
     description: str
     input_schema: dict[str, Any]
-    kind: ToolKind = "read_only"
 
 
 class ToolResult(BaseModel):

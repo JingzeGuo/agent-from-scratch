@@ -294,7 +294,6 @@ def create_command_registry(workspace_root: Path) -> ToolRegistry:
             description="Run a bounded command.",
             input_schema=RunCommandInput,
             fn=partial(run_command, workspace_root=workspace_root),
-            kind="command",
         )
     )
     return registry

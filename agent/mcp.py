@@ -439,7 +439,6 @@ def register_mcp_tool(
             description=description,
             input_schema=MCP_INPUT_MODEL,
             fn=call_mcp_tool,
-            kind="mcp",
             definition_input_schema=definition_input_schema,
             approval_policy=_mcp_approval_policy(config, tool_info.name),
         )

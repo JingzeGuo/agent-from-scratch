@@ -166,20 +166,20 @@ Interactive sessions support slash commands:
 
 The default registry exposes these tools to the model:
 
-| Tool | Kind | Purpose |
-| --- | --- | --- |
-| `calculator` | pure | Safely evaluate a mathematical expression |
-| `read_file` | read-only | Read a workspace file with line offset and limit |
-| `glob_files` | read-only | Find workspace files with a glob pattern |
-| `search_text` | read-only | Search workspace files with a Python regular expression |
-| `edit_file` | write | Replace one exact text match and return a unified diff |
-| `write_file` | write | Create or intentionally overwrite a file and return a unified diff |
-| `get_diff` | read-only | Return diffs for files changed in the session |
-| `run_command` | command | Run a bounded command inside the workspace |
-| `sub_agent` | delegated | Delegate bounded read-only repository exploration |
-| `fetch_url` | network | Fetch URL content |
-| `search_web` | network | Search the web when `TAVILY_API_KEY` is configured |
-| `mcp_<server>__<tool>` | mcp | Call tools discovered from configured stdio MCP servers |
+| Tool | Purpose |
+| --- | --- |
+| `calculator` | Safely evaluate a mathematical expression |
+| `read_file` | Read a workspace file with line offset and limit |
+| `glob_files` | Find workspace files with a glob pattern |
+| `search_text` | Search workspace files with a Python regular expression |
+| `edit_file` | Replace one exact text match and return a unified diff |
+| `write_file` | Create or intentionally overwrite a file and return a unified diff |
+| `get_diff` | Return diffs for files changed in the session |
+| `run_command` | Run a bounded command inside the workspace |
+| `sub_agent` | Delegate bounded read-only repository exploration |
+| `fetch_url` | Fetch URL content |
+| `search_web` | Search the web when `TAVILY_API_KEY` is configured |
+| `mcp_<server>__<tool>` | Call tools discovered from configured stdio MCP servers |
 
 All tool inputs are validated with Pydantic before execution. Validation
 failures are returned to the model as error observations so the agent can
@@ -298,14 +298,13 @@ registry.register(
         description="Return the provided text.",
         input_schema=EchoInput,
         fn=echo,
-        kind="pure",
     )
 )
 ```
 
-Custom tools should keep inputs structured, return bounded text observations,
-and use the narrowest accurate `kind`: `pure`, `read_only`, `write`, `command`,
-`network`, or `delegated`.
+Custom tools should keep inputs structured and return bounded text observations.
+Control availability through explicit registry allowlists and risky operations
+through approval policies.
 
 ## Architecture
 

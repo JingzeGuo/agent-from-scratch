@@ -583,7 +583,6 @@ async def sub_agent(
         registry=create_registry(
             parent_agent.registry.workspace_root,
             allowed_tools=profile_config.allowed_tools,
-            forbidden_tool_kinds=profile_config.forbidden_tool_kinds,
         ),
         model=parent_agent.model,
         provider=parent_agent.provider,

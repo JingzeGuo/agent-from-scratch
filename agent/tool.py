@@ -8,7 +8,7 @@ from typing import Any
 from pydantic import BaseModel, ValidationError
 
 from .retry import is_transient_error, retry
-from .schemas import ToolDefinition, ToolKind
+from .schemas import ToolDefinition
 from .security import ToolApprovalPolicy
 
 
@@ -18,7 +18,6 @@ class Tool:
     description: str
     input_schema: type[BaseModel]
     fn: Callable[..., Any]
-    kind: ToolKind = "read_only"
     definition_input_schema: dict[str, Any] | None = None
     approval_policy: ToolApprovalPolicy | None = None
 
@@ -33,7 +32,6 @@ class Tool:
             name=self.name,
             description=self.description,
             input_schema=json_schema,
-            kind=self.kind,
         )
 
     @retry(max_attempts=3, backoff=2)

@@ -3,8 +3,6 @@ import shlex
 import sys
 from pathlib import Path
 
-import pytest
-
 from agent.setup import AGENT_PROFILES, create_registry
 
 
@@ -656,12 +654,6 @@ def test_sub_agent_is_registered_with_read_only_profile(tmp_path: Path) -> None:
     definitions = {tool.name: tool for tool in registry.to_tool_definitions()}
 
     assert "sub_agent" in definitions
-    assert definitions["calculator"].kind == "pure"
-    assert definitions["read_file"].kind == "read_only"
-    assert definitions["edit_file"].kind == "write"
-    assert definitions["run_command"].kind == "command"
-    assert definitions["sub_agent"].kind == "delegated"
-    assert definitions["fetch_url"].kind == "network"
     assert definitions["sub_agent"].input_schema["properties"]["profile"] == {
         "const": "read_only_explorer",
         "default": "read_only_explorer",
@@ -728,7 +720,6 @@ def test_read_only_profile_excludes_mutating_and_recursive_tools(
     registry = create_registry(
         tmp_path,
         allowed_tools=profile.allowed_tools,
-        forbidden_tool_kinds=profile.forbidden_tool_kinds,
     )
 
     assert set(registry.tools) == {
@@ -741,17 +732,6 @@ def test_read_only_profile_excludes_mutating_and_recursive_tools(
     assert "write_file" not in registry.tools
     assert "run_command" not in registry.tools
     assert "sub_agent" not in registry.tools
-
-
-def test_registry_rejects_forbidden_tool_kind(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="forbidden tool kinds.*edit_file"):
-        create_registry(
-            tmp_path,
-            allowed_tools=frozenset({"edit_file"}),
-            forbidden_tool_kinds=frozenset({"write"}),
-        )
-
-
 def test_get_diff_returns_no_changes_message(tmp_path: Path) -> None:
     registry = create_registry(tmp_path)
 

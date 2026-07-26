@@ -96,7 +96,6 @@ def test_load_mcp_tools_registers_stdio_server_tools(tmp_path: Path) -> None:
                 for definition in registry.to_tool_definitions()
             }
             definition = definitions["mcp_demo__echo"]
-            assert definition.kind == "mcp"
             assert definition.description == (
                 "Echo text. (MCP server `demo`, tool `echo`.)"
             )
