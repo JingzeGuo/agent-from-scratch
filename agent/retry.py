@@ -1,5 +1,6 @@
+import asyncio
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from functools import wraps
 from typing import ParamSpec, TypeVar
 
@@ -20,14 +21,18 @@ def is_transient_error(error: Exception) -> bool:
     )
 
 
-def retry(
-    max_attempts: int = 3,
-    backoff: float = 2.0,
-) -> Callable[[Callable[P, R]], Callable[P, R]]:
+def _validate_retry_config(max_attempts: int, backoff: float) -> None:
     if max_attempts < 1:
         raise ValueError("max_attempts must be at least 1")
     if backoff < 1:
         raise ValueError("backoff must be at least 1")
+
+
+def retry(
+    max_attempts: int = 3,
+    backoff: float = 2.0,
+) -> Callable[[Callable[P, R]], Callable[P, R]]:
+    _validate_retry_config(max_attempts, backoff)
 
     def decorator(func: Callable[P, R]) -> Callable[P, R]:
         @wraps(func)
@@ -43,6 +48,40 @@ def retry(
                     if not is_transient_error(e):
                         raise
                     time.sleep(wait_time)
+                    wait_time *= backoff
+
+            raise RuntimeError("Retry loop ended unexpectedly")
+
+        return wrapper
+
+    return decorator
+
+
+def retry_async(
+    max_attempts: int = 3,
+    backoff: float = 2.0,
+) -> Callable[
+    [Callable[P, Awaitable[R]]],
+    Callable[P, Awaitable[R]],
+]:
+    _validate_retry_config(max_attempts, backoff)
+
+    def decorator(
+        func: Callable[P, Awaitable[R]],
+    ) -> Callable[P, Awaitable[R]]:
+        @wraps(func)
+        async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+            wait_time = 1.0
+
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    return await func(*args, **kwargs)
+                except Exception as e:
+                    if attempt == max_attempts:
+                        raise
+                    if not is_transient_error(e):
+                        raise
+                    await asyncio.sleep(wait_time)
                     wait_time *= backoff
 
             raise RuntimeError("Retry loop ended unexpectedly")

@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
-from .retry import is_transient_error, retry
+from .retry import retry, retry_async
 from .schemas import ToolDefinition
 from .security import ToolApprovalPolicy
 
@@ -45,6 +45,7 @@ class Tool:
             kwargs.update(extra_kwargs)
         return self.fn(**kwargs)
 
+    @retry_async(max_attempts=3, backoff=2)
     async def _run_async(
         self,
         parsed_input: BaseModel,
@@ -54,20 +55,10 @@ class Tool:
         if extra_kwargs is not None:
             kwargs.update(extra_kwargs)
 
-        wait_time = 1.0
-        for attempt in range(1, 4):
-            try:
-                result = self.fn(**kwargs)
-                if inspect.isawaitable(result):
-                    return await result
-                return result
-            except Exception as e:
-                if attempt == 3 or not is_transient_error(e):
-                    raise
-                await asyncio.sleep(wait_time)
-                wait_time *= 2
-
-        raise RuntimeError("Retry loop ended unexpectedly")
+        result = self.fn(**kwargs)
+        if inspect.isawaitable(result):
+            return await result
+        return result
 
     def execute(
         self,
