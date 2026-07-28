@@ -23,6 +23,7 @@ COMMANDS = {
     "/trace": "Show or export structured trace events.",
     "/rename": "Rename the current session.",
     "/sessions": "List saved sessions.",
+    "/paste": "Start multiline prompt entry.",
     "/exit": "Exit the application.",
 }
 

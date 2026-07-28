@@ -117,6 +117,20 @@ agent
 The current working directory becomes the agent workspace. File and command
 tools are confined to that workspace.
 
+For a multiline prompt, start paste mode and finish with `/send` on its own
+line. Use `/cancel` to discard the draft:
+
+```text
+/paste
+Fix the login flow.
+
+Requirements:
+- Preserve the existing API.
+- Add focused tests.
+- Run the relevant pytest target.
+/send
+```
+
 Resume a saved session by id or session name:
 
 ```bash
@@ -160,6 +174,7 @@ Interactive sessions support slash commands:
 | `/trace <path>` | Export trace events to a workspace-relative file |
 | `/rename <session-name>` | Rename the current session |
 | `/sessions` | List saved sessions |
+| `/paste` | Start multiline prompt entry; finish with `/send` or discard with `/cancel` |
 | `/exit` | Exit the application |
 
 ## Tools

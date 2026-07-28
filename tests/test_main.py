@@ -164,6 +164,7 @@ def test_help_lists_available_commands(
         "  /trace    Show or export structured trace events.\n"
         "  /rename   Rename the current session.\n"
         "  /sessions List saved sessions.\n"
+        "  /paste    Start multiline prompt entry.\n"
         "  /exit     Exit the application.\n"
     )
 
@@ -546,6 +547,106 @@ def test_run_cli_executes_interactive_task(
     assert capsys.readouterr().out == "\nAssistant: done\nGoodbye.\n"
 
 
+def test_run_cli_submits_multiline_prompt_as_one_task(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fake_agent = FakeRunAgent()
+    inputs = iter(
+        [
+            "/paste",
+            "Fix the login flow.",
+            "",
+            "/help",
+            "Run the focused tests.",
+            "/send",
+            "/exit",
+        ]
+    )
+
+    monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
+
+    asyncio.run(run_cli(cast(Agent, fake_agent)))
+
+    assert fake_agent.tasks == [
+        "Fix the login flow.\n\n/help\nRun the focused tests."
+    ]
+    assert capsys.readouterr().out == (
+        "Paste mode: type /send on its own line to submit "
+        "or /cancel to discard.\n"
+        "\nAssistant: done\n"
+        "Goodbye.\n"
+    )
+
+
+def test_run_cli_cancels_multiline_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fake_agent = FakeRunAgent()
+    inputs = iter(["/paste", "Discard this task.", "/cancel", "/exit"])
+
+    monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
+
+    asyncio.run(run_cli(cast(Agent, fake_agent)))
+
+    assert fake_agent.tasks == []
+    assert "Multiline prompt canceled.\n" in capsys.readouterr().out
+
+
+def test_run_cli_rejects_empty_multiline_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fake_agent = FakeRunAgent()
+    inputs = iter(["/paste", "", "/send", "/exit"])
+
+    monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
+
+    asyncio.run(run_cli(cast(Agent, fake_agent)))
+
+    assert fake_agent.tasks == []
+    assert "Task cannot be empty.\n" in capsys.readouterr().out
+
+
+def test_run_cli_cancels_multiline_prompt_on_keyboard_interrupt(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fake_agent = FakeRunAgent()
+    inputs: list[str | BaseException] = ["/paste", KeyboardInterrupt(), "/exit"]
+
+    def fake_input(prompt: str) -> str:
+        value = inputs.pop(0)
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    asyncio.run(run_cli(cast(Agent, fake_agent)))
+
+    assert fake_agent.tasks == []
+    assert "\nMultiline prompt canceled.\n" in capsys.readouterr().out
+
+
+def test_run_cli_exits_cleanly_on_eof(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fake_agent = FakeRunAgent()
+
+    def raise_eof(prompt: str) -> str:
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", raise_eof)
+
+    asyncio.run(run_cli(cast(Agent, fake_agent)))
+
+    assert fake_agent.tasks == []
+    assert capsys.readouterr().out == "Goodbye.\n"
+
+
 def test_run_cli_reports_provider_failure_without_traceback(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -599,6 +700,31 @@ def test_run_cli_checkpoints_interactive_task(
         "Checkpoint saved: session-one\n"
         "Goodbye.\n"
     )
+
+
+def test_run_cli_checkpoints_multiline_prompt_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_agent = FakeCheckpointAgent()
+    session_store = SessionStore(tmp_path / "sessions")
+    session_state = CliSessionState(session_id="session-multiline")
+    inputs = iter(["/paste", "First line.", "Second line.", "/send", "/exit"])
+
+    monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
+
+    asyncio.run(
+        run_cli(
+            cast(Agent, fake_agent),
+            session_store,
+            session_state,
+        )
+    )
+
+    events = session_store.read_events("session-multiline")
+    assert fake_agent.tasks == ["First line.\nSecond line."]
+    assert fake_agent.snapshots == [("session-multiline", None)]
+    assert [event.event_type for event in events] == ["checkpoint_saved"]
 
 
 def test_checkpoint_session_does_nothing_without_store_or_state() -> None:

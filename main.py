@@ -65,6 +65,11 @@ class CliArgs(BaseModel):
     show_version: bool = False
 
 
+class CliInputResult(BaseModel):
+    task: str | None = None
+    should_exit: bool = False
+
+
 def parse_cli_args(argv: Sequence[str]) -> CliArgs:
     resume_session_id: str | None = None
     api_key: str | None = None
@@ -265,14 +270,55 @@ def generate_session_id() -> str:
     return datetime.now().strftime("session-%Y%m%d-%H%M%S-%f")
 
 
+def read_user_task() -> CliInputResult:
+    try:
+        first_line = input("\nYou: ")
+    except EOFError:
+        return CliInputResult(should_exit=True)
+    except KeyboardInterrupt:
+        print("\nInput canceled.")
+        return CliInputResult()
+
+    if first_line.strip() != "/paste":
+        return CliInputResult(task=first_line.strip())
+
+    print(
+        "Paste mode: type /send on its own line to submit "
+        "or /cancel to discard."
+    )
+    lines: list[str] = []
+    while True:
+        try:
+            line = input("... ")
+        except EOFError:
+            print("\nMultiline prompt canceled.")
+            return CliInputResult(should_exit=True)
+        except KeyboardInterrupt:
+            print("\nMultiline prompt canceled.")
+            return CliInputResult()
+
+        if line == "/send":
+            return CliInputResult(task="\n".join(lines))
+        if line == "/cancel":
+            print("Multiline prompt canceled.")
+            return CliInputResult()
+        lines.append(line)
+
+
 async def run_cli(
     agent: Agent,
     session_store: SessionStore | None = None,
     session_state: CliSessionState | None = None,
 ) -> None:
     while True:
-        user_task = input("\nYou: ").strip()
-        if not user_task:
+        user_input = read_user_task()
+        if user_input.should_exit:
+            print("Goodbye.")
+            return
+        user_task = user_input.task
+        if user_task is None:
+            continue
+        if not user_task.strip():
             print("Task cannot be empty.")
             continue
         if user_task.startswith("/"):
