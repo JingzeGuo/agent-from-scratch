@@ -1,8 +1,8 @@
 import asyncio
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from functools import wraps
-from typing import ParamSpec, TypeVar
+from typing import Any, ParamSpec, TypeVar
 
 import httpx
 
@@ -62,13 +62,13 @@ def retry_async(
     backoff: float = 2.0,
 ) -> Callable[
     [Callable[P, Awaitable[R]]],
-    Callable[P, Awaitable[R]],
+    Callable[P, Coroutine[Any, Any, R]],
 ]:
     _validate_retry_config(max_attempts, backoff)
 
     def decorator(
         func: Callable[P, Awaitable[R]],
-    ) -> Callable[P, Awaitable[R]]:
+    ) -> Callable[P, Coroutine[Any, Any, R]]:
         @wraps(func)
         async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
             wait_time = 1.0
