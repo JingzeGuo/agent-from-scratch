@@ -198,7 +198,7 @@ def test_prompt_tool_approval_accepts_yes(
     assert "Command: python -c" in output
 
 
-def test_prompt_tool_approval_rejects_default(
+def test_prompt_tool_approval_accepts_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     tool_call = ToolCall(
@@ -208,6 +208,22 @@ def test_prompt_tool_approval_rejects_default(
     )
     policy = classify_command("python -c \"print('ok')\"")
     monkeypatch.setattr("builtins.input", lambda prompt: "")
+
+    approved = prompt_tool_approval(tool_call, policy)
+
+    assert approved is True
+
+
+def test_prompt_tool_approval_rejects_no(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool_call = ToolCall(
+        name="run_command",
+        input={"command": "python -c \"print('ok')\""},
+        tool_use_id="toolu_command",
+    )
+    policy = classify_command("python -c \"print('ok')\"")
+    monkeypatch.setattr("builtins.input", lambda prompt: "no")
 
     approved = prompt_tool_approval(tool_call, policy)
 
@@ -873,7 +889,7 @@ def test_status_command_shows_current_agent_state(
         f"  Agent state: {(tmp_path / 'sessions').parent.as_posix()}\n"
         "  Provider: anthropic\n"
         "  Model: claude-haiku-4-5\n"
-        "  Max steps: 10\n"
+        "  Max steps: 40\n"
         "  Messages: 1\n"
         "  Completed runs: 1\n"
         "  Files read: 1\n"
@@ -903,6 +919,7 @@ def test_reset_command_clears_conversation_context_only(
     changed_file = tmp_path / "tests.py"
     agent.messages.append({"role": "user", "content": "Previous task"})
     agent.steps.append(AgentStep(step_number=1, stop_reason="end_turn"))
+    agent._approved_commands.add("approved-command")
     completed_run = AgentRun(
         objective="Previous task",
         steps=[],
@@ -921,6 +938,7 @@ def test_reset_command_clears_conversation_context_only(
     assert should_exit is False
     assert agent.messages == []
     assert agent.steps == []
+    assert agent._approved_commands == set()
     assert agent.completed_runs == [completed_run]
     assert agent.registry.read_files == {read_file}
     assert agent.registry.changed_files == {changed_file}

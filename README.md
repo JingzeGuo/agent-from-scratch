@@ -469,6 +469,9 @@ contract.
   `shutdown`, and `git reset --hard` are blocked.
 - Broad commands such as `git`, `pip`, `python`, `uv`, `curl`, and `wget`
   require approval unless they match the safe command policy.
+- Pressing Enter accepts an interactive approval. An approved `run_command`
+  with the same arguments and working directory is reused until `/reset` or
+  the process exits.
 - External MCP tools are mapped into the same approval system and are not
   automatically trusted.
 - MCP server `cwd` is workspace-confined by default; external absolute working

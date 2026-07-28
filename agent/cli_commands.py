@@ -97,8 +97,13 @@ def prompt_tool_approval(
         print(f"  Command: {raw_command}")
     else:
         print(f"  Input: {_format_tool_approval_input(tool_call.input)}")
-    answer = input("Approve tool? [y/N]: ").strip().lower()
-    return answer in {"y", "yes"}
+    while True:
+        answer = input("Approve tool? [Y/n]: ").strip().lower()
+        if answer in {"", "y", "yes"}:
+            return True
+        if answer in {"n", "no"}:
+            return False
+        print("Please answer y or n.")
 
 
 def _format_tool_approval_input(tool_input: dict[str, object]) -> str:
@@ -217,6 +222,7 @@ def handle_command(
 
         agent.messages.clear()
         agent.steps.clear()
+        agent.clear_approval_cache()
         print("Conversation context reset.")
         return False
     if command == "/save":

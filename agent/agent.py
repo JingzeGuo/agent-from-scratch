@@ -32,6 +32,7 @@ from .workspace import resolve_workspace_path
 
 TRACE_PREVIEW_CHARS = 500
 SUB_AGENT_RESULT_CHARS = 4_000
+DEFAULT_MAX_STEPS = 40
 PARALLEL_READ_ONLY_TOOLS = {
     "calculator",
     "read_file",
@@ -68,7 +69,7 @@ class Agent:
         registry: ToolRegistry,
         model: str | None = None,
         provider: str | None = None,
-        max_steps: int = 10,
+        max_steps: int = DEFAULT_MAX_STEPS,
         stream_output: bool = True,
         approval_callback: ApprovalCallback | None = None,
         system_prompt_suffix: str = "",
@@ -80,6 +81,7 @@ class Agent:
         self.max_steps = max_steps
         self.stream_output = stream_output
         self.approval_callback = approval_callback
+        self._approved_commands: set[str] = set()
         self.system_prompt_suffix = system_prompt_suffix
         self.messages: list[dict[str, Any]] = []
         self.steps: list[AgentStep] = []
@@ -123,6 +125,9 @@ class Agent:
         approval_callback: ApprovalCallback | None,
     ) -> None:
         self.approval_callback = approval_callback
+
+    def clear_approval_cache(self) -> None:
+        self._approved_commands.clear()
 
     def configure_memory(
         self,
@@ -184,6 +189,7 @@ class Agent:
         self.token_tracker.input_tokens = snapshot.input_tokens
         self.token_tracker.output_tokens = snapshot.output_tokens
         self.token_tracker._estimated_cost = snapshot.estimated_cost
+        self.clear_approval_cache()
         self.system_prompt = build_system_prompt(
             workspace_root=self.registry.workspace_root,
             registry=self.registry,
@@ -624,12 +630,17 @@ class Agent:
     ) -> ToolResult:
         approval = self._required_approval(tool_call)
         if approval is not None:
-            approved = self._request_tool_approval(
-                run_id=run_id,
-                step_number=step_number,
-                tool_call=tool_call,
-                policy=approval,
-            )
+            cache_key = self._approval_cache_key(tool_call, approval)
+            approved = cache_key in self._approved_commands if cache_key else False
+            if not approved:
+                approved = self._request_tool_approval(
+                    run_id=run_id,
+                    step_number=step_number,
+                    tool_call=tool_call,
+                    policy=approval,
+                )
+                if approved and cache_key is not None:
+                    self._approved_commands.add(cache_key)
             if not approved:
                 output = self._format_approval_denied(tool_call, approval)
                 self._record_tool_finished(
@@ -824,6 +835,22 @@ class Agent:
         if tool.approval_policy.decision != "requires_approval":
             return None
         return tool.approval_policy
+
+    def _approval_cache_key(
+        self,
+        tool_call: ToolCall,
+        policy: ToolApprovalPolicy,
+    ) -> str | None:
+        if tool_call.name != "run_command":
+            return None
+        cwd = tool_call.input.get("cwd")
+        if cwd is not None and not isinstance(cwd, str):
+            return None
+        return json.dumps(
+            [tool_call.name, policy.args, cwd],
+            ensure_ascii=True,
+            separators=(",", ":"),
+        )
 
     def _request_tool_approval(
         self,

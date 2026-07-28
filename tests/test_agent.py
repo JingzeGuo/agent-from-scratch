@@ -50,6 +50,7 @@ from agent.schemas import (
     ToolResult,
     VerificationEvidence,
 )
+from agent.security import ToolApprovalPolicy
 from agent.session import SessionStore
 from agent.setup import create_registry as create_workspace_registry
 from agent.tool import Tool
@@ -932,6 +933,100 @@ def test_agent_runs_approved_command_requiring_approval(tmp_path: Path) -> None:
         if event.event_type.startswith("tool_approval")
     ] == ["tool_approval_requested", "tool_approval_granted"]
     assert "tool_started" in [event.event_type for event in events]
+
+
+def test_agent_reuses_approval_for_same_command(tmp_path: Path) -> None:
+    command = f"{shlex.quote(sys.executable)} -c \"print('approved')\""
+    registry = create_command_registry(tmp_path)
+    responses = [
+        make_message(
+            content=[
+                ToolUseBlock(
+                    id="toolu_command_one",
+                    name="run_command",
+                    input={"command": command},
+                    type="tool_use",
+                )
+            ],
+            stop_reason="tool_use",
+        ),
+        make_message(
+            content=[
+                ToolUseBlock(
+                    id="toolu_command_two",
+                    name="run_command",
+                    input={"command": command},
+                    type="tool_use",
+                )
+            ],
+            stop_reason="tool_use",
+        ),
+        make_message(
+            content=[TextBlock(text="Commands ran.", type="text")],
+            stop_reason="end_turn",
+        ),
+    ]
+    agent, _ = create_agent(responses, registry=registry)
+    approval_requests = 0
+
+    def approve(tool_call: ToolCall, policy: ToolApprovalPolicy) -> bool:
+        nonlocal approval_requests
+        approval_requests += 1
+        return True
+
+    agent.configure_approval_callback(approve)
+
+    agent_run = asyncio.run(agent.run("Run the same approved command twice"))
+
+    assert approval_requests == 1
+    assert all(not result.is_error for step in agent_run.steps for result in step.tool_results)
+
+
+def test_agent_requests_approval_again_for_different_cwd(tmp_path: Path) -> None:
+    command = f"{shlex.quote(sys.executable)} -c \"print('approved')\""
+    (tmp_path / "nested").mkdir()
+    registry = create_command_registry(tmp_path)
+    responses = [
+        make_message(
+            content=[
+                ToolUseBlock(
+                    id="toolu_command_root",
+                    name="run_command",
+                    input={"command": command},
+                    type="tool_use",
+                )
+            ],
+            stop_reason="tool_use",
+        ),
+        make_message(
+            content=[
+                ToolUseBlock(
+                    id="toolu_command_nested",
+                    name="run_command",
+                    input={"command": command, "cwd": "nested"},
+                    type="tool_use",
+                )
+            ],
+            stop_reason="tool_use",
+        ),
+        make_message(
+            content=[TextBlock(text="Commands ran.", type="text")],
+            stop_reason="end_turn",
+        ),
+    ]
+    agent, _ = create_agent(responses, registry=registry)
+    approval_requests = 0
+
+    def approve(tool_call: ToolCall, policy: ToolApprovalPolicy) -> bool:
+        nonlocal approval_requests
+        approval_requests += 1
+        return True
+
+    agent.configure_approval_callback(approve)
+
+    asyncio.run(agent.run("Run approved commands in two directories"))
+
+    assert approval_requests == 2
 
 
 def test_agent_denies_command_requiring_approval_by_default(tmp_path: Path) -> None:
