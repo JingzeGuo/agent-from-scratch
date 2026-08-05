@@ -24,10 +24,10 @@ from agent.cli_commands import (
 from agent.mcp import McpError, McpToolManager, load_mcp_tools_from_env
 from agent.memory import MemoryStore, MemorySystem
 from agent.provider import (
+    DeepSeekProvider,
     ProviderRequestError,
-    create_provider_adapter,
     format_provider_request_error,
-    load_provider_config,
+    load_deepseek_config,
 )
 from agent.schemas import SessionEvent
 from agent.session import SessionStore, utc_timestamp
@@ -377,7 +377,7 @@ async def main(argv: Sequence[str] | None = None) -> None:
     session_store = SessionStore(default_sessions_dir(workspace_root))
     mcp_manager = McpToolManager()
     try:
-        config = load_provider_config(api_key=cli_args.api_key)
+        config = load_deepseek_config(api_key=cli_args.api_key)
     except ValueError as error:
         print_configuration_error(error)
         return
@@ -390,26 +390,18 @@ async def main(argv: Sequence[str] | None = None) -> None:
             print_mcp_error(error)
             return
         agent = Agent(
-            provider_adapter=create_provider_adapter(config),
+            provider_adapter=DeepSeekProvider(
+                model=config.model,
+                api_key=config.api_key,
+                base_url=config.base_url,
+            ),
             registry=registry,
-            model=config.model,
-            provider=config.provider,
         )
         agent.configure_memory(create_memory_system(workspace_root))
         agent.configure_approval_callback(prompt_tool_approval)
         session_state = CliSessionState(session_id=generate_session_id())
         if cli_args.resume_session_id is not None:
             snapshot = session_store.find(cli_args.resume_session_id)
-            try:
-                resumed_config = load_provider_config(
-                    provider=snapshot.provider,
-                    model=snapshot.model,
-                    api_key=cli_args.api_key,
-                )
-            except ValueError as error:
-                print_configuration_error(error)
-                return
-            agent.switch_provider(create_provider_adapter(resumed_config))
             agent.restore_snapshot(snapshot)
             session_state = CliSessionState(
                 session_id=snapshot.session_id,

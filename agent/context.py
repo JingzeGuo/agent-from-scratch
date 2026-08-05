@@ -1,7 +1,5 @@
 from copy import deepcopy
-from typing import Literal, cast
-
-from anthropic.types import MessageParam
+from typing import Any, Literal, cast
 
 from .memory import MemoryContext
 from .schemas import (
@@ -18,6 +16,7 @@ from .verification import extract_verification_evidence
 
 OMITTED_TOOL_RESULT_TEMPLATE = "[Older tool result omitted: {char_count} chars]"
 CONTEXT_CHECKPOINT_HEADER = "[Structured context checkpoint]"
+Message = dict[str, Any]
 
 
 class ContextBuilder:
@@ -39,14 +38,14 @@ class ContextBuilder:
 
     def build(
         self,
-        messages: list[MessageParam],
+        messages: list[Message],
         steps: list[AgentStep] | None = None,
         objective: str | None = None,
         pending_action: PendingAction | None = None,
         memory_context: MemoryContext | None = None,
-    ) -> list[MessageParam]:
+    ) -> list[Message]:
         return cast(
-            list[MessageParam],
+            list[Message],
             self.build_with_metadata(
                 messages,
                 steps=steps,
@@ -58,21 +57,21 @@ class ContextBuilder:
 
     def build_with_metadata(
         self,
-        messages: list[MessageParam],
+        messages: list[Message],
         steps: list[AgentStep] | None = None,
         objective: str | None = None,
         pending_action: PendingAction | None = None,
         memory_context: MemoryContext | None = None,
     ) -> ContextBuildResult:
         original_context_chars = self._context_chars(messages)
-        context = cast(list[MessageParam], deepcopy(messages))
+        context = cast(list[Message], deepcopy(messages))
         older_message_count = max(0, len(context) - self.recent_message_count)
 
         snipped_tool_results = 0
         for message in context[:older_message_count]:
             snipped_tool_results += self._snip_large_tool_results(message)
 
-        prefix_messages: list[MessageParam] = []
+        prefix_messages: list[Message] = []
         if steps:
             prefix_messages.append(
                 self._checkpoint_message(
@@ -172,7 +171,7 @@ class ContextBuilder:
             latest_verification=extract_verification_evidence(steps),
         )
 
-    def _snip_large_tool_results(self, message: MessageParam) -> int:
+    def _snip_large_tool_results(self, message: Message) -> int:
         content = message.get("content")
         if not isinstance(content, list):
             return 0
@@ -198,14 +197,14 @@ class ContextBuilder:
 
     def _collapse_context(
         self,
-        prefix_messages: list[MessageParam],
-        messages: list[MessageParam],
-    ) -> list[MessageParam]:
+        prefix_messages: list[Message],
+        messages: list[Message],
+    ) -> list[Message]:
         recent_start = self._recent_complete_turn_start(messages)
         recent_start = self._expand_to_tool_boundary(messages, recent_start)
         return [*prefix_messages, *messages[recent_start:]]
 
-    def _recent_complete_turn_start(self, messages: list[MessageParam]) -> int:
+    def _recent_complete_turn_start(self, messages: list[Message]) -> int:
         turn_starts = [
             index
             for index, message in enumerate(messages)
@@ -217,12 +216,12 @@ class ContextBuilder:
             return turn_starts[0]
         return turn_starts[-self.collapse_recent_turn_count]
 
-    def _message_is_user_text_turn(self, message: MessageParam) -> bool:
+    def _message_is_user_text_turn(self, message: Message) -> bool:
         return message.get("role") == "user" and isinstance(message.get("content"), str)
 
     def _expand_to_tool_boundary(
         self,
-        messages: list[MessageParam],
+        messages: list[Message],
         recent_start: int,
     ) -> int:
         if recent_start <= 0 or recent_start >= len(messages):
@@ -233,7 +232,7 @@ class ContextBuilder:
             return recent_start - 1
         return recent_start
 
-    def _message_has_tool_result(self, message: MessageParam) -> bool:
+    def _message_has_tool_result(self, message: Message) -> bool:
         content = message.get("content")
         if not isinstance(content, list):
             return False
@@ -242,7 +241,7 @@ class ContextBuilder:
             for block in content
         )
 
-    def _message_has_tool_use(self, message: MessageParam) -> bool:
+    def _message_has_tool_use(self, message: Message) -> bool:
         content = message.get("content")
         if not isinstance(content, list):
             return False
@@ -251,16 +250,16 @@ class ContextBuilder:
             for block in content
         )
 
-    def _context_chars(self, messages: list[MessageParam]) -> int:
+    def _context_chars(self, messages: list[Message]) -> int:
         return sum(len(str(message.get("content", ""))) for message in messages)
 
-    def _checkpoint_message(self, checkpoint: ContextCheckpoint) -> MessageParam:
+    def _checkpoint_message(self, checkpoint: ContextCheckpoint) -> Message:
         return {
             "role": "user",
             "content": self._format_checkpoint(checkpoint),
         }
 
-    def _memory_message(self, memory_context: MemoryContext) -> MessageParam:
+    def _memory_message(self, memory_context: MemoryContext) -> Message:
         return {
             "role": "user",
             "content": memory_context.format_for_prompt(),

@@ -5,7 +5,7 @@ description = "A small terminal coding agent built from scratch."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "anthropic>=0.103.1",
+    "httpx>=0.28.1",
     "jsonschema>=4.26.0",
     "pydantic>=2.13.4",
     "python-dotenv>=1.2.2",

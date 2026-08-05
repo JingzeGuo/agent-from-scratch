@@ -1,10 +1,10 @@
 from typing import Any, cast
 
-from anthropic.types import MessageParam
-
-from agent.context import OMITTED_TOOL_RESULT_TEMPLATE, ContextBuilder
+from agent.context import OMITTED_TOOL_RESULT_TEMPLATE, ContextBuilder, Message
 from agent.memory import MemoryContext, MemoryRecord, MemorySearchResult
 from agent.schemas import AgentStep, PendingAction, ToolCall, ToolResult
+
+MessageParam = Message
 
 
 def first_content_block(message: MessageParam) -> dict[str, Any]:

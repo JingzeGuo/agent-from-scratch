@@ -9,7 +9,7 @@ session state, and tracks token usage and estimated cost.
 ## Features
 
 - Streaming terminal conversation
-- Anthropic, DeepSeek, and OpenAI-compatible provider adapters
+- Thin DeepSeek provider client kept separate from the agent controller
 - Multi-step tool use with a maximum step limit
 - Multi-turn conversation state
 - Pydantic schemas for tool inputs and internal run data
@@ -32,7 +32,7 @@ session state, and tracks token usage and estimated cost.
 ## Requirements
 
 - Python 3.12 or newer
-- An API key for one supported model provider
+- A DeepSeek API key
 - Optional: `TAVILY_API_KEY` for web search
 
 ## Installation
@@ -81,15 +81,9 @@ Supported variables:
 
 | Variable | Description |
 | --- | --- |
-| `AGENT_PROVIDER` | Provider to use: `anthropic`, `deepseek`, or `openai` |
-| `ANTHROPIC_API_KEY` | Anthropic API key |
-| `ANTHROPIC_MODEL` | Anthropic model, default `claude-haiku-4-5` |
 | `DEEPSEEK_API_KEY` | DeepSeek API key |
 | `DEEPSEEK_MODEL` | DeepSeek model, default `deepseek-v4-flash` |
 | `DEEPSEEK_BASE_URL` | DeepSeek Chat Completions base URL, default `https://api.deepseek.com` |
-| `OPENAI_API_KEY` | OpenAI API key |
-| `OPENAI_MODEL` | OpenAI model, default `gpt-4o-mini` |
-| `OPENAI_BASE_URL` | OpenAI API base URL, default `https://api.openai.com/v1` |
 | `TAVILY_API_KEY` | Optional key for the web search tool |
 | `AGENT_STATE_DIR` | Optional directory for project-scoped agent state. If unset, state lives under workspace `.agents/` |
 | `AGENT_TRACE_REDACT_PATTERNS` | Optional newline-separated regex patterns redacted from trace text |
@@ -141,7 +135,7 @@ agent --resume docs-review
 Pass an API key directly when needed:
 
 ```bash
-agent --api-key "$ANTHROPIC_API_KEY"
+agent --api-key "$DEEPSEEK_API_KEY"
 ```
 
 Show the installed version without loading provider configuration:
@@ -157,8 +151,6 @@ Interactive sessions support slash commands:
 | Command | Description |
 | --- | --- |
 | `/help` | Show available commands |
-| `/model` | Show the current provider and model |
-| `/model <provider> [model]` | Switch provider and optionally model |
 | `/tokens` | Show input tokens, output tokens, total tokens, and estimated cost |
 | `/status` | Show session, workspace files, agent state, provider, files, and token state |
 | `/reset` | Clear the current conversation context |
@@ -266,7 +258,7 @@ values are rejected unless `allowExternalCwd` is set to `true`.
 
 `sub_agent` is a delegated tool rather than a normal file or command helper.
 When the main controller executes it, the tool creates an isolated child agent
-with a fresh conversation, the same provider adapter, and a read-only registry
+with a fresh conversation, the same DeepSeek client, and a read-only registry
 containing `calculator`, `read_file`, `glob_files`, and `search_text`. The
 child agent cannot edit files, run commands, use network tools,
 or recursively spawn another sub-agent.
@@ -325,7 +317,7 @@ High-level flow:
 ```text
 CLI
   -> Agent controller
-       -> Provider adapter
+       -> DeepSeek provider
        -> Context builder
        -> Memory system
        -> Tool registry
@@ -347,7 +339,7 @@ Core modules:
 | `main.py` | CLI parsing, startup wiring, provider setup, interactive loop |
 | `agent/cli_commands.py` | Slash commands, session checkpoint commands, memory and trace commands |
 | `agent/agent.py` | Agent controller, run loop, tool scheduling, recovery, termination |
-| `agent/provider.py` | Anthropic and OpenAI-compatible provider adapters |
+| `agent/provider.py` | DeepSeek API client and normalized provider response contract |
 | `agent/setup.py` | Built-in tool registry construction |
 | `agent/tool.py` | Tool wrapper, schema generation, validation, retry |
 | `agent/tool_registry.py` | Tool storage, dispatch, changed-file tracking, diffs |
@@ -538,7 +530,7 @@ file uses `instance_id`, `model_name_or_path`, and `model_patch` fields so it
 can be passed to the official SWE-bench harness for Docker-based scoring.
 
 Real API calls should be reserved for behavior experiments that cannot be
-verified with local fake providers or deterministic tests.
+verified with local provider doubles or deterministic tests.
 
 ## Packaging Checks
 
@@ -591,11 +583,11 @@ Then restart the shell.
 ## Current Limitations
 
 - This is not a hardened sandbox.
-- Model behavior is nondeterministic with live providers.
+- Model behavior is nondeterministic with the live DeepSeek API.
 - Token cost estimates currently cover the configured pricing model used by
   the project and may need updates when changing models.
 - Web search requires Tavily configuration.
 - MCP support is limited to local stdio tool discovery and calls; it is not a
   full MCP client.
-- Provider support depends on streaming tool-call compatibility.
+- DeepSeek model support depends on streaming tool-call compatibility.
 - The public Python API is intentionally small and may evolve.

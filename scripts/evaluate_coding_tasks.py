@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from agent.agent import Agent
-from agent.provider import ProviderAdapter, create_provider_adapter, load_provider_config
+from agent.provider import DeepSeekProvider, ProviderAdapter, load_deepseek_config
 from agent.schemas import (
     AgentRun,
     ProviderCapabilities,
@@ -107,7 +107,7 @@ class ScriptedProviderAdapter:
     """Deterministic provider used for local coding-agent evaluations."""
 
     provider = "fake"
-    model = "claude-haiku-4-5"
+    model = "deepseek-v4-flash"
     capabilities = ProviderCapabilities()
 
     def __init__(self, steps: list[ScriptedStep]) -> None:
@@ -558,7 +558,7 @@ def build_cases() -> dict[str, tuple[CodingTaskCase, FixtureBuilder, Oracle]]:
             CodingTaskCase(
                 name="provider_adapter_refactor",
                 task=(
-                    "Refactor provider.py so Anthropic and OpenAI model name "
+                    "Refactor provider.py so chat and reasoner model name "
                     "formatting share one normalization helper. Run the focused tests."
                 ),
                 acceptance_criteria=[
@@ -591,17 +591,17 @@ def build_cases() -> dict[str, tuple[CodingTaskCase, FixtureBuilder, Oracle]]:
                         {
                             "path": "provider.py",
                             "old_text": (
-                                "def anthropic_model_name(model: str) -> str:\n"
+                                "def chat_model_name(model: str) -> str:\n"
                                 "    return model.strip()\n\n\n"
-                                "def openai_model_name(model: str) -> str:\n"
+                                "def reasoner_model_name(model: str) -> str:\n"
                                 "    return model.strip()\n"
                             ),
                             "new_text": (
                                 "def normalized_model_name(model: str) -> str:\n"
                                 "    return model.strip()\n\n\n"
-                                "def anthropic_model_name(model: str) -> str:\n"
+                                "def chat_model_name(model: str) -> str:\n"
                                 "    return normalized_model_name(model)\n\n\n"
-                                "def openai_model_name(model: str) -> str:\n"
+                                "def reasoner_model_name(model: str) -> str:\n"
                                 "    return normalized_model_name(model)\n"
                             ),
                         },
@@ -986,19 +986,19 @@ def fixture_readme_evaluation_docs(workspace: Path) -> None:
 
 def fixture_provider_adapter_refactor(workspace: Path) -> None:
     (workspace / "provider.py").write_text(
-        "def anthropic_model_name(model: str) -> str:\n"
+        "def chat_model_name(model: str) -> str:\n"
         "    return model.strip()\n\n\n"
-        "def openai_model_name(model: str) -> str:\n"
+        "def reasoner_model_name(model: str) -> str:\n"
         "    return model.strip()\n",
         encoding="utf-8",
     )
     tests = workspace / "tests"
     tests.mkdir()
     (tests / "test_provider.py").write_text(
-        "from provider import anthropic_model_name, openai_model_name\n\n\n"
+        "from provider import chat_model_name, reasoner_model_name\n\n\n"
         "def test_provider_model_names_are_trimmed() -> None:\n"
-        "    assert anthropic_model_name(' claude-haiku ') == 'claude-haiku'\n"
-        "    assert openai_model_name(' gpt-4o-mini ') == 'gpt-4o-mini'\n",
+        "    assert chat_model_name(' deepseek-chat ') == 'deepseek-chat'\n"
+        "    assert reasoner_model_name(' deepseek-reasoner ') == 'deepseek-reasoner'\n",
         encoding="utf-8",
     )
 
@@ -1357,14 +1357,14 @@ def provider_helpers_share_normalizer(content: str) -> bool:
         for node in module.body
         if isinstance(node, ast.FunctionDef)
     }
-    anthropic = functions.get("anthropic_model_name")
-    openai = functions.get("openai_model_name")
-    if anthropic is None or openai is None:
+    chat = functions.get("chat_model_name")
+    reasoner = functions.get("reasoner_model_name")
+    if chat is None or reasoner is None:
         return False
 
     shared_calls = (
-        called_function_names(anthropic)
-        & called_function_names(openai)
+        called_function_names(chat)
+        & called_function_names(reasoner)
         & set(functions)
     )
     return any(function_contains_strip_call(functions[name]) for name in shared_calls)
@@ -1722,8 +1722,12 @@ def relative_changed_files(workspace: Path, registry: ToolRegistry) -> list[str]
 
 
 def create_real_provider_adapter(api_key: str | None = None) -> ProviderAdapter:
-    config = load_provider_config(api_key=api_key)
-    return create_provider_adapter(config)
+    config = load_deepseek_config(api_key=api_key)
+    return DeepSeekProvider(
+        model=config.model,
+        api_key=config.api_key,
+        base_url=config.base_url,
+    )
 
 
 async def evaluate_cases(

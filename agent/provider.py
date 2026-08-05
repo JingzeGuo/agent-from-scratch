@@ -1,12 +1,9 @@
 import json
 import os
 from collections.abc import Callable
-from typing import Any, Literal, Protocol, cast
+from typing import Any, Literal, Protocol
 
-import anthropic
 import httpx
-from anthropic import AsyncAnthropic
-from anthropic.types import MessageParam, ToolParam
 from pydantic import BaseModel
 
 from .schemas import (
@@ -18,7 +15,6 @@ from .schemas import (
     ToolResult,
 )
 
-ProviderName = Literal["anthropic", "deepseek", "openai"]
 ProviderErrorKind = Literal[
     "authentication",
     "rate_limit",
@@ -29,24 +25,14 @@ ProviderErrorKind = Literal[
     "request",
 ]
 
-DEFAULT_MODELS: dict[ProviderName, str] = {
-    "anthropic": "claude-haiku-4-5",
-    "deepseek": "deepseek-v4-flash",
-    "openai": "gpt-4o-mini",
-}
-
-DEFAULT_BASE_URLS: dict[ProviderName, str | None] = {
-    "anthropic": None,
-    "deepseek": "https://api.deepseek.com",
-    "openai": "https://api.openai.com/v1",
-}
+DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash"
+DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 
 
-class ProviderConfig(BaseModel):
-    provider: ProviderName
+class DeepSeekConfig(BaseModel):
     model: str
     api_key: str
-    base_url: str | None = None
+    base_url: str
 
 
 class ProviderRequestError(RuntimeError):
@@ -96,22 +82,14 @@ def format_provider_request_error(error: ProviderRequestError) -> str:
         "authentication": (
             "Please check your API key and provider permissions, then retry."
         ),
-        "rate_limit": (
-            "Please wait and retry, reduce request volume, or switch models with "
-            "`/model openai gpt-4o-mini`."
-        ),
-        "timeout": (
-            "Please check your network, base URL, or proxy, then retry."
-        ),
+        "rate_limit": "Please wait and retry, or reduce request volume.",
+        "timeout": "Please check your network, base URL, or proxy, then retry.",
         "network": (
             "Please check your base URL, DNS/network access, or proxy, then retry."
         ),
-        "provider_status": (
-            "Please retry later or switch models with `/model openai gpt-4o-mini`."
-        ),
+        "provider_status": "Please retry later.",
         "response_format": (
-            "Please retry or switch models; the provider returned an unexpected "
-            "response shape."
+            "Please retry; the provider returned an unexpected response shape."
         ),
         "request": (
             "Please check your provider configuration, base URL, and model name."
@@ -125,134 +103,19 @@ def format_provider_request_error(error: ProviderRequestError) -> str:
     )
 
 
-class AnthropicProviderAdapter:
-    """Adapter for Anthropic Messages API."""
+class DeepSeekProvider:
+    """Thin client for DeepSeek's Chat Completions API."""
 
     def __init__(
         self,
         *,
-        provider: str,
-        model: str,
-        client: AsyncAnthropic,
-        capabilities: ProviderCapabilities | None = None,
-    ) -> None:
-        self.provider = provider
-        self.model = model
-        self.client = client
-        self.capabilities = capabilities or ProviderCapabilities()
-
-    async def stream_response(
-        self,
-        *,
-        system: str,
-        tools: list[ToolDefinition],
-        messages: list[dict[str, Any]],
-        on_text_delta: Callable[[str], None] | None = None,
-    ) -> ProviderResponse:
-        self._validate_request_capabilities(tools)
-        text_blocks: list[str] = []
-        try:
-            async with self.client.messages.stream(
-                model=self.model,
-                max_tokens=1024,
-                system=system,
-                tools=self._tool_params(tools),
-                messages=cast(list[MessageParam], messages),
-            ) as stream:
-                async for text in stream.text_stream:
-                    if on_text_delta is not None:
-                        on_text_delta(text)
-                response = await stream.get_final_message()
-        except Exception as e:
-            raise classify_provider_exception(
-                e,
-                provider=self.provider,
-                model=self.model,
-            ) from e
-
-        tool_calls: list[ToolCall] = []
-        for block in response.content:
-            if block.type == "text":
-                text_blocks.append(block.text)
-            if block.type == "tool_use":
-                tool_calls.append(
-                    ToolCall(
-                        name=block.name,
-                        input=block.input,
-                        tool_use_id=block.id,
-                    )
-                )
-
-        return ProviderResponse(
-            message={
-                "role": response.role,
-                "content": response.content,
-            },
-            stop_reason=response.stop_reason,
-            text=text_blocks,
-            tool_calls=tool_calls,
-            usage=TokenUsage(
-                input_tokens=response.usage.input_tokens,
-                output_tokens=response.usage.output_tokens,
-            ),
-            native_metadata={
-                "id": response.id,
-                "model": response.model,
-                "provider": self.provider,
-            },
-        )
-
-    def tool_result_message(self, tool_results: list[ToolResult]) -> dict[str, Any]:
-        return {
-            "role": "user",
-            "content": [
-                {
-                    "type": result.type,
-                    "tool_use_id": result.tool_use_id,
-                    "content": result.content,
-                    "is_error": result.is_error,
-                }
-                for result in tool_results
-            ],
-        }
-
-    def _tool_params(self, tools: list[ToolDefinition]) -> list[ToolParam]:
-        return [
-            {
-                "name": tool.name,
-                "description": tool.description,
-                "input_schema": tool.input_schema,
-            }
-            for tool in tools
-        ]
-
-    def _validate_request_capabilities(self, tools: list[ToolDefinition]) -> None:
-        if not self.capabilities.supports_streaming:
-            raise ValueError(
-                "Provider does not support streaming: "
-                f"{self.provider}/{self.model}"
-            )
-        if tools and not self.capabilities.supports_tools:
-            raise ValueError(
-                "Provider does not support tools: "
-                f"{self.provider}/{self.model}"
-            )
-
-
-class OpenAICompatibleProviderAdapter:
-    """Adapter for OpenAI-compatible chat completions providers."""
-
-    def __init__(
-        self,
-        *,
-        provider: str,
         model: str,
         api_key: str,
         base_url: str,
         http_client: httpx.AsyncClient | None = None,
         capabilities: ProviderCapabilities | None = None,
     ) -> None:
-        self.provider = provider
+        self.provider = "deepseek"
         self.model = model
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
@@ -274,16 +137,12 @@ class OpenAICompatibleProviderAdapter:
             "stream_options": {"include_usage": True},
             "messages": [
                 {"role": "system", "content": system},
-                *self._openai_messages(messages),
+                *self._deepseek_messages(messages),
             ],
         }
         if tools:
-            payload["tools"] = self._openai_tools(tools)
+            payload["tools"] = self._deepseek_tools(tools)
             payload["tool_choice"] = "auto"
-            if self.provider == "openai":
-                payload["parallel_tool_calls"] = (
-                    self.capabilities.supports_parallel_tool_calls
-                )
 
         try:
             response_data = await self._stream_chat_completions(payload, on_text_delta)
@@ -432,7 +291,7 @@ class OpenAICompatibleProviderAdapter:
             return data
         parsed = json.loads(data)
         if not isinstance(parsed, dict):
-            raise ValueError("OpenAI-compatible stream chunk must be a JSON object.")
+            raise ValueError("DeepSeek stream chunk must be a JSON object.")
         return parsed
 
     def _accumulate_tool_call_deltas(
@@ -468,7 +327,7 @@ class OpenAICompatibleProviderAdapter:
             if isinstance(function_delta.get("arguments"), str):
                 function["arguments"] += function_delta["arguments"]
 
-    def _openai_tools(self, tools: list[ToolDefinition]) -> list[dict[str, Any]]:
+    def _deepseek_tools(self, tools: list[ToolDefinition]) -> list[dict[str, Any]]:
         return [
             {
                 "type": "function",
@@ -493,7 +352,7 @@ class OpenAICompatibleProviderAdapter:
                 f"{self.provider}/{self.model}"
             )
 
-    def _openai_messages(
+    def _deepseek_messages(
         self,
         messages: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
@@ -502,15 +361,15 @@ class OpenAICompatibleProviderAdapter:
             role = message.get("role")
             content = message.get("content")
             if role == "user" and isinstance(content, list):
-                converted.extend(self._openai_tool_result_messages(content))
+                converted.extend(self._deepseek_tool_result_messages(content))
                 continue
             if role == "assistant" and isinstance(content, list):
-                converted.append(self._openai_assistant_message(content))
+                converted.append(self._deepseek_assistant_message(content))
                 continue
             converted.append({"role": role, "content": content})
         return converted
 
-    def _openai_tool_result_messages(
+    def _deepseek_tool_result_messages(
         self,
         content: list[Any],
     ) -> list[dict[str, Any]]:
@@ -528,7 +387,7 @@ class OpenAICompatibleProviderAdapter:
             )
         return messages
 
-    def _openai_assistant_message(self, content: list[Any]) -> dict[str, Any]:
+    def _deepseek_assistant_message(self, content: list[Any]) -> dict[str, Any]:
         text_parts: list[str] = []
         tool_calls: list[dict[str, Any]] = []
         for block in content:
@@ -616,62 +475,27 @@ class OpenAICompatibleProviderAdapter:
         return getattr(block, key, None)
 
 
-def load_provider_config(
-    provider: str | None = None,
+def load_deepseek_config(
     model: str | None = None,
     api_key: str | None = None,
-) -> ProviderConfig:
-    provider_name = provider or os.getenv("AGENT_PROVIDER", "anthropic")
-    if provider_name not in DEFAULT_MODELS:
-        raise ValueError(
-            f"Unknown provider: {provider_name}. "
-            f"Available: {list(DEFAULT_MODELS)}"
-        )
-
-    typed_provider: ProviderName = provider_name
-    prefix = typed_provider.upper()
-    configured_api_key = api_key or os.getenv(f"{prefix}_API_KEY", "")
+) -> DeepSeekConfig:
+    configured_api_key = api_key or os.getenv("DEEPSEEK_API_KEY", "")
     if not configured_api_key:
-        raise ValueError(f"{prefix}_API_KEY is not set")
+        raise ValueError("DEEPSEEK_API_KEY is not set")
 
     configured_model = (
         model
-        or os.getenv(f"{prefix}_MODEL")
-        or DEFAULT_MODELS[typed_provider]
+        or os.getenv("DEEPSEEK_MODEL")
+        or DEFAULT_DEEPSEEK_MODEL
     )
-    base_url = (
-        os.getenv(f"{prefix}_BASE_URL")
-        or DEFAULT_BASE_URLS[typed_provider]
+    configured_base_url = (
+        os.getenv("DEEPSEEK_BASE_URL")
+        or DEFAULT_DEEPSEEK_BASE_URL
     )
-    return ProviderConfig(
-        provider=typed_provider,
+    return DeepSeekConfig(
         model=configured_model,
         api_key=configured_api_key,
-        base_url=base_url,
-    )
-
-
-def create_client(config: ProviderConfig) -> AsyncAnthropic:
-    return AsyncAnthropic(
-        api_key=config.api_key,
-        base_url=config.base_url,
-    )
-
-
-def create_provider_adapter(config: ProviderConfig) -> ProviderAdapter:
-    if config.provider in {"deepseek", "openai"}:
-        if config.base_url is None:
-            raise ValueError(f"{config.provider.upper()}_BASE_URL is not configured")
-        return OpenAICompatibleProviderAdapter(
-            provider=config.provider,
-            model=config.model,
-            api_key=config.api_key,
-            base_url=config.base_url,
-        )
-    return AnthropicProviderAdapter(
-        provider=config.provider,
-        model=config.model,
-        client=create_client(config),
+        base_url=configured_base_url,
     )
 
 
@@ -683,14 +507,14 @@ def classify_provider_exception(
 ) -> ProviderRequestError:
     if isinstance(error, ProviderRequestError):
         return error
-    if isinstance(error, (httpx.TimeoutException, anthropic.APITimeoutError)):
+    if isinstance(error, httpx.TimeoutException):
         return ProviderRequestError(
             kind="timeout",
             provider=provider,
             model=model,
             detail="network timeout while contacting the provider",
         )
-    if isinstance(error, (httpx.NetworkError, anthropic.APIConnectionError)):
+    if isinstance(error, httpx.NetworkError):
         return ProviderRequestError(
             kind="network",
             provider=provider,
@@ -707,35 +531,6 @@ def classify_provider_exception(
     if isinstance(
         error,
         (
-            anthropic.AuthenticationError,
-            anthropic.PermissionDeniedError,
-            anthropic.WorkloadIdentityError,
-        ),
-    ):
-        return ProviderRequestError(
-            kind="authentication",
-            provider=provider,
-            model=model,
-            detail="authentication failed or provider access was denied",
-        )
-    if isinstance(error, anthropic.RateLimitError):
-        return ProviderRequestError(
-            kind="rate_limit",
-            provider=provider,
-            model=model,
-            detail="provider rate limit was reached",
-        )
-    if isinstance(error, anthropic.APIStatusError):
-        return _provider_http_status_error(
-            error.status_code,
-            _bounded_error_detail(str(error)),
-            provider=provider,
-            model=model,
-        )
-    if isinstance(
-        error,
-        (
-            anthropic.APIResponseValidationError,
             json.JSONDecodeError,
             KeyError,
             IndexError,

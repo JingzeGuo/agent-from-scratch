@@ -47,8 +47,8 @@ def make_snapshot(
         session_id=session_id,
         session_name=session_name,
         workspace_root="/workspace/project",
-        provider="anthropic",
-        model="claude-haiku-4-5",
+        provider="deepseek",
+        model="deepseek-v4-flash",
         max_steps=10,
         messages=[
             {

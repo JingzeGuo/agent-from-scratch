@@ -171,9 +171,9 @@ def test_provider_refactor_oracle_accepts_any_shared_helper_name() -> None:
     content = (
         "def _clean_model(model: str) -> str:\n"
         "    return model.strip()\n\n\n"
-        "def anthropic_model_name(model: str) -> str:\n"
+        "def chat_model_name(model: str) -> str:\n"
         "    return _clean_model(model)\n\n\n"
-        "def openai_model_name(model: str) -> str:\n"
+        "def reasoner_model_name(model: str) -> str:\n"
         "    return _clean_model(model)\n"
     )
 

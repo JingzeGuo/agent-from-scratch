@@ -4,7 +4,6 @@ from pydantic import BaseModel
 
 from .agent import Agent
 from .memory import MemoryRecord
-from .provider import create_provider_adapter, load_provider_config
 from .schemas import SessionEvent, ToolCall
 from .security import ToolApprovalPolicy
 from .session import SessionStore, utc_timestamp
@@ -12,7 +11,6 @@ from .workspace import resolve_workspace_path
 
 COMMANDS = {
     "/help": "Show available commands.",
-    "/model": "Show or switch provider and model.",
     "/tokens": "Show token usage and estimated cost.",
     "/status": "Show current session and agent state.",
     "/reset": "Clear the current conversation context.",
@@ -127,33 +125,6 @@ def handle_command(
         width = max(len(name) for name in COMMANDS)
         for name, description in COMMANDS.items():
             print(f"  {name:<{width}} {description}")
-        return False
-    if command == "/model":
-        if agent is None:
-            print("Model command is unavailable.")
-        else:
-            print(f"Current model: {agent.provider}/{agent.model}")
-        return False
-    if command.startswith("/model "):
-        if agent is None:
-            print("Model command is unavailable.")
-            return False
-
-        parts = command.split()
-        if len(parts) > 3:
-            print("Usage: /model <anthropic|deepseek|openai> [model]")
-            return False
-
-        provider = parts[1]
-        model = parts[2] if len(parts) == 3 else None
-        try:
-            config = load_provider_config(provider=provider, model=model)
-            agent.switch_provider(create_provider_adapter(config))
-        except ValueError as error:
-            print(f"Cannot switch model: {error}")
-            return False
-
-        print(f"Switched model: {agent.provider}/{agent.model}")
         return False
     if command == "/tokens":
         if agent is None:

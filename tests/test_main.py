@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from anthropic import AsyncAnthropic
 
 from agent.agent import Agent
 from agent.memory import (
@@ -15,7 +14,7 @@ from agent.memory import (
     MemorySummaryResult,
     MemorySystem,
 )
-from agent.provider import AnthropicProviderAdapter, ProviderRequestError
+from agent.provider import DeepSeekProvider, ProviderRequestError
 from agent.schemas import (
     AgentRun,
     AgentStep,
@@ -86,8 +85,8 @@ class FakeCheckpointAgent(FakeRunAgent):
             session_id=session_id,
             session_name=session_name,
             workspace_root="/workspace/project",
-            provider="anthropic",
-            model="claude-haiku-4-5",
+            provider="deepseek",
+            model="deepseek-v4-flash",
             max_steps=10,
         )
 
@@ -135,10 +134,10 @@ def create_agent(workspace_root: Path | None = None) -> Agent:
         )
     )
     return Agent(
-        provider_adapter=AnthropicProviderAdapter(
-            provider="anthropic",
-            model="claude-haiku-4-5",
-            client=AsyncAnthropic(api_key="test-key"),
+        provider_adapter=DeepSeekProvider(
+            model="deepseek-v4-flash",
+            api_key="test-key",
+            base_url="https://api.deepseek.com",
         ),
         registry=registry,
     )
@@ -153,7 +152,6 @@ def test_help_lists_available_commands(
     assert capsys.readouterr().out == (
         "Available commands:\n"
         "  /help     Show available commands.\n"
-        "  /model    Show or switch provider and model.\n"
         "  /tokens   Show token usage and estimated cost.\n"
         "  /status   Show current session and agent state.\n"
         "  /reset    Clear the current conversation context.\n"
@@ -239,19 +237,6 @@ def test_unknown_command_shows_help_hint(
     assert capsys.readouterr().out == (
         "Unknown command: /unknown\n"
         "Type /help to see available commands.\n"
-    )
-
-
-def test_model_command_shows_current_model(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    agent = create_agent()
-
-    should_exit = handle_command("/model", agent)
-
-    assert should_exit is False
-    assert capsys.readouterr().out == (
-        "Current model: anthropic/claude-haiku-4-5\n"
     )
 
 
@@ -410,10 +395,10 @@ def test_cli_help_does_not_require_provider_config(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    def fail_load_provider_config(*args: object, **kwargs: object) -> object:
+    def fail_load_deepseek_config(*args: object, **kwargs: object) -> object:
         raise AssertionError("Provider config should not be loaded for --help.")
 
-    monkeypatch.setattr("main.load_provider_config", fail_load_provider_config)
+    monkeypatch.setattr("main.load_deepseek_config", fail_load_deepseek_config)
 
     asyncio.run(cli_main(["--help"]))
 
@@ -427,10 +412,10 @@ def test_cli_version_does_not_require_provider_config(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    def fail_load_provider_config(*args: object, **kwargs: object) -> object:
+    def fail_load_deepseek_config(*args: object, **kwargs: object) -> object:
         raise AssertionError("Provider config should not be loaded for --version.")
 
-    monkeypatch.setattr("main.load_provider_config", fail_load_provider_config)
+    monkeypatch.setattr("main.load_deepseek_config", fail_load_deepseek_config)
     monkeypatch.setattr("main.package_version", lambda: "0.1.0")
 
     asyncio.run(cli_main(["--version"]))
@@ -444,7 +429,7 @@ def test_cli_eval_does_not_require_provider_config(
 ) -> None:
     calls: list[tuple[list[str], str | None]] = []
 
-    def fail_load_provider_config(*args: object, **kwargs: object) -> object:
+    def fail_load_deepseek_config(*args: object, **kwargs: object) -> object:
         raise AssertionError("Provider config should not be loaded for eval.")
 
     async def fake_run_eval_command(
@@ -456,7 +441,7 @@ def test_cli_eval_does_not_require_provider_config(
         print("eval ok")
         return 0
 
-    monkeypatch.setattr("main.load_provider_config", fail_load_provider_config)
+    monkeypatch.setattr("main.load_deepseek_config", fail_load_deepseek_config)
     monkeypatch.setattr("main.run_eval_command", fake_run_eval_command)
 
     asyncio.run(cli_main(["--api-key", "cli-key", "eval", "--list"]))
@@ -469,15 +454,15 @@ def test_cli_reports_configuration_error_without_traceback(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    def fail_load_provider_config(*args: object, **kwargs: object) -> object:
-        raise ValueError("ANTHROPIC_API_KEY is not set")
+    def fail_load_deepseek_config(*args: object, **kwargs: object) -> object:
+        raise ValueError("DEEPSEEK_API_KEY is not set")
 
-    monkeypatch.setattr("main.load_provider_config", fail_load_provider_config)
+    monkeypatch.setattr("main.load_deepseek_config", fail_load_deepseek_config)
 
     asyncio.run(cli_main([]))
 
     assert capsys.readouterr().out == (
-        "Configuration error: ANTHROPIC_API_KEY is not set\n"
+        "Configuration error: DEEPSEEK_API_KEY is not set\n"
         "Set it in .env or export it in your shell.\n"
     )
 
@@ -798,23 +783,6 @@ def test_report_interrupted_action_warns_and_clears_marker(
     )
 
 
-def test_model_command_switches_provider(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
-    agent = create_agent()
-
-    should_exit = handle_command("/model deepseek", agent)
-
-    assert should_exit is False
-    assert agent.provider == "deepseek"
-    assert agent.model == "deepseek-v4-flash"
-    assert capsys.readouterr().out == (
-        "Switched model: deepseek/deepseek-v4-flash\n"
-    )
-
-
 def test_tokens_command_shows_usage_and_cost(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -828,7 +796,7 @@ def test_tokens_command_shows_usage_and_cost(
         "Input tokens: 1000\n"
         "Output tokens: 200\n"
         "Total tokens: 1200\n"
-        "Estimated cost: $0.002000\n"
+        "Estimated cost: $0.000196\n"
     )
 
 
@@ -887,8 +855,8 @@ def test_status_command_shows_current_agent_state(
         "  Name: day16\n"
         f"  Workspace files: {tmp_path.as_posix()}\n"
         f"  Agent state: {(tmp_path / 'sessions').parent.as_posix()}\n"
-        "  Provider: anthropic\n"
-        "  Model: claude-haiku-4-5\n"
+        "  Provider: deepseek\n"
+        "  Model: deepseek-v4-flash\n"
         "  Max steps: 40\n"
         "  Messages: 1\n"
         "  Completed runs: 1\n"
@@ -897,7 +865,7 @@ def test_status_command_shows_current_agent_state(
         "  Pending action: read_file (toolu_read)\n"
         "  Input tokens: 1000\n"
         "  Output tokens: 200\n"
-        "  Estimated cost: $0.002000\n"
+        "  Estimated cost: $0.000196\n"
     )
 
 

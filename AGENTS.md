@@ -8,7 +8,7 @@ directory, uses structured tools to inspect and modify files, can run bounded
 verification commands, and records session state for resumable workflows.
 
 The project is intended to be a practical, maintainable coding-agent
-implementation with explicit controller behavior, provider adapters, tool
+implementation with explicit controller behavior, a thin DeepSeek provider, tool
 validation, session persistence, context management, memory, observability, and
 cost tracking.
 
@@ -18,7 +18,7 @@ The agent supports:
 
 - Multi-step tool use with a maximum step limit
 - Multi-turn CLI conversations
-- Anthropic, DeepSeek, and OpenAI-compatible provider adapters
+- DeepSeek Chat Completions integration behind a provider interface
 - Pydantic schemas for tool inputs and internal agent data
 - Tool validation and model-visible error observations
 - Transient tool retries with exponential backoff
@@ -37,7 +37,7 @@ The agent supports:
 main.py                          CLI parsing, startup wiring, provider setup
 agent/cli_commands.py            Slash commands, checkpoint, memory, trace commands
 agent/agent.py                   Agent controller, run loop, scheduling, termination
-agent/provider.py                Anthropic and OpenAI-compatible provider adapters
+agent/provider.py                DeepSeek API client and provider response normalization
 agent/setup.py                   Built-in tool registry construction
 agent/tool.py                    Tool schema generation, validation, execution, retry
 agent/tool_registry.py           Tool storage, dispatch, file tracking, diffs
@@ -131,10 +131,8 @@ verify the behavior.
 
 ## Pricing Scope
 
-Estimated cost currently supports Claude Haiku 4.5 standard input and output
-tokens at $1/MTok and $5/MTok. Pricing was verified against the official
-[Anthropic pricing documentation](https://platform.claude.com/docs/en/about-claude/pricing)
-on 2026-06-08.
+Estimated cost currently supports the DeepSeek model entries listed in
+`MODEL_PRICING`.
 
 Prompt caching and server-side tool fees are not included because this project
 does not enable those features. Update `MODEL_PRICING` before changing models.

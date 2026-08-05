@@ -3,15 +3,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from anthropic import AsyncAnthropic
-from anthropic.types import ToolParam
 from dotenv import load_dotenv
 from pydantic import ValidationError
 
+from agent.provider import DeepSeekProvider, load_deepseek_config
 from agent.schemas import ToolDefinition
 from agent.setup import create_registry
-
-MODEL = "claude-haiku-4-5"
 
 VAGUE_DESCRIPTIONS = {
     "calculator": "Process an input.",
@@ -76,28 +73,17 @@ class EvaluationResult:
     arguments_exact: bool
 
 
-def to_anthropic_tool_param(tool: ToolDefinition) -> ToolParam:
-    return {
-        "name": tool.name,
-        "description": tool.description,
-        "input_schema": tool.input_schema,
-    }
-
-
-def build_tool_schemas(vague: bool) -> list[ToolParam]:
-    schemas = [
-        to_anthropic_tool_param(tool)
-        for tool in create_registry(Path.cwd()).to_tool_definitions()
-    ]
+def build_tool_schemas(vague: bool) -> list[ToolDefinition]:
+    schemas = create_registry(Path.cwd()).to_tool_definitions()
     if not vague:
         return schemas
 
     return [
-        {
-            "name": schema["name"],
-            "description": VAGUE_DESCRIPTIONS[schema["name"]],
-            "input_schema": schema["input_schema"],
-        }
+        ToolDefinition(
+            name=schema.name,
+            description=VAGUE_DESCRIPTIONS[schema.name],
+            input_schema=schema.input_schema,
+        )
         for schema in schemas
     ]
 
@@ -112,20 +98,17 @@ def validate_arguments(tool_name: str, arguments: dict[str, Any]) -> bool:
 
 
 async def evaluate_case(
-    client: AsyncAnthropic,
+    provider: DeepSeekProvider,
     case: ToolSelectionCase,
-    tools: list[ToolParam],
+    tools: list[ToolDefinition],
 ) -> EvaluationResult:
-    response = await client.messages.create(
-        model=MODEL,
-        max_tokens=256,
-        temperature=0,
-        tool_choice={"type": "any"},
+    response = await provider.stream_response(
+        system="Select the single best tool for the user's request.",
         tools=tools,
         messages=[{"role": "user", "content": case.task}],
     )
-    tool_call = next(block for block in response.content if block.type == "tool_use")
-    arguments = dict(tool_call.input)
+    tool_call = response.tool_calls[0]
+    arguments = tool_call.input
     selection_correct = tool_call.name == case.expected_tool
     schema_valid = validate_arguments(tool_call.name, arguments)
 
@@ -141,13 +124,13 @@ async def evaluate_case(
 
 
 async def evaluate_variant(
-    client: AsyncAnthropic,
+    provider: DeepSeekProvider,
     label: str,
     vague: bool,
 ) -> list[EvaluationResult]:
     tools = build_tool_schemas(vague=vague)
     results = [
-        await evaluate_case(client, case, tools) for case in TOOL_SELECTION_CASES
+        await evaluate_case(provider, case, tools) for case in TOOL_SELECTION_CASES
     ]
 
     print(f"\n{label}")
@@ -179,10 +162,15 @@ async def evaluate_variant(
 
 async def main() -> None:
     load_dotenv()
-    client = AsyncAnthropic()
+    config = load_deepseek_config()
+    provider = DeepSeekProvider(
+        model=config.model,
+        api_key=config.api_key,
+        base_url=config.base_url,
+    )
 
-    await evaluate_variant(client, "Clear descriptions", vague=False)
-    await evaluate_variant(client, "Vague descriptions", vague=True)
+    await evaluate_variant(provider, "Clear descriptions", vague=False)
+    await evaluate_variant(provider, "Vague descriptions", vague=True)
 
 
 if __name__ == "__main__":

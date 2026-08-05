@@ -98,20 +98,6 @@ class Agent:
         )
         self._validate_provider_capabilities(provider_adapter)
 
-    def switch_provider(
-        self,
-        provider_adapter: ProviderAdapter,
-    ) -> None:
-        if not self._provider_switch_is_safe():
-            raise ValueError(
-                "Cannot switch provider during an incomplete tool exchange."
-            )
-        self._validate_provider_capabilities(provider_adapter)
-        self.token_tracker.switch_model(provider_adapter.model)
-        self.provider_adapter = provider_adapter
-        self.provider = provider_adapter.provider
-        self.model = provider_adapter.model
-
     def configure_session_recording(
         self,
         session_store: SessionStore | None,
@@ -169,8 +155,6 @@ class Agent:
 
     def restore_snapshot(self, snapshot: SessionSnapshot) -> None:
         self._validate_snapshot_workspace(snapshot)
-        self.provider = snapshot.provider
-        self.model = snapshot.model
         self.max_steps = snapshot.max_steps
         self.messages = list(snapshot.messages)
         self.steps = list(snapshot.steps)
@@ -185,7 +169,7 @@ class Agent:
             self._restore_snapshot_path(path): content
             for path, content in snapshot.original_file_contents.items()
         }
-        self.token_tracker = TokenTracker(model=snapshot.model)
+        self.token_tracker = TokenTracker(model=self.model)
         self.token_tracker.input_tokens = snapshot.input_tokens
         self.token_tracker.output_tokens = snapshot.output_tokens
         self.token_tracker._estimated_cost = snapshot.estimated_cost
@@ -1038,13 +1022,6 @@ class Agent:
         if len(redacted) <= TRACE_PREVIEW_CHARS:
             return redacted
         return redacted[:TRACE_PREVIEW_CHARS] + "... [truncated]"
-
-    def _provider_switch_is_safe(self) -> bool:
-        if self._current_pending_action() is not None:
-            return False
-        if not self.steps:
-            return True
-        return self.steps[-1].stop_reason == "end_turn"
 
     def _validate_provider_capabilities(
         self,

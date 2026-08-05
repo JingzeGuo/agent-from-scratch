@@ -11,14 +11,6 @@ class ModelPricing:
 
 
 MODEL_PRICING = {
-    "claude-haiku-4-5": ModelPricing(
-        input_per_million=1.0,
-        output_per_million=5.0,
-    ),
-    "claude-haiku-4-5-20251001": ModelPricing(
-        input_per_million=1.0,
-        output_per_million=5.0,
-    ),
     "deepseek-v4-flash": ModelPricing(
         input_per_million=0.14,
         output_per_million=0.28,
@@ -35,15 +27,11 @@ MODEL_PRICING = {
         input_per_million=0.14,
         output_per_million=0.28,
     ),
-    "gpt-4o-mini": ModelPricing(
-        input_per_million=0.15,
-        output_per_million=0.60,
-    ),
 }
 
 
 class TokenTracker:
-    def __init__(self, model: str = "claude-haiku-4-5") -> None:
+    def __init__(self, model: str = "deepseek-v4-flash") -> None:
         if model not in MODEL_PRICING:
             raise ValueError(f"No pricing configured for model: {model}")
 
@@ -64,11 +52,6 @@ class TokenTracker:
         input_cost = usage.input_tokens * self.pricing.input_per_million
         output_cost = usage.output_tokens * self.pricing.output_per_million
         self._estimated_cost += (input_cost + output_cost) / 1_000_000
-
-    def switch_model(self, model: str) -> None:
-        if model not in MODEL_PRICING:
-            raise ValueError(f"No pricing configured for model: {model}")
-        self.pricing = MODEL_PRICING[model]
 
     @property
     def estimated_cost(self) -> float:

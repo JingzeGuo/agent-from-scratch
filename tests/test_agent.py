@@ -1,5 +1,4 @@
 import asyncio
-import json
 import shlex
 import sys
 from collections.abc import Callable, Sequence
@@ -8,18 +7,8 @@ from pathlib import Path
 from threading import Event
 from typing import Any, cast
 
-import httpx
 import pytest
-from anthropic import AsyncAnthropic
-from anthropic.types import (
-    ContentBlock,
-    Message,
-    MessageParam,
-    StopReason,
-    TextBlock,
-    ToolUseBlock,
-    Usage,
-)
+from pydantic import BaseModel
 
 from agent.agent import Agent
 from agent.context import ContextBuilder
@@ -33,7 +22,6 @@ from agent.memory import (
     MemorySystem,
 )
 from agent.prompts import build_system_prompt
-from agent.provider import AnthropicProviderAdapter, OpenAICompatibleProviderAdapter
 from agent.schemas import (
     AgentRun,
     AgentStep,
@@ -57,113 +45,23 @@ from agent.tool import Tool
 from agent.tool_registry import ToolRegistry
 from agent.tools import calculator, run_command
 
-
-class FakeMessages:
-    def __init__(self, responses: list[Message]) -> None:
-        self.responses = responses
-        self.call_count = 0
-        self.requests: list[dict[str, Any]] = []
-
-    def stream(self, **kwargs: Any) -> "FakeStreamManager":
-        self.requests.append(
-            {
-                **kwargs,
-                "messages": list(kwargs["messages"]),
-            }
-        )
-        response = self.responses[self.call_count]
-        self.call_count += 1
-        return FakeStreamManager(response)
+MessageParam = dict[str, Any]
 
 
-class FakeStreamManager:
-    def __init__(self, response: Message) -> None:
-        self.response = response
-        self.text_stream = self._stream_text()
-
-    async def __aenter__(self) -> "FakeStreamManager":
-        return self
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        traceback: object,
-    ) -> None:
-        return None
-
-    async def _stream_text(self) -> Any:
-        for block in self.response.content:
-            if block.type == "text":
-                midpoint = len(block.text) // 2
-                for chunk in (block.text[:midpoint], block.text[midpoint:]):
-                    if chunk:
-                        yield chunk
-
-    async def get_final_message(self) -> Message:
-        return self.response
+class TextBlock(BaseModel):
+    text: str
+    type: str = "text"
 
 
-class FakeClient:
-    def __init__(self, responses: list[Message]) -> None:
-        self.messages = FakeMessages(responses)
+class ToolUseBlock(BaseModel):
+    id: str
+    name: str
+    input: dict[str, Any]
+    type: str = "tool_use"
 
 
-class FakeOpenAIHttpClient:
-    def __init__(self, stream_responses: list[list[dict[str, Any]]]) -> None:
-        self.stream_responses = stream_responses
-        self.call_count = 0
-        self.requests: list[dict[str, Any]] = []
-
-    def stream(
-        self,
-        method: str,
-        url: str,
-        *,
-        headers: dict[str, str],
-        json: dict[str, Any],
-    ) -> "FakeOpenAIStreamManager":
-        self.requests.append(
-            {
-                "method": method,
-                "url": url,
-                "headers": headers,
-                "json": json,
-            }
-        )
-        chunks = self.stream_responses[self.call_count]
-        self.call_count += 1
-        return FakeOpenAIStreamManager(chunks, url)
-
-
-class FakeOpenAIStreamManager:
-    def __init__(self, chunks: list[dict[str, Any]], url: str) -> None:
-        self.response = FakeOpenAIStreamResponse(chunks, url)
-
-    async def __aenter__(self) -> "FakeOpenAIStreamResponse":
-        return self.response
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        traceback: object,
-    ) -> None:
-        return None
-
-
-class FakeOpenAIStreamResponse:
-    def __init__(self, chunks: list[dict[str, Any]], url: str) -> None:
-        self.chunks = chunks
-        self.request = httpx.Request("POST", url)
-
-    def raise_for_status(self) -> None:
-        return None
-
-    async def aiter_lines(self) -> Any:
-        for chunk in self.chunks:
-            yield f"data: {json.dumps(chunk)}"
-        yield "data: [DONE]"
+ContentBlock = TextBlock | ToolUseBlock
+StopReason = str
 
 
 class FakeContextBuilder(ContextBuilder):
@@ -216,11 +114,15 @@ class FakeProviderAdapter:
         responses: list[ProviderResponse] | None = None,
         capabilities: ProviderCapabilities | None = None,
     ) -> None:
-        self.provider = "fake"
-        self.model = "claude-haiku-4-5"
+        self.provider = "deepseek"
+        self.model = "deepseek-v4-flash"
         self.capabilities = capabilities or ProviderCapabilities()
         self.responses = responses or []
         self.requests: list[dict[str, Any]] = []
+
+    @property
+    def call_count(self) -> int:
+        return len(self.requests)
 
     async def stream_response(
         self,
@@ -261,16 +163,22 @@ class FakeProviderAdapter:
 def make_message(
     content: Sequence[ContentBlock],
     stop_reason: StopReason,
-) -> Message:
-    return Message(
-        id="msg_test",
-        type="message",
-        role="assistant",
-        model="claude-haiku-4-5",
-        content=list(content),
+) -> ProviderResponse:
+    text = [block.text for block in content if isinstance(block, TextBlock)]
+    tool_calls = [
+        ToolCall(name=block.name, input=block.input, tool_use_id=block.id)
+        for block in content
+        if isinstance(block, ToolUseBlock)
+    ]
+    return ProviderResponse(
+        message={
+            "role": "assistant",
+            "content": [block.model_dump() for block in content],
+        },
         stop_reason=stop_reason,
-        stop_sequence=None,
-        usage=Usage(input_tokens=10, output_tokens=5),
+        text=text,
+        tool_calls=tool_calls,
+        usage=TokenUsage(input_tokens=10, output_tokens=5),
     )
 
 
@@ -325,150 +233,17 @@ def create_mcp_registry(config: McpServerConfig) -> ToolRegistry:
 
 
 def create_agent(
-    responses: list[Message],
+    responses: list[ProviderResponse],
     max_steps: int = 10,
     registry: ToolRegistry | None = None,
-) -> tuple[Agent, FakeMessages]:
-    fake_client = FakeClient(responses)
+) -> tuple[Agent, FakeProviderAdapter]:
+    provider = FakeProviderAdapter(responses)
     agent = Agent(
-        provider_adapter=AnthropicProviderAdapter(
-            provider="anthropic",
-            model="claude-haiku-4-5",
-            client=cast(AsyncAnthropic, fake_client),
-        ),
+        provider_adapter=provider,
         registry=registry or create_registry(),
         max_steps=max_steps,
     )
-    return agent, fake_client.messages
-
-
-def create_openai_scripted_adapter() -> OpenAICompatibleProviderAdapter:
-    fake_client = FakeOpenAIHttpClient(
-        [
-            [
-                {
-                    "id": "chatcmpl_tool",
-                    "model": "gpt-4o-mini",
-                    "choices": [
-                        {
-                            "delta": {
-                                "role": "assistant",
-                                "tool_calls": [
-                                    {
-                                        "index": 0,
-                                        "id": "call_calc",
-                                        "type": "function",
-                                        "function": {
-                                            "name": "calculator",
-                                            "arguments": '{"expression": ',
-                                        },
-                                    }
-                                ],
-                            },
-                            "finish_reason": None,
-                        }
-                    ],
-                },
-                {
-                    "id": "chatcmpl_tool",
-                    "model": "gpt-4o-mini",
-                    "choices": [
-                        {
-                            "delta": {
-                                "tool_calls": [
-                                    {
-                                        "index": 0,
-                                        "function": {"arguments": '"1 + 1"}'},
-                                    }
-                                ]
-                            },
-                            "finish_reason": None,
-                        }
-                    ],
-                },
-                {
-                    "id": "chatcmpl_tool",
-                    "model": "gpt-4o-mini",
-                    "choices": [{"delta": {}, "finish_reason": "tool_calls"}],
-                },
-                {
-                    "id": "chatcmpl_tool",
-                    "model": "gpt-4o-mini",
-                    "choices": [],
-                    "usage": {"prompt_tokens": 10, "completion_tokens": 5},
-                },
-            ],
-            [
-                {
-                    "id": "chatcmpl_final",
-                    "model": "gpt-4o-mini",
-                    "choices": [
-                        {
-                            "delta": {
-                                "role": "assistant",
-                                "content": "The answer ",
-                            },
-                            "finish_reason": None,
-                        }
-                    ],
-                },
-                {
-                    "id": "chatcmpl_final",
-                    "model": "gpt-4o-mini",
-                    "choices": [
-                        {
-                            "delta": {"content": "is 2."},
-                            "finish_reason": None,
-                        }
-                    ],
-                },
-                {
-                    "id": "chatcmpl_final",
-                    "model": "gpt-4o-mini",
-                    "choices": [{"delta": {}, "finish_reason": "stop"}],
-                },
-                {
-                    "id": "chatcmpl_final",
-                    "model": "gpt-4o-mini",
-                    "choices": [],
-                    "usage": {"prompt_tokens": 15, "completion_tokens": 6},
-                },
-            ],
-        ]
-    )
-    return OpenAICompatibleProviderAdapter(
-        provider="openai",
-        model="gpt-4o-mini",
-        api_key="openai-key",
-        base_url="https://api.openai.com/v1",
-        http_client=cast(httpx.AsyncClient, fake_client),
-    )
-
-
-def normalize_run_trajectory(agent_run: AgentRun) -> list[dict[str, Any]]:
-    return [
-        {
-            "stop_reason": step.stop_reason,
-            "text": step.text,
-            "tool_calls": [
-                {
-                    "name": tool_call.name,
-                    "input": tool_call.input,
-                    "tool_use_id": tool_call.tool_use_id,
-                }
-                for tool_call in step.tool_calls
-            ],
-            "tool_results": [
-                {
-                    "tool_use_id": tool_result.tool_use_id,
-                    "content": tool_result.content,
-                    "is_error": tool_result.is_error,
-                }
-                for tool_result in step.tool_results
-            ],
-        }
-        for step in agent_run.steps
-    ]
+    return agent, provider
 
 
 def test_single_tool_call_completes(
@@ -506,43 +281,6 @@ def test_single_tool_call_completes(
     assert agent.steps[0].tool_results[0].is_error is False
     assert agent.steps[1].text == ["The answer is 2."]
     assert capsys.readouterr().out == "Running calculator\nThe answer is 2.\n"
-
-
-def test_anthropic_and_openai_adapters_produce_same_agent_trajectory(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    anthropic_tool_response = make_message(
-        content=[
-            ToolUseBlock(
-                id="call_calc",
-                name="calculator",
-                input={"expression": "1 + 1"},
-                type="tool_use",
-            )
-        ],
-        stop_reason="tool_use",
-    )
-    anthropic_final_response = make_message(
-        content=[TextBlock(text="The answer is 2.", type="text")],
-        stop_reason="end_turn",
-    )
-    anthropic_agent, _ = create_agent(
-        [anthropic_tool_response, anthropic_final_response]
-    )
-    openai_agent = Agent(
-        provider_adapter=create_openai_scripted_adapter(),
-        registry=create_registry(),
-    )
-
-    anthropic_run = asyncio.run(anthropic_agent.run("Calculate 1 + 1"))
-    openai_run = asyncio.run(openai_agent.run("Calculate 1 + 1"))
-
-    assert anthropic_run.termination == "completed"
-    assert openai_run.termination == "completed"
-    assert normalize_run_trajectory(anthropic_run) == normalize_run_trajectory(
-        openai_run
-    )
-    capsys.readouterr()
 
 
 def test_agent_sends_coding_system_prompt() -> None:
@@ -1367,52 +1105,6 @@ def test_agent_run_contains_only_current_task_steps() -> None:
     assert agent.completed_runs == [first_run, second_run]
 
 
-def test_agent_switches_provider_after_complete_turn() -> None:
-    agent, _ = create_agent([])
-    replacement = AnthropicProviderAdapter(
-        provider="deepseek",
-        model="deepseek-v4-flash",
-        client=cast(AsyncAnthropic, FakeClient([])),
-    )
-
-    agent.steps = [
-        AgentStep(
-            step_number=1,
-            stop_reason="end_turn",
-            text=["Done."],
-        )
-    ]
-    agent.switch_provider(replacement)
-
-    assert agent.provider == "deepseek"
-    assert agent.model == "deepseek-v4-flash"
-
-
-def test_agent_rejects_provider_switch_during_incomplete_tool_exchange() -> None:
-    agent, _ = create_agent([])
-    replacement = AnthropicProviderAdapter(
-        provider="deepseek",
-        model="deepseek-v4-flash",
-        client=cast(AsyncAnthropic, FakeClient([])),
-    )
-    agent.steps = [
-        AgentStep(
-            step_number=1,
-            stop_reason="tool_use",
-            tool_calls=[
-                ToolCall(
-                    name="calculator",
-                    input={"expression": "1 + 1"},
-                    tool_use_id="toolu_calc",
-                )
-            ],
-        )
-    ]
-
-    with pytest.raises(ValueError, match="incomplete tool exchange"):
-        agent.switch_provider(replacement)
-
-
 def test_agent_rejects_provider_without_tool_support() -> None:
     adapter = FakeProviderAdapter(
         capabilities=ProviderCapabilities(supports_tools=False)
@@ -1435,16 +1127,6 @@ def test_agent_rejects_provider_without_streaming_support() -> None:
             provider_adapter=adapter,
             registry=ToolRegistry(),
         )
-
-
-def test_agent_rejects_switch_to_provider_without_tool_support() -> None:
-    agent, _ = create_agent([])
-    replacement = FakeProviderAdapter(
-        capabilities=ProviderCapabilities(supports_tools=False)
-    )
-
-    with pytest.raises(ValueError, match="does not support tools"):
-        agent.switch_provider(replacement)
 
 
 def test_agent_rejects_parallel_tool_calls_when_provider_does_not_support_them(
@@ -2072,8 +1754,8 @@ def test_agent_creates_snapshot_from_current_state(tmp_path: Path) -> None:
     assert edit_is_error is False
     assert snapshot.session_id == "demo-session"
     assert snapshot.workspace_root == tmp_path.as_posix()
-    assert snapshot.provider == "anthropic"
-    assert snapshot.model == "claude-haiku-4-5"
+    assert snapshot.provider == "deepseek"
+    assert snapshot.model == "deepseek-v4-flash"
     assert snapshot.max_steps == 10
     assert snapshot.messages == [{"role": "user", "content": "Fix module.py"}]
     assert snapshot.steps == [step]
@@ -2107,14 +1789,16 @@ def test_agent_restores_snapshot_into_current_state(tmp_path: Path) -> None:
         [{"role": "user", "content": "Fix module.py"}],
     )
     agent.token_tracker.add(TokenUsage(input_tokens=12, output_tokens=8))
-    snapshot = agent.create_snapshot("demo-session")
+    snapshot = agent.create_snapshot("demo-session").model_copy(
+        update={"provider": "legacy", "model": "legacy-model"}
+    )
 
     restored_registry = create_workspace_registry(tmp_path)
     restored_agent, _ = create_agent([], registry=restored_registry)
     restored_agent.restore_snapshot(snapshot)
 
-    assert restored_agent.provider == snapshot.provider
-    assert restored_agent.model == snapshot.model
+    assert restored_agent.provider == "deepseek"
+    assert restored_agent.model == "deepseek-v4-flash"
     assert restored_agent.max_steps == snapshot.max_steps
     assert restored_agent.messages == snapshot.messages
     assert restored_agent.steps == snapshot.steps
@@ -2192,8 +1876,8 @@ def test_agent_records_pending_action_and_tool_events(tmp_path: Path) -> None:
     ]
     assert {event.run_id for event in events} == {run_id}
     assert events[0].objective == "Calculate 1 + 1"
-    assert events[0].provider == "anthropic"
-    assert events[0].model == "claude-haiku-4-5"
+    assert events[0].provider == "deepseek"
+    assert events[0].model == "deepseek-v4-flash"
     assert events[2].step_number == 1
     assert events[2].stop_reason == "tool_use"
     assert events[2].input_tokens == 10

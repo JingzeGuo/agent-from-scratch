@@ -1,71 +1,20 @@
 import asyncio
 import json
-from collections.abc import Sequence
 from typing import Any, cast
 
 import httpx
 import pytest
-from anthropic import AsyncAnthropic
-from anthropic.types import (
-    ContentBlock,
-    Message,
-    TextBlock,
-    ToolUseBlock,
-    Usage,
-)
 
 from agent.provider import (
-    AnthropicProviderAdapter,
-    OpenAICompatibleProviderAdapter,
+    DeepSeekProvider,
     ProviderRequestError,
-    create_provider_adapter,
     format_provider_request_error,
-    load_provider_config,
+    load_deepseek_config,
 )
 from agent.schemas import ProviderCapabilities, ToolDefinition, ToolResult
 
 
-class FakeMessages:
-    def __init__(self, response: Message) -> None:
-        self.response = response
-        self.request: dict[str, Any] | None = None
-
-    def stream(self, **kwargs: Any) -> "FakeStreamManager":
-        self.request = kwargs
-        return FakeStreamManager(self.response)
-
-
-class FakeStreamManager:
-    def __init__(self, response: Message) -> None:
-        self.response = response
-        self.text_stream = self._stream_text()
-
-    async def __aenter__(self) -> "FakeStreamManager":
-        return self
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        traceback: object,
-    ) -> None:
-        return None
-
-    async def _stream_text(self) -> Any:
-        for block in self.response.content:
-            if block.type == "text":
-                yield block.text
-
-    async def get_final_message(self) -> Message:
-        return self.response
-
-
-class FakeClient:
-    def __init__(self, response: Message) -> None:
-        self.messages = FakeMessages(response)
-
-
-class FakeOpenAIHttpClient:
+class FakeHttpClient:
     def __init__(self, stream_chunks: list[dict[str, Any]]) -> None:
         self.stream_chunks = stream_chunks
         self.requests: list[dict[str, Any]] = []
@@ -77,19 +26,44 @@ class FakeOpenAIHttpClient:
         *,
         headers: dict[str, str],
         json: dict[str, Any],
-    ) -> "FakeOpenAIStreamManager":
+    ) -> "FakeStreamManager":
         self.requests.append(
-            {
-                "method": method,
-                "url": url,
-                "headers": headers,
-                "json": json,
-            }
+            {"method": method, "url": url, "headers": headers, "json": json}
         )
-        return FakeOpenAIStreamManager(self.stream_chunks, url)
+        return FakeStreamManager(self.stream_chunks, url)
 
 
-class FailingOpenAIHttpClient:
+class FakeStreamManager:
+    def __init__(self, stream_chunks: list[dict[str, Any]], url: str) -> None:
+        self.response = FakeStreamResponse(stream_chunks, url)
+
+    async def __aenter__(self) -> "FakeStreamResponse":
+        return self.response
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: object,
+    ) -> None:
+        return None
+
+
+class FakeStreamResponse:
+    def __init__(self, stream_chunks: list[dict[str, Any]], url: str) -> None:
+        self.stream_chunks = stream_chunks
+        self.request = httpx.Request("POST", url)
+
+    def raise_for_status(self) -> None:
+        return None
+
+    async def aiter_lines(self) -> Any:
+        for chunk in self.stream_chunks:
+            yield f"data: {json.dumps(chunk)}"
+        yield "data: [DONE]"
+
+
+class FailingHttpClient:
     def __init__(self, error: Exception) -> None:
         self.error = error
 
@@ -100,16 +74,16 @@ class FailingOpenAIHttpClient:
         *,
         headers: dict[str, str],
         json: dict[str, Any],
-    ) -> "FailingOpenAIStreamManager":
+    ) -> "FailingStreamManager":
         del method, url, headers, json
-        return FailingOpenAIStreamManager(self.error)
+        return FailingStreamManager(self.error)
 
 
-class FailingOpenAIStreamManager:
+class FailingStreamManager:
     def __init__(self, error: Exception) -> None:
         self.error = error
 
-    async def __aenter__(self) -> "FailingOpenAIStreamManager":
+    async def __aenter__(self) -> FakeStreamResponse:
         raise self.error
 
     async def __aexit__(
@@ -121,37 +95,7 @@ class FailingOpenAIStreamManager:
         return None
 
 
-class FakeOpenAIStreamManager:
-    def __init__(self, stream_chunks: list[dict[str, Any]], url: str) -> None:
-        self.response = FakeOpenAIStreamResponse(stream_chunks, url)
-
-    async def __aenter__(self) -> "FakeOpenAIStreamResponse":
-        return self.response
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        traceback: object,
-    ) -> None:
-        return None
-
-
-class FakeOpenAIStreamResponse:
-    def __init__(self, stream_chunks: list[dict[str, Any]], url: str) -> None:
-        self.stream_chunks = stream_chunks
-        self.request = httpx.Request("POST", url)
-
-    def raise_for_status(self) -> None:
-        return None
-
-    async def aiter_lines(self) -> Any:
-        for chunk in self.stream_chunks:
-            yield f"data: {json_dumps(chunk)}"
-        yield "data: [DONE]"
-
-
-class FakeBadJsonOpenAIHttpClient:
+class BadJsonHttpClient:
     def stream(
         self,
         method: str,
@@ -159,16 +103,16 @@ class FakeBadJsonOpenAIHttpClient:
         *,
         headers: dict[str, str],
         json: dict[str, Any],
-    ) -> "FakeBadJsonOpenAIStreamManager":
+    ) -> "BadJsonStreamManager":
         del method, headers, json
-        return FakeBadJsonOpenAIStreamManager(url)
+        return BadJsonStreamManager(url)
 
 
-class FakeBadJsonOpenAIStreamManager:
+class BadJsonStreamManager:
     def __init__(self, url: str) -> None:
-        self.response = FakeBadJsonOpenAIStreamResponse(url)
+        self.response = BadJsonStreamResponse(url)
 
-    async def __aenter__(self) -> "FakeBadJsonOpenAIStreamResponse":
+    async def __aenter__(self) -> "BadJsonStreamResponse":
         return self.response
 
     async def __aexit__(
@@ -180,7 +124,7 @@ class FakeBadJsonOpenAIStreamManager:
         return None
 
 
-class FakeBadJsonOpenAIStreamResponse:
+class BadJsonStreamResponse:
     def __init__(self, url: str) -> None:
         self.request = httpx.Request("POST", url)
 
@@ -191,220 +135,85 @@ class FakeBadJsonOpenAIStreamResponse:
         yield "data: {not-json"
 
 
-def json_dumps(value: dict[str, Any]) -> str:
-    return json.dumps(value)
-
-
-def make_message(
-    content: Sequence[ContentBlock],
-    stop_reason: str,
-) -> Message:
-    return Message(
-        id="msg_provider_test",
-        type="message",
-        role="assistant",
-        model="claude-haiku-4-5",
-        content=list(content),
-        stop_reason=cast(Any, stop_reason),
-        stop_sequence=None,
-        usage=Usage(input_tokens=12, output_tokens=6),
+def make_provider(
+    http_client: object,
+    *,
+    capabilities: ProviderCapabilities | None = None,
+) -> DeepSeekProvider:
+    return DeepSeekProvider(
+        model="deepseek-v4-flash",
+        api_key="deepseek-key",
+        base_url="https://api.deepseek.com/",
+        http_client=cast(httpx.AsyncClient, http_client),
+        capabilities=capabilities,
     )
 
 
-def test_loads_anthropic_provider_config(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
-    monkeypatch.delenv("AGENT_PROVIDER", raising=False)
-    monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
-    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+def final_text_chunks(text: str = "Done.") -> list[dict[str, Any]]:
+    return [
+        {
+            "id": "deepseek_test",
+            "model": "deepseek-v4-flash",
+            "choices": [
+                {
+                    "delta": {"role": "assistant", "content": text},
+                    "finish_reason": None,
+                }
+            ],
+        },
+        {
+            "id": "deepseek_test",
+            "model": "deepseek-v4-flash",
+            "choices": [{"delta": {}, "finish_reason": "stop"}],
+        },
+        {
+            "id": "deepseek_test",
+            "model": "deepseek-v4-flash",
+            "choices": [],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 4},
+        },
+    ]
 
-    config = load_provider_config()
 
-    assert config.provider == "anthropic"
-    assert config.model == "claude-haiku-4-5"
-    assert config.api_key == "anthropic-key"
-    assert config.base_url is None
-
-
-def test_loads_deepseek_provider_config(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("AGENT_PROVIDER", "deepseek")
+def test_loads_deepseek_config(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-key")
     monkeypatch.delenv("DEEPSEEK_MODEL", raising=False)
     monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
 
-    config = load_provider_config()
+    config = load_deepseek_config()
 
-    assert config.provider == "deepseek"
     assert config.model == "deepseek-v4-flash"
     assert config.api_key == "deepseek-key"
     assert config.base_url == "https://api.deepseek.com"
 
 
-def test_loads_openai_provider_config(
+def test_deepseek_config_uses_explicit_overrides(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("AGENT_PROVIDER", "openai")
-    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
-    monkeypatch.delenv("OPENAI_MODEL", raising=False)
-    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "env-key")
+    monkeypatch.setenv("DEEPSEEK_MODEL", "env-model")
+    monkeypatch.setenv("DEEPSEEK_BASE_URL", "https://example.test")
 
-    config = load_provider_config()
+    config = load_deepseek_config(model="cli-model", api_key="cli-key")
 
-    assert config.provider == "openai"
-    assert config.model == "gpt-4o-mini"
-    assert config.api_key == "openai-key"
-    assert config.base_url == "https://api.openai.com/v1"
-
-
-def test_provider_config_uses_cli_api_key_override(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "env-key")
-
-    config = load_provider_config(api_key="cli-key")
-
+    assert config.model == "cli-model"
     assert config.api_key == "cli-key"
+    assert config.base_url == "https://example.test"
 
 
-def test_provider_config_requires_matching_api_key(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_deepseek_config_requires_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
 
     with pytest.raises(ValueError, match="DEEPSEEK_API_KEY is not set"):
-        load_provider_config(provider="deepseek")
+        load_deepseek_config()
 
 
-def test_deepseek_uses_openai_compatible_adapter() -> None:
-    config = load_provider_config(
-        provider="deepseek",
-        model="deepseek-v4-flash",
-        api_key="deepseek-key",
-    )
-
-    adapter = create_provider_adapter(config)
-
-    assert isinstance(adapter, OpenAICompatibleProviderAdapter)
-    assert adapter.provider == "deepseek"
-    assert adapter.base_url == "https://api.deepseek.com"
-    assert adapter.capabilities.supports_parallel_tool_calls is True
-
-
-def test_anthropic_adapter_normalizes_tool_response() -> None:
-    message = make_message(
-        content=[
-            TextBlock(text="I will calculate it.", type="text"),
-            ToolUseBlock(
-                id="toolu_calc",
-                name="calculator",
-                input={"expression": "1 + 1"},
-                type="tool_use",
-            ),
-        ],
-        stop_reason="tool_use",
-    )
-    fake_client = FakeClient(message)
-    adapter = AnthropicProviderAdapter(
-        provider="anthropic",
-        model="claude-haiku-4-5",
-        client=cast(AsyncAnthropic, fake_client),
-    )
-    streamed: list[str] = []
-
-    response = asyncio.run(
-        adapter.stream_response(
-            system="system prompt",
-            tools=[
-                ToolDefinition(
-                    name="calculator",
-                    description="Calculate.",
-                    input_schema={"type": "object"},
-                )
-            ],
-            messages=[{"role": "user", "content": "Calculate 1 + 1"}],
-            on_text_delta=streamed.append,
-        )
-    )
-
-    assert streamed == ["I will calculate it."]
-    assert response.stop_reason == "tool_use"
-    assert response.text == ["I will calculate it."]
-    assert response.tool_calls[0].tool_use_id == "toolu_calc"
-    assert response.tool_calls[0].name == "calculator"
-    assert response.tool_calls[0].input == {"expression": "1 + 1"}
-    assert response.usage.input_tokens == 12
-    assert response.usage.output_tokens == 6
-    assert fake_client.messages.request is not None
-    assert fake_client.messages.request["tools"][0]["name"] == "calculator"
-
-
-def test_anthropic_adapter_builds_tool_result_message() -> None:
-    adapter = AnthropicProviderAdapter(
-        provider="anthropic",
-        model="claude-haiku-4-5",
-        client=cast(AsyncAnthropic, object()),
-    )
-
-    message = adapter.tool_result_message(
-        [
-            ToolResult(
-                tool_use_id="toolu_calc",
-                content="2",
-                is_error=False,
-            )
-        ]
-    )
-
-    assert message == {
-        "role": "user",
-        "content": [
-            {
-                "type": "tool_result",
-                "tool_use_id": "toolu_calc",
-                "content": "2",
-                "is_error": False,
-            }
-        ],
-    }
-
-
-def test_anthropic_adapter_rejects_tools_when_capability_is_disabled() -> None:
-    message = make_message(
-        content=[TextBlock(text="Done.", type="text")],
-        stop_reason="end_turn",
-    )
-    adapter = AnthropicProviderAdapter(
-        provider="anthropic",
-        model="claude-haiku-4-5",
-        client=cast(AsyncAnthropic, FakeClient(message)),
-        capabilities=ProviderCapabilities(supports_tools=False),
-    )
-
-    with pytest.raises(ValueError, match="does not support tools"):
-        asyncio.run(
-            adapter.stream_response(
-                system="system prompt",
-                tools=[
-                    ToolDefinition(
-                        name="calculator",
-                        description="Calculate.",
-                        input_schema={"type": "object"},
-                    )
-                ],
-                messages=[{"role": "user", "content": "Calculate 1 + 1"}],
-            )
-        )
-
-
-def test_openai_adapter_normalizes_tool_response() -> None:
-    fake_client = FakeOpenAIHttpClient(
+def test_deepseek_provider_normalizes_streamed_tool_response() -> None:
+    fake_client = FakeHttpClient(
         [
             {
-                "id": "chatcmpl_test",
-                "model": "gpt-4o-mini",
+                "id": "deepseek_test",
+                "model": "deepseek-v4-flash",
                 "choices": [
                     {
                         "delta": {"role": "assistant", "content": "I will "},
@@ -413,21 +222,12 @@ def test_openai_adapter_normalizes_tool_response() -> None:
                 ],
             },
             {
-                "id": "chatcmpl_test",
-                "model": "gpt-4o-mini",
-                "choices": [
-                    {
-                        "delta": {"content": "calculate it."},
-                        "finish_reason": None,
-                    }
-                ],
-            },
-            {
-                "id": "chatcmpl_test",
-                "model": "gpt-4o-mini",
+                "id": "deepseek_test",
+                "model": "deepseek-v4-flash",
                 "choices": [
                     {
                         "delta": {
+                            "content": "calculate.",
                             "tool_calls": [
                                 {
                                     "index": 0,
@@ -438,15 +238,15 @@ def test_openai_adapter_normalizes_tool_response() -> None:
                                         "arguments": '{"expression": ',
                                     },
                                 }
-                            ]
+                            ],
                         },
                         "finish_reason": None,
                     }
                 ],
             },
             {
-                "id": "chatcmpl_test",
-                "model": "gpt-4o-mini",
+                "id": "deepseek_test",
+                "model": "deepseek-v4-flash",
                 "choices": [
                     {
                         "delta": {
@@ -457,34 +257,23 @@ def test_openai_adapter_normalizes_tool_response() -> None:
                                 }
                             ]
                         },
-                        "finish_reason": None,
+                        "finish_reason": "tool_calls",
                     }
                 ],
             },
             {
-                "id": "chatcmpl_test",
-                "model": "gpt-4o-mini",
-                "choices": [{"delta": {}, "finish_reason": "tool_calls"}],
-            },
-            {
-                "id": "chatcmpl_test",
-                "model": "gpt-4o-mini",
+                "id": "deepseek_test",
+                "model": "deepseek-v4-flash",
                 "choices": [],
                 "usage": {"prompt_tokens": 12, "completion_tokens": 6},
             },
         ]
     )
-    adapter = OpenAICompatibleProviderAdapter(
-        provider="openai",
-        model="gpt-4o-mini",
-        api_key="openai-key",
-        base_url="https://api.openai.com/v1",
-        http_client=cast(httpx.AsyncClient, fake_client),
-    )
+    provider = make_provider(fake_client)
     streamed: list[str] = []
 
     response = asyncio.run(
-        adapter.stream_response(
+        provider.stream_response(
             system="system prompt",
             tools=[
                 ToolDefinition(
@@ -498,88 +287,28 @@ def test_openai_adapter_normalizes_tool_response() -> None:
         )
     )
 
-    assert streamed == ["I will ", "calculate it."]
+    assert streamed == ["I will ", "calculate."]
     assert response.stop_reason == "tool_use"
-    assert response.text == ["I will calculate it."]
-    assert response.tool_calls[0].tool_use_id == "call_calc"
-    assert response.tool_calls[0].name == "calculator"
-    assert response.tool_calls[0].input == {"expression": "1 + 1"}
+    assert response.text == ["I will calculate."]
+    assert response.tool_calls[0].model_dump() == {
+        "name": "calculator",
+        "input": {"expression": "1 + 1"},
+        "tool_use_id": "call_calc",
+    }
     assert response.usage.input_tokens == 12
     assert response.usage.output_tokens == 6
-    assert response.message == {
-        "role": "assistant",
-        "content": [
-            {"type": "text", "text": "I will calculate it."},
-            {
-                "type": "tool_use",
-                "id": "call_calc",
-                "name": "calculator",
-                "input": {"expression": "1 + 1"},
-            },
-        ],
-    }
-    assert fake_client.requests[0]["url"] == (
-        "https://api.openai.com/v1/chat/completions"
-    )
-    assert fake_client.requests[0]["json"]["stream"] is True
-    assert fake_client.requests[0]["json"]["stream_options"] == {"include_usage": True}
-    assert fake_client.requests[0]["json"]["parallel_tool_calls"] is True
-    assert fake_client.requests[0]["json"]["tools"][0] == {
-        "type": "function",
-        "function": {
-            "name": "calculator",
-            "description": "Calculate.",
-            "parameters": {"type": "object"},
-        },
-    }
+    request = fake_client.requests[0]
+    assert request["url"] == "https://api.deepseek.com/chat/completions"
+    assert request["json"]["stream"] is True
+    assert request["json"]["stream_options"] == {"include_usage": True}
+    assert "parallel_tool_calls" not in request["json"]
 
 
-def test_openai_adapter_maps_stop_finish_reason_to_end_turn() -> None:
-    fake_client = FakeOpenAIHttpClient(
-        [
-            {
-                "id": "chatcmpl_test",
-                "model": "gpt-4o-mini",
-                "choices": [
-                    {
-                        "delta": {"role": "assistant", "content": "Do"},
-                        "finish_reason": None,
-                    }
-                ],
-            },
-            {
-                "id": "chatcmpl_test",
-                "model": "gpt-4o-mini",
-                "choices": [
-                    {
-                        "delta": {"content": "ne."},
-                        "finish_reason": None,
-                    }
-                ],
-            },
-            {
-                "id": "chatcmpl_test",
-                "model": "gpt-4o-mini",
-                "choices": [{"delta": {}, "finish_reason": "stop"}],
-            },
-            {
-                "id": "chatcmpl_test",
-                "model": "gpt-4o-mini",
-                "choices": [],
-                "usage": {"prompt_tokens": 10, "completion_tokens": 4},
-            },
-        ]
-    )
-    adapter = OpenAICompatibleProviderAdapter(
-        provider="openai",
-        model="gpt-4o-mini",
-        api_key="openai-key",
-        base_url="https://api.openai.com/v1/",
-        http_client=cast(httpx.AsyncClient, fake_client),
-    )
+def test_deepseek_provider_maps_stop_to_end_turn() -> None:
+    provider = make_provider(FakeHttpClient(final_text_chunks()))
 
     response = asyncio.run(
-        adapter.stream_response(
+        provider.stream_response(
             system="system prompt",
             tools=[],
             messages=[{"role": "user", "content": "Say done"}],
@@ -588,268 +317,34 @@ def test_openai_adapter_maps_stop_finish_reason_to_end_turn() -> None:
 
     assert response.stop_reason == "end_turn"
     assert response.text == ["Done."]
-    assert fake_client.requests[0]["url"] == (
-        "https://api.openai.com/v1/chat/completions"
-    )
-    assert "tools" not in fake_client.requests[0]["json"]
 
 
-def test_openai_adapter_sends_parallel_tool_call_capability() -> None:
-    fake_client = FakeOpenAIHttpClient(
-        [
-            {
-                "id": "chatcmpl_test",
-                "model": "gpt-4o-mini",
-                "choices": [
-                    {
-                        "delta": {"role": "assistant", "content": "Done."},
-                        "finish_reason": None,
-                    }
-                ],
-            },
-            {
-                "id": "chatcmpl_test",
-                "model": "gpt-4o-mini",
-                "choices": [{"delta": {}, "finish_reason": "stop"}],
-            },
-            {
-                "id": "chatcmpl_test",
-                "model": "gpt-4o-mini",
-                "choices": [],
-                "usage": {"prompt_tokens": 10, "completion_tokens": 4},
-            },
-        ]
+def test_deepseek_provider_builds_tool_result_message() -> None:
+    provider = make_provider(FakeHttpClient([]))
+
+    message = provider.tool_result_message(
+        [ToolResult(tool_use_id="call_calc", content="2", is_error=False)]
     )
-    adapter = OpenAICompatibleProviderAdapter(
-        provider="openai",
-        model="gpt-4o-mini",
-        api_key="openai-key",
-        base_url="https://api.openai.com/v1",
-        http_client=cast(httpx.AsyncClient, fake_client),
-        capabilities=ProviderCapabilities(supports_parallel_tool_calls=False),
-    )
+
+    assert message == {
+        "role": "user",
+        "content": [
+            {
+                "type": "tool_result",
+                "tool_use_id": "call_calc",
+                "content": "2",
+                "is_error": False,
+            }
+        ],
+    }
+
+
+def test_deepseek_provider_converts_tool_result_history() -> None:
+    fake_client = FakeHttpClient(final_text_chunks("The answer is 2."))
+    provider = make_provider(fake_client)
 
     asyncio.run(
-        adapter.stream_response(
-            system="system prompt",
-            tools=[
-                ToolDefinition(
-                    name="calculator",
-                    description="Calculate.",
-                    input_schema={"type": "object"},
-                )
-            ],
-            messages=[{"role": "user", "content": "Calculate 1 + 1"}],
-        )
-    )
-
-    assert fake_client.requests[0]["json"]["parallel_tool_calls"] is False
-
-
-def test_deepseek_adapter_omits_openai_parallel_tool_call_parameter() -> None:
-    fake_client = FakeOpenAIHttpClient(
-        [
-            {
-                "id": "deepseek_test",
-                "model": "deepseek-v4-flash",
-                "choices": [
-                    {
-                        "delta": {"role": "assistant", "content": "Done."},
-                        "finish_reason": None,
-                    }
-                ],
-            },
-            {
-                "id": "deepseek_test",
-                "model": "deepseek-v4-flash",
-                "choices": [{"delta": {}, "finish_reason": "stop"}],
-            },
-            {
-                "id": "deepseek_test",
-                "model": "deepseek-v4-flash",
-                "choices": [],
-                "usage": {"prompt_tokens": 10, "completion_tokens": 4},
-            },
-        ]
-    )
-    adapter = OpenAICompatibleProviderAdapter(
-        provider="deepseek",
-        model="deepseek-v4-flash",
-        api_key="deepseek-key",
-        base_url="https://api.deepseek.com",
-        http_client=cast(httpx.AsyncClient, fake_client),
-    )
-
-    asyncio.run(
-        adapter.stream_response(
-            system="system prompt",
-            tools=[
-                ToolDefinition(
-                    name="calculator",
-                    description="Calculate.",
-                    input_schema={"type": "object"},
-                )
-            ],
-            messages=[{"role": "user", "content": "Calculate 1 + 1"}],
-        )
-    )
-
-    request = fake_client.requests[0]
-    assert request["url"] == "https://api.deepseek.com/chat/completions"
-    assert "parallel_tool_calls" not in request["json"]
-
-
-def test_openai_adapter_rejects_tools_when_capability_is_disabled() -> None:
-    adapter = OpenAICompatibleProviderAdapter(
-        provider="openai",
-        model="gpt-4o-mini",
-        api_key="openai-key",
-        base_url="https://api.openai.com/v1",
-        http_client=cast(httpx.AsyncClient, FakeOpenAIHttpClient([])),
-        capabilities=ProviderCapabilities(supports_tools=False),
-    )
-
-    with pytest.raises(ValueError, match="does not support tools"):
-        asyncio.run(
-            adapter.stream_response(
-                system="system prompt",
-                tools=[
-                    ToolDefinition(
-                        name="calculator",
-                        description="Calculate.",
-                        input_schema={"type": "object"},
-                    )
-                ],
-                messages=[{"role": "user", "content": "Calculate 1 + 1"}],
-            )
-        )
-
-
-def test_openai_adapter_wraps_network_errors() -> None:
-    request = httpx.Request("POST", "https://api.deepseek.com/chat/completions")
-    adapter = OpenAICompatibleProviderAdapter(
-        provider="deepseek",
-        model="deepseek-v4-flash",
-        api_key="deepseek-key",
-        base_url="https://api.deepseek.com",
-        http_client=cast(
-            httpx.AsyncClient,
-            FailingOpenAIHttpClient(httpx.ConnectError("DNS failure", request=request)),
-        ),
-    )
-
-    with pytest.raises(ProviderRequestError) as error:
-        asyncio.run(
-            adapter.stream_response(
-                system="system prompt",
-                tools=[],
-                messages=[{"role": "user", "content": "Hello"}],
-            )
-        )
-
-    assert error.value.kind == "network"
-    assert error.value.provider == "deepseek"
-    assert "network connection failed" in format_provider_request_error(error.value)
-
-
-def test_openai_adapter_wraps_rate_limit_status_errors() -> None:
-    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
-    response = httpx.Response(
-        429,
-        request=request,
-        text='{"error":"rate limit"}',
-    )
-    adapter = OpenAICompatibleProviderAdapter(
-        provider="openai",
-        model="gpt-4o-mini",
-        api_key="openai-key",
-        base_url="https://api.openai.com/v1",
-        http_client=cast(
-            httpx.AsyncClient,
-            FailingOpenAIHttpClient(
-                httpx.HTTPStatusError(
-                    "rate limited",
-                    request=request,
-                    response=response,
-                )
-            ),
-        ),
-    )
-
-    with pytest.raises(ProviderRequestError) as error:
-        asyncio.run(
-            adapter.stream_response(
-                system="system prompt",
-                tools=[],
-                messages=[{"role": "user", "content": "Hello"}],
-            )
-        )
-
-    assert error.value.kind == "rate_limit"
-    assert "rate limit" in format_provider_request_error(error.value)
-
-
-def test_openai_adapter_wraps_bad_stream_json_as_response_format() -> None:
-    adapter = OpenAICompatibleProviderAdapter(
-        provider="openai",
-        model="gpt-4o-mini",
-        api_key="openai-key",
-        base_url="https://api.openai.com/v1",
-        http_client=cast(httpx.AsyncClient, FakeBadJsonOpenAIHttpClient()),
-    )
-
-    with pytest.raises(ProviderRequestError) as error:
-        asyncio.run(
-            adapter.stream_response(
-                system="system prompt",
-                tools=[],
-                messages=[{"role": "user", "content": "Hello"}],
-            )
-        )
-
-    assert error.value.kind == "response_format"
-    assert "unexpected response format" in format_provider_request_error(error.value)
-
-
-def test_openai_adapter_converts_tool_result_history() -> None:
-    fake_client = FakeOpenAIHttpClient(
-        [
-            {
-                "id": "chatcmpl_test",
-                "model": "gpt-4o-mini",
-                "choices": [
-                    {
-                        "delta": {
-                            "role": "assistant",
-                            "content": "The answer is 2.",
-                        },
-                        "finish_reason": None,
-                    }
-                ],
-            },
-            {
-                "id": "chatcmpl_test",
-                "model": "gpt-4o-mini",
-                "choices": [{"delta": {}, "finish_reason": "stop"}],
-            },
-            {
-                "id": "chatcmpl_test",
-                "model": "gpt-4o-mini",
-                "choices": [],
-                "usage": {"prompt_tokens": 20, "completion_tokens": 5},
-            },
-        ]
-    )
-    adapter = OpenAICompatibleProviderAdapter(
-        provider="openai",
-        model="gpt-4o-mini",
-        api_key="openai-key",
-        base_url="https://api.openai.com/v1",
-        http_client=cast(httpx.AsyncClient, fake_client),
-    )
-
-    asyncio.run(
-        adapter.stream_response(
+        provider.stream_response(
             system="system prompt",
             tools=[],
             messages=[
@@ -881,22 +376,94 @@ def test_openai_adapter_converts_tool_result_history() -> None:
     )
 
     request_messages = fake_client.requests[0]["json"]["messages"]
-    assert request_messages[-2] == {
-        "role": "assistant",
-        "content": None,
-        "tool_calls": [
-            {
-                "id": "call_calc",
-                "type": "function",
-                "function": {
-                    "name": "calculator",
-                    "arguments": '{"expression": "1 + 1"}',
-                },
-            }
-        ],
-    }
+    assert request_messages[-2]["role"] == "assistant"
+    assert request_messages[-2]["tool_calls"][0]["id"] == "call_calc"
     assert request_messages[-1] == {
         "role": "tool",
         "tool_call_id": "call_calc",
         "content": "2",
     }
+
+
+def test_deepseek_provider_rejects_unsupported_capabilities() -> None:
+    provider = make_provider(
+        FakeHttpClient([]),
+        capabilities=ProviderCapabilities(supports_tools=False),
+    )
+
+    with pytest.raises(ValueError, match="does not support tools"):
+        asyncio.run(
+            provider.stream_response(
+                system="system prompt",
+                tools=[
+                    ToolDefinition(
+                        name="calculator",
+                        description="Calculate.",
+                        input_schema={"type": "object"},
+                    )
+                ],
+                messages=[{"role": "user", "content": "Calculate"}],
+            )
+        )
+
+
+def test_deepseek_provider_wraps_network_errors() -> None:
+    request = httpx.Request("POST", "https://api.deepseek.com/chat/completions")
+    provider = make_provider(
+        FailingHttpClient(httpx.ConnectError("DNS failure", request=request))
+    )
+
+    with pytest.raises(ProviderRequestError) as error:
+        asyncio.run(
+            provider.stream_response(
+                system="system prompt",
+                tools=[],
+                messages=[{"role": "user", "content": "Hello"}],
+            )
+        )
+
+    assert error.value.kind == "network"
+    assert error.value.provider == "deepseek"
+    assert "network connection failed" in format_provider_request_error(error.value)
+
+
+def test_deepseek_provider_wraps_rate_limit_errors() -> None:
+    request = httpx.Request("POST", "https://api.deepseek.com/chat/completions")
+    response = httpx.Response(429, request=request, text='{"error":"rate limit"}')
+    provider = make_provider(
+        FailingHttpClient(
+            httpx.HTTPStatusError(
+                "rate limited",
+                request=request,
+                response=response,
+            )
+        )
+    )
+
+    with pytest.raises(ProviderRequestError) as error:
+        asyncio.run(
+            provider.stream_response(
+                system="system prompt",
+                tools=[],
+                messages=[{"role": "user", "content": "Hello"}],
+            )
+        )
+
+    assert error.value.kind == "rate_limit"
+    assert "rate limit" in format_provider_request_error(error.value)
+
+
+def test_deepseek_provider_wraps_bad_stream_json() -> None:
+    provider = make_provider(BadJsonHttpClient())
+
+    with pytest.raises(ProviderRequestError) as error:
+        asyncio.run(
+            provider.stream_response(
+                system="system prompt",
+                tools=[],
+                messages=[{"role": "user", "content": "Hello"}],
+            )
+        )
+
+    assert error.value.kind == "response_format"
+    assert "unexpected response format" in format_provider_request_error(error.value)
