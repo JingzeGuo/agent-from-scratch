@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+from rich.text import Text
 from typer.testing import CliRunner
 
 from agent.agent import Agent
@@ -36,6 +37,10 @@ from main import (
 )
 
 runner = CliRunner()
+
+
+def plain_cli_output(output: str) -> str:
+    return Text.from_ansi(output).plain
 
 
 class FakeRunAgent:
@@ -289,14 +294,15 @@ def test_cli_help_does_not_require_provider_config(
 
     monkeypatch.setattr("main.load_deepseek_config", fail_load_deepseek_config)
 
-    result = runner.invoke(app, ["--help"])
+    result = runner.invoke(app, ["--help"], color=True)
+    output = plain_cli_output(result.output)
 
     assert result.exit_code == 0
-    assert "Run a local terminal coding agent." in result.output
-    assert "--resume" in result.output
-    assert "--api-key" in result.output
-    assert "--version" in result.output
-    assert "eval" in result.output
+    assert "Run a local terminal coding agent." in output
+    assert "--resume" in output
+    assert "--api-key" in output
+    assert "--version" in output
+    assert "eval" in output
 
 
 def test_cli_version_does_not_require_provider_config(
@@ -390,10 +396,15 @@ def test_cli_forwards_interactive_options(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_cli_rejects_resume_for_eval() -> None:
-    result = runner.invoke(app, ["--resume", "day10", "eval", "--list"])
+    result = runner.invoke(
+        app,
+        ["--resume", "day10", "eval", "--list"],
+        color=True,
+    )
+    output = plain_cli_output(result.output)
 
     assert result.exit_code == 2
-    assert "--resume is only valid" in result.output
+    assert "--resume is only valid" in output
 
 
 def test_cli_rejects_top_level_positional_task() -> None:
@@ -404,13 +415,14 @@ def test_cli_rejects_top_level_positional_task() -> None:
 
 
 def test_eval_help_lists_typer_options() -> None:
-    result = runner.invoke(app, ["eval", "--help"])
+    result = runner.invoke(app, ["eval", "--help"], color=True)
+    output = plain_cli_output(result.output)
 
     assert result.exit_code == 0
-    assert "--real-model" in result.output
-    assert "--max-steps" in result.output
-    assert "--swe-bench" in result.output
-    assert "--instance-id" in result.output
+    assert "--real-model" in output
+    assert "--max-steps" in output
+    assert "--swe-bench" in output
+    assert "--instance-id" in output
 
 
 def test_cli_reports_configuration_error_without_traceback(
