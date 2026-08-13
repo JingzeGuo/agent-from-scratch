@@ -127,7 +127,7 @@ def test_session_store_clears_pending_action(tmp_path: Path) -> None:
     pending_action = PendingAction(
         session_id="session-one",
         step_number=1,
-        tool_name="calculator",
+        tool_name="read_file",
         tool_use_id="toolu_calc",
     )
     store.write_pending_action(pending_action)

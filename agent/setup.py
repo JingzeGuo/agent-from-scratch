@@ -3,7 +3,6 @@ from functools import partial
 from pathlib import Path
 
 from .schemas import (
-    CalculatorInput,
     EditFileInput,
     FetchUrlInput,
     GetDiffInput,
@@ -18,7 +17,6 @@ from .schemas import (
 from .tool import Tool
 from .tool_registry import ToolRegistry
 from .tools import (
-    calculator,
     edit_file,
     fetch_url,
     glob_files,
@@ -43,7 +41,6 @@ AGENT_PROFILES: dict[str, AgentProfile] = {
     "read_only_explorer": AgentProfile(
         allowed_tools=frozenset(
             {
-                "calculator",
                 "read_file",
                 "glob_files",
                 "search_text",
@@ -89,12 +86,6 @@ def _create_tool_catalog(
     registry: ToolRegistry,
 ) -> dict[str, Tool]:
     tools = [
-        Tool(
-            name="calculator",
-            description="Safely evaluate a mathematical expression.",
-            input_schema=CalculatorInput,
-            fn=calculator,
-        ),
         Tool(
             name="read_file",
             description="Read the contents of a local text file.",

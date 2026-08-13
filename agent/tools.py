@@ -10,15 +10,13 @@ tools with schema + validation.
 
 from __future__ import annotations
 
-import ast
 import difflib
 import json
-import operator
 import os
 import re
 import subprocess
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -28,68 +26,6 @@ from .security import classify_command
 from .workspace import resolve_workspace_path
 
 _SKIPPED_DIRS = {".git", ".venv", "node_modules", "build", "dist"}
-
-# ==========================================
-# 1. calculator
-# ==========================================
-# Why not use `eval()` directly?
-#   eval() can run ARBITRARY Python code — including `__import__('os').system('rm -rf /')`.
-#   We use Python's `ast` module to parse the expression and only allow
-#   a whitelist of math operators. This is the safe pattern.
-
-Number = int | float
-
-_ALLOWED_BINOPS: dict[
-    type[ast.operator],
-    Callable[[Number, Number], Number],
-] = {
-    ast.Add: operator.add,
-    ast.Sub: operator.sub,
-    ast.Mult: operator.mul,
-    ast.Div: operator.truediv,
-    ast.Mod: operator.mod,
-    ast.Pow: operator.pow,
-    ast.FloorDiv: operator.floordiv,
-}
-_ALLOWED_UNARYOPS: dict[
-    type[ast.unaryop],
-    Callable[[Number], Number],
-] = {
-    ast.UAdd: operator.pos,
-    ast.USub: operator.neg,
-}
-
-
-def _safe_eval(node: ast.AST) -> float | int:
-    """Recursively evaluate an AST node, allowing only math operations."""
-    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
-        return node.value
-    if isinstance(node, ast.BinOp) and type(node.op) in _ALLOWED_BINOPS:
-        return _ALLOWED_BINOPS[type(node.op)](
-            _safe_eval(node.left), _safe_eval(node.right)
-        )
-    if isinstance(node, ast.UnaryOp) and type(node.op) in _ALLOWED_UNARYOPS:
-        return _ALLOWED_UNARYOPS[type(node.op)](_safe_eval(node.operand))
-    raise ValueError(f"Disallowed expression: {ast.dump(node)}")
-
-
-def calculator(expression: str) -> str:
-    """Evaluate a math expression safely.
-
-    Supports +, -, *, /, %, **, //, and unary +/-.
-    Does NOT support function calls, variables, or imports.
-    """
-    try:
-        tree = ast.parse(expression, mode="eval")
-        result = _safe_eval(tree.body)
-        return str(result)
-    except SyntaxError as e:
-        raise ValueError(f"Invalid math expression syntax: {expression!r}") from e
-
-
-# ==========================================
-# 2. glob_files
-# ==========================================
 
 
 def _is_skipped_path(path: Path) -> bool:
@@ -179,11 +115,6 @@ def _has_more_glob_matches(root: Path, pattern: str, max_results: int) -> bool:
     return False
 
 
-# ==========================================
-# 3. search_text
-# ==========================================
-
-
 def search_text(
     pattern: str,
     *,
@@ -250,9 +181,6 @@ def _has_more_text_matches(
     return False
 
 
-# ==========================================
-# 4. read_file
-# ==========================================
 # We deliberately limit file size — don't blow up LLM's context window
 # by reading a 50MB log file.
 
@@ -293,11 +221,6 @@ def read_file(
         f"{line_number}: {line}"
         for line_number, line in enumerate(selected_lines, start=offset)
     )
-
-
-# ==========================================
-# 5. edit_file
-# ==========================================
 
 
 def edit_file(
@@ -396,11 +319,6 @@ def _build_unified_diff(
     if len(diff) > _MAX_DIFF_CHARS:
         return diff[:_MAX_DIFF_CHARS] + f"\n[truncated after {_MAX_DIFF_CHARS} chars]"
     return diff
-
-
-# ==========================================
-# 6. run_command
-# ==========================================
 
 
 def run_command(
@@ -529,11 +447,6 @@ def _normalize_subprocess_output(output: str | bytes | None) -> str:
     return output
 
 
-# ==========================================
-# 7. sub_agent
-# ==========================================
-
-
 async def sub_agent(
     task: str,
     profile: Literal["read_only_explorer"] = "read_only_explorer",
@@ -614,9 +527,6 @@ async def sub_agent(
     )
 
 
-# ==========================================
-# 8. fetch_url
-# ==========================================
 # Returns plain text. We don't parse HTML here — that's a separate concern.
 
 _FETCH_TIMEOUT_SECONDS = 10.0
@@ -640,9 +550,6 @@ def fetch_url(url: str) -> str:
     return text
 
 
-# ==========================================
-# 8. search_web (Tavily)
-# ==========================================
 # Tavily Search API: https://tavily.com
 # - Free tier: 1000 queries/month, no credit card required
 # - Designed for LLM/agent use cases (snippets are pre-optimized)

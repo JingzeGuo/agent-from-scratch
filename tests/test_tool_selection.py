@@ -16,11 +16,6 @@ class ToolSelectionCase:
 
 TOOL_SELECTION_CASES = [
     ToolSelectionCase(
-        task="Calculate (144 / 12) + 7",
-        expected_tool="calculator",
-        expected_arguments={"expression": "(144 / 12) + 7"},
-    ),
-    ToolSelectionCase(
         task="Read the local file README.md",
         expected_tool="read_file",
         expected_arguments={"path": "README.md", "offset": 1, "limit": 200},
@@ -55,7 +50,6 @@ TOOL_SELECTION_CASES = [
     "case",
     TOOL_SELECTION_CASES,
     ids=[
-        "calculation",
         "local-file",
         "known-url",
         "web-search",
@@ -79,9 +73,9 @@ def test_correct_tool_with_wrong_argument_name_is_an_argument_error() -> None:
     registry = create_registry(Path.cwd())
 
     output, is_error = registry.execute(
-        "calculator",
-        {"number": "23 * 9"},
+        "read_file",
+        {"filename": "README.md"},
     )
 
     assert is_error is True
-    assert "field 'expression': Field required" in output
+    assert "field 'path': Field required" in output

@@ -1,593 +1,251 @@
 # agent-from-scratch
 
-A terminal coding agent built with Python, Pydantic, and LLM tool calling.
+A local terminal coding agent built with Python, Pydantic, and DeepSeek Chat
+Completions. The controller keeps the agent loop explicit: the model chooses
+from structured tools, tool observations return to the model, and the loop ends
+on completion, protocol failure, or a bounded step limit.
 
-The agent runs inside a local workspace, plans and executes multi-step coding
-tasks, uses structured tools for repository inspection and edits, records
-session state, and tracks token usage and estimated cost.
+The agent is designed for practical repository work. It confines file and
+command operations to the current workspace, validates every tool input,
+records resumable sessions and JSONL traces, compacts long conversations into
+structured checkpoints, and tracks token use and estimated cost.
 
-## Features
-
-- Streaming terminal conversation
-- Thin DeepSeek provider client kept separate from the agent controller
-- Multi-step tool use with a maximum step limit
-- Multi-turn conversation state
-- Pydantic schemas for tool inputs and internal run data
-- Tool validation errors returned as model observations
-- Transient tool retries with exponential backoff
-- Workspace-confined file and command tools
-- File reading, globbing, regex search, exact edit, file write, and diff tools
-- Bounded command execution with a command safety policy
-- Session checkpoints, listing, resume, and rename
-- Context compaction reporting
-- Project and global memory stores for durable agent context
-- Local memory retrieval with standard Okapi BM25 and bounded metadata boosting
-- Automatic run reflection into session, topic, profile, and cross-project memories
-- Structured JSONL trace events with secret redaction
-- Token and estimated cost tracking
-- Optional web search and URL fetching
-- Read-only sub-agent delegation for bounded repository exploration
-- Optional stdio MCP server tool loading
-
-## Requirements
+## Requirements and setup
 
 - Python 3.12 or newer
-- A DeepSeek API key
-- Optional: `TAVILY_API_KEY` for web search
+- [uv](https://docs.astral.sh/uv/)
+- A DeepSeek API key for interactive use or live-model evaluation
+- A Tavily API key only when using `search_web`
 
-## Installation
-
-Clone the repository and create a virtual environment:
-
-```bash
-git clone <your-repo-url>
-cd agent-from-scratch
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
-```
-
-After installation, the console script is available as:
+Install the project and development dependencies:
 
 ```bash
-agent --help
-```
-
-If the virtual environment is not activated, run the installed script directly:
-
-```bash
-.venv/bin/agent
-```
-
-For app-style local installation, use `pipx` from the project root:
-
-```bash
-pipx install -e .
-```
-
-That exposes `agent` on your shell `PATH` while keeping the app in an isolated
-Python environment.
-
-## Configuration
-
-Copy `.env.example` to `.env` and fill in real values, or export the variables
-in your shell.
-
-```bash
+uv sync --dev
 cp .env.example .env
 ```
 
-Supported variables:
-
-| Variable | Description |
-| --- | --- |
-| `DEEPSEEK_API_KEY` | DeepSeek API key |
-| `DEEPSEEK_MODEL` | DeepSeek model, default `deepseek-v4-flash` |
-| `DEEPSEEK_BASE_URL` | DeepSeek Chat Completions base URL, default `https://api.deepseek.com` |
-| `TAVILY_API_KEY` | Optional key for the web search tool |
-| `AGENT_STATE_DIR` | Optional directory for project-scoped agent state. If unset, state lives under workspace `.agents/` |
-| `AGENT_TRACE_REDACT_PATTERNS` | Optional newline-separated regex patterns redacted from trace text |
-| `AGENT_MEMORY_ENABLED` | Enable memory retrieval and reflection, default `true` |
-| `AGENT_MEMORY_GLOBAL_DIR` | Global memory directory, default `~/.agent-from-scratch/memory` |
-| `AGENT_MEMORY_MAX_RESULTS` | Maximum retrieved memory records per model request, default `5` |
-| `AGENT_MEMORY_MAX_CONTEXT_CHARS` | Maximum memory context characters inserted into a request, default `4000` |
-| `AGENT_MCP_CONFIG` | Optional path to an MCP server config. If unset, `.agents/mcp.json` is loaded when present |
-
-The CLI loads `.env` from the directory where you start the process. For a
-coding task in another repository, either export environment variables globally
-or place that repository's agent configuration in its own `.env` file.
-
-Never commit `.env`, API keys, access tokens, or credentials.
-
-## Quick Start
-
-Start an interactive session in the repository you want the agent to work on:
+Set `DEEPSEEK_API_KEY` in `.env`, then start the agent from the repository you
+want it to operate on:
 
 ```bash
 cd /path/to/target-repository
-agent
+/path/to/agent-from-scratch/.venv/bin/agent
 ```
 
-The current working directory becomes the agent workspace. File and command
-tools are confined to that workspace.
+The current directory becomes the workspace root.
 
-For a multiline prompt, start paste mode and finish with `/send` on its own
-line. Use `/cancel` to discard the draft:
+## Configuration
+
+| Variable | Purpose |
+| --- | --- |
+| `DEEPSEEK_API_KEY` | Required provider API key; `--api-key` overrides it |
+| `DEEPSEEK_MODEL` | Model name; defaults to `deepseek-v4-flash` |
+| `DEEPSEEK_BASE_URL` | API base URL; defaults to `https://api.deepseek.com` |
+| `TAVILY_API_KEY` | Required only by `search_web` |
+| `AGENT_STATE_DIR` | Session and trace directory; defaults to `<workspace>/.agents` |
+| `AGENT_DEBUG` | Set to `1`, `true`, `yes`, or `on` to print provider tracebacks |
+| `AGENT_TRACE_REDACT_PATTERNS` | Optional newline-separated regular expressions redacted from traces |
+
+Relative `AGENT_STATE_DIR` values are resolved from the workspace root.
+
+Estimated cost is available for the models listed in
+`agent/token_tracker.py`. The estimate covers configured input and output token
+prices only.
+
+## CLI
+
+Startup options:
 
 ```text
-/paste
-Fix the login flow.
-
-Requirements:
-- Preserve the existing API.
-- Add focused tests.
-- Run the relevant pytest target.
-/send
-```
-
-Resume a saved session by id or session name:
-
-```bash
-agent --resume session-20260629-104200-123456
-agent --resume docs-review
-```
-
-Pass an API key directly when needed:
-
-```bash
-agent --api-key "$DEEPSEEK_API_KEY"
-```
-
-Show the installed version without loading provider configuration:
-
-```bash
+agent [--api-key KEY] [--resume SESSION_ID_OR_NAME]
+agent --help
 agent --version
+agent eval [evaluation options]
 ```
 
-## CLI Commands
+Interactive commands:
 
-Interactive sessions support slash commands:
-
-| Command | Description |
+| Command | Behavior |
 | --- | --- |
-| `/help` | Show available commands |
-| `/tokens` | Show input tokens, output tokens, total tokens, and estimated cost |
-| `/status` | Show session, workspace files, agent state, provider, files, and token state |
-| `/reset` | Clear the current conversation context |
+| `/help` | Show commands |
+| `/tokens` | Show input/output tokens and estimated cost |
+| `/status` | Show provider, workspace, session, and controller state |
+| `/reset` | Clear conversation messages, steps, and approval cache |
 | `/save` | Save a session checkpoint |
-| `/diff` | Show all file changes from this session |
-| `/diff <path>` | Show changes for one file |
-| `/compact` | Show context compaction metrics |
-| `/memory status` | Show memory paths and record counts |
-| `/memory search <query>` | Search project and global memory |
-| `/memory show <id>` | Show one memory record |
-| `/memory reflect` | Reflect on the latest completed run and save memory |
-| `/trace` | Print structured JSONL trace events |
-| `/trace <path>` | Export trace events to a workspace-relative file |
-| `/rename <session-name>` | Rename the current session |
+| `/diff [path]` | Show session changes, optionally for one file |
+| `/compact` | Report current context-compaction metrics |
+| `/trace [path]` | Print trace events or export them inside the workspace |
+| `/rename <name>` | Rename and save the current session |
 | `/sessions` | List saved sessions |
-| `/paste` | Start multiline prompt entry; finish with `/send` or discard with `/cancel` |
+| `/paste` | Enter multiline input; finish with `/send` or cancel with `/cancel` |
 | `/exit` | Exit the application |
+
+Completed interactive turns are checkpointed automatically. Resume by session
+ID or name:
+
+```bash
+agent --resume session-20260813-120000-000000
+```
 
 ## Tools
 
-The default registry exposes these tools to the model:
+The built-in `Tool` and `ToolRegistry` classes are the complete tool
+abstraction. The default registry contains:
 
-| Tool | Purpose |
+| Tool | Behavior |
 | --- | --- |
-| `calculator` | Safely evaluate a mathematical expression |
-| `read_file` | Read a workspace file with line offset and limit |
-| `glob_files` | Find workspace files with a glob pattern |
-| `search_text` | Search workspace files with a Python regular expression |
-| `edit_file` | Replace one exact text match and return a unified diff |
-| `write_file` | Create or intentionally overwrite a file and return a unified diff |
-| `get_diff` | Return diffs for files changed in the session |
-| `run_command` | Run a bounded command inside the workspace |
-| `sub_agent` | Delegate bounded read-only repository exploration |
-| `fetch_url` | Fetch URL content |
-| `search_web` | Search the web when `TAVILY_API_KEY` is configured |
-| `mcp_<server>__<tool>` | Call tools discovered from configured stdio MCP servers |
+| `read_file` | Read a bounded line range from a workspace text file |
+| `glob_files` | Find workspace files matching a bounded glob |
+| `search_text` | Search workspace files with a regular expression |
+| `edit_file` | Replace one exact unique match and return a unified diff |
+| `write_file` | Create a file or intentionally overwrite a complete file |
+| `get_diff` | Return unified diffs for files changed in the session |
+| `run_command` | Run a bounded command in the workspace |
+| `sub_agent` | Run a bounded, isolated, read-only repository exploration |
+| `fetch_url` | Fetch a known URL with bounded output |
+| `search_web` | Search with Tavily and return bounded structured results |
 
-All tool inputs are validated with Pydantic before execution. Validation
-failures are returned to the model as error observations so the agent can
-recover by choosing corrected arguments.
+The `read_only_explorer` profile used by `sub_agent` exposes only `read_file`,
+`glob_files`, and `search_text`, with a maximum of eight steps. It cannot edit,
+run commands, access the network, or delegate recursively.
 
-### MCP Tools
+## Controller behavior
 
-This project implements a minimal stdio MCP client, not the full MCP
-specification. It currently supports local stdio servers, `initialize`,
-`tools/list`, and `tools/call`. It does not yet support HTTP transport,
-resources, prompts, sampling, auth, progress notifications, or tool-list change
-notifications.
+For each user task, `Agent.run`:
 
-The agent can load tools from configured stdio MCP servers at startup. By
-default, it looks for `.agents/mcp.json` in the active workspace. Set
-`AGENT_MCP_CONFIG` to use a different JSON file, or set it to an empty value to
-disable MCP config loading explicitly.
+1. Adds the user message to conversation state.
+2. Builds bounded model context, adding a structured checkpoint when prior
+   steps exist.
+3. Streams a normalized provider response.
+4. Validates and schedules requested tools.
+5. Returns tool results as observations and continues the loop.
+6. Records verification evidence and a termination reason.
 
-The config uses the common `mcpServers` shape with explicit approval settings:
+Multiple calls run concurrently only when every requested tool is in the
+controller's read-only set. Mutating or order-sensitive calls run serially.
+The default maximum is 40 model steps per task.
 
-```json
-{
-  "mcpServers": {
-    "demo": {
-      "command": "python",
-      "args": ["server.py"],
-      "env": {
-        "TOKEN": "..."
-      },
-      "cwd": "tools",
-      "approval": "auto",
-      "allowedTools": ["list_items", "get_item"],
-      "blockedTools": ["delete_item"],
-      "readOnlyTools": ["list_items", "get_item"],
-      "allowExternalCwd": false
-    }
-  }
-}
+The controller requires an existing file to be read before `edit_file` may
+change it or `write_file` may overwrite it. Tool validation and execution errors
+are returned to the model as recoverable observations.
+
+## Command safety
+
+`run_command` parses arguments without a shell, rejects shell operators and
+command substitution, blocks destructive commands, and confines `cwd` to the
+workspace. Focused commands such as `pytest`, `mypy`, `ruff`, `py_compile`, and
+read-only Git inspection run automatically. Broader commands require interactive
+approval.
+
+Command output is bounded and includes exit code, timeout state, duration,
+stdout, and stderr. Approval is a controller decision rather than a property of
+the shell.
+
+## Sessions, traces, and context
+
+By default, runtime state is stored under `.agents/`:
+
+```text
+.agents/
+  sessions/                 resumable JSON snapshots
+    events/                 append-only JSONL traces
+    pending/                in-flight tool markers
+  evals/                    generated evaluation output
 ```
 
-Each configured server is launched without a shell, initialized over stdio, and
-queried with `tools/list`. Exposed tools are registered as
-`mcp_<server>__<tool>` and tool calls are forwarded with `tools/call`.
-Discovered input schemas are checked when tools are registered, and each MCP
-tool call is validated locally against its advertised schema before it is sent
-to the server.
+Snapshots preserve messages, steps, completed runs, file tracking, and token
+totals. Pending-action markers let resume report a tool call that started before
+the last completed checkpoint.
 
-Tool registration follows `blockedTools > allowedTools > discovered tools`.
-`blockedTools` are never registered. If `allowedTools` is omitted, every
-discovered tool that is not blocked is registered. If `allowedTools` is present,
-only listed tools are registered.
+Trace events cover model requests and responses, scheduling, approvals, tool
+execution, child runs, compaction, checkpoints, and run outcomes. Common
+secret-like values and configured redaction patterns are removed before events
+are written.
 
-By default, MCP servers use `approval: "auto"`. Approval modes are:
-
-- `always`: every MCP tool call requires user approval.
-- `auto`: tools listed in `readOnlyTools` run without approval; other MCP tools
-  require approval.
-- `never`: MCP tool calls run without approval. Use this only for servers you
-  control and have reviewed.
-
-`readOnlyTools` is a user configuration claim used only for approval decisions;
-it does not affect registration and is not inferred from server-provided tool
-descriptions.
-
-MCP server working directories are workspace-confined by default. If `cwd` is
-omitted, the server starts in the workspace root. Relative `cwd` values are
-resolved under the workspace and rejected if they escape it. Absolute `cwd`
-values are rejected unless `allowExternalCwd` is set to `true`.
-
-`sub_agent` is a delegated tool rather than a normal file or command helper.
-When the main controller executes it, the tool creates an isolated child agent
-with a fresh conversation, the same DeepSeek client, and a read-only registry
-containing `calculator`, `read_file`, `glob_files`, and `search_text`. The
-child agent cannot edit files, run commands, use network tools,
-or recursively spawn another sub-agent.
-
-## Python API
-
-The current library API is intentionally small and centered on constructing tool
-registries and agent instances.
-
-Create a registry with the built-in tools:
-
-```python
-from pathlib import Path
-
-from agent.setup import create_registry
-
-registry = create_registry(Path.cwd())
-```
-
-Register a custom tool:
-
-```python
-from pydantic import BaseModel, Field
-
-from agent.tool import Tool
-from agent.tool_registry import ToolRegistry
-
-
-class EchoInput(BaseModel):
-    text: str = Field(description="Text to echo.")
-
-
-def echo(text: str) -> str:
-    return text
-
-
-registry = ToolRegistry()
-registry.register(
-    Tool(
-        name="echo",
-        description="Return the provided text.",
-        input_schema=EchoInput,
-        fn=echo,
-    )
-)
-```
-
-Custom tools should keep inputs structured and return bounded text observations.
-Control availability through explicit registry allowlists and risky operations
-through approval policies.
+Long conversations use deterministic context compaction. Older large tool
+results are shortened, while a structured checkpoint retains the goal, files,
+edits, decisions, commands, errors, pending action, and latest verification.
 
 ## Architecture
 
-High-level flow:
-
-```text
-CLI
-  -> Agent controller
-       -> DeepSeek provider
-       -> Context builder
-       -> Memory system
-       -> Tool registry
-            -> repository tools
-            -> edit/write tools
-            -> command tool
-            -> web tools
-            -> MCP server tools
-            -> sub-agent tool
-       -> Session store
-       -> Trace writer
-       -> Token and cost tracker
-```
-
-Core modules:
-
-| Path | Responsibility |
+| File | Responsibility |
 | --- | --- |
-| `main.py` | CLI parsing, startup wiring, provider setup, interactive loop |
-| `agent/cli_commands.py` | Slash commands, session checkpoint commands, memory and trace commands |
-| `agent/agent.py` | Agent controller, run loop, tool scheduling, recovery, termination |
-| `agent/provider.py` | DeepSeek API client and normalized provider response contract |
-| `agent/setup.py` | Built-in tool registry construction |
-| `agent/tool.py` | Tool wrapper, schema generation, validation, retry |
-| `agent/tool_registry.py` | Tool storage, dispatch, changed-file tracking, diffs |
-| `agent/tools.py` | Tool implementations |
-| `agent/schemas.py` | Pydantic models for tools, runs, sessions, traces, context |
-| `agent/workspace.py` | Workspace path normalization and escape rejection |
+| `main.py` | CLI parsing, provider setup, sessions, and startup wiring |
+| `agent/agent.py` | Explicit controller loop, scheduling, approvals, traces, and termination |
+| `agent/provider.py` | DeepSeek transport and provider-neutral response normalization |
+| `agent/setup.py` | Default tool registry and read-only child profile |
+| `agent/tool.py` | Tool schemas, validation, execution, and retry boundary |
+| `agent/tool_registry.py` | Dispatch, workspace action tracking, and diffs |
+| `agent/tools.py` | Built-in tool implementations |
+| `agent/context.py` | Bounded context and structured checkpoints |
+| `agent/session.py` | Snapshots, pending actions, and JSONL events |
+| `agent/schemas.py` | Provider-neutral controller and session models |
 | `agent/security.py` | Command policy and trace redaction |
-| `agent/session.py` | Session snapshots, pending actions, JSONL trace events |
-| `agent/context.py` | Context compaction and checkpoint construction |
-| `agent/memory.py` | Project/global memory stores, retrieval, and run reflection |
-| `agent/token_tracker.py` | Token and estimated cost tracking |
-| `agent/verification.py` | Verification evidence extraction |
+| `agent/token_tracker.py` | Token totals and estimated cost |
+| `agent/verification.py` | Verification evidence and task-success inference |
+| `scripts/evaluate_coding_tasks.py` | Deterministic, live-model, and patch-generation evaluation |
 
-## Operating Model
+## Evaluation
 
-The core loop is in `agent/agent.py`: the controller keeps conversation and
-step state, sends context plus tool definitions to the model, receives either
-final text or tool calls, executes actions through the registry, appends tool
-observations, and stops on completion, protocol error, or the maximum step
-limit.
+The evaluation runner has three modes and intentionally avoids a large grading
+framework.
 
-The recovery story is tool-centered: Pydantic validates inputs before execution,
-validation and runtime failures are returned as observations, transient tool
-failures retry up to three attempts, command approval handles risky actions,
-and focused verification evidence is extracted from command results.
+### Deterministic local tasks
 
-The advanced layers are optional extensions around the loop. Context compaction
-keeps long sessions usable, session checkpoints make runs resumable, trace
-events make behavior inspectable, memory adds durable context, and `sub_agent`
-is a controlled read-only delegation path for narrow repository exploration.
-
-## Memory
-
-Memory is separate from session checkpoints. Checkpoints preserve resumable
-controller state; memory preserves durable context that may help future tasks.
-
-Project memory is agent runtime state, not user project output. By default it
-lives inside the active workspace:
-
-```text
-.agents/memory/
-  index.json
-```
-
-Set `AGENT_STATE_DIR` to move project-scoped state out of the target
-repository, for example:
+The default suite uses a scripted provider and temporary local repositories. It
+covers repository search, a focused bug fix, and recovery from a failed edit.
+Each result reports success, verification status, termination reason, steps,
+tool calls, tokens, estimated cost, latency, and a failure reason when needed.
 
 ```bash
-export AGENT_STATE_DIR=~/.agent-from-scratch/projects/my-repo
+.venv/bin/agent eval
+.venv/bin/agent eval --list
+.venv/bin/agent eval small_bug_fix
 ```
 
-When workspace-local state is used, the CLI creates `.agents/.gitignore` so
-generated memory, session, trace, and eval files stay separate from reviewable
-project files such as `.agents/mcp.json`.
+### Optional live-model tasks
 
-Global memory defaults to `~/.agent-from-scratch/memory` and uses the same
-layout. Project memory is for repository-specific facts, session notes,
-debugging history, and reflections. Global memory is reserved for stable user
-preferences and cross-project notes that should still matter in another
-repository.
-
-On each task, the agent searches project and global memory using a local,
-dependency-free Okapi BM25 implementation. Unicode normalization, Chinese
-character bigrams, and code-identifier splitting improve matching without
-binding memory to one provider's model tokenizer. Records with no BM25 match are
-excluded; a small kind/recency boost only reorders matched records. Retrieved
-memory is inserted as bounded, untrusted supporting context after the structured
-checkpoint and does not override system or project rules.
-
-After a run finishes, the agent asks the configured model to propose concise
-memory candidates. The controller filters candidates before persistence, redacts
-secret-like text, rejects project-specific global memories, skips exact
-duplicates, and updates facts or preferences that reuse a stable memory key.
-Accepted records are stored in `index.json`, the single source of truth for each
-memory store. If memory reflection fails, the main task result is still
-preserved.
-
-## Sessions, Checkpoints, and Traces
-
-Session data is agent runtime state. By default it is stored inside the active
-workspace:
-
-```text
-.agents/sessions/
-  <session-id>.json
-  pending/<session-id>.json
-  events/<session-id>.jsonl
-```
-
-If `AGENT_STATE_DIR` is set, sessions, pending actions, traces, and project
-memory are stored under that external directory instead. The `/status` command
-prints both `Workspace files` and `Agent state` so it is clear which directory
-contains business files and which directory contains agent bookkeeping.
-
-The CLI automatically checkpoints after each completed task. Use `/save` to
-checkpoint manually and `/sessions` to list saved sessions.
-
-Trace events are append-only JSONL facts such as session start, model request,
-tool start, tool finish, run finish, checkpoint save, and compaction report.
-Use `/trace` to inspect them or `/trace traces/current.jsonl` to export them
-inside the workspace.
-
-Trace text is redacted for common secret-like patterns. Add
-`AGENT_TRACE_REDACT_PATTERNS` for project-specific redaction.
-
-## Safety Model
-
-The agent is designed for local coding tasks, so safety is part of the product
-contract.
-
-- The default workspace is `Path.cwd()` when the CLI starts.
-- File paths are resolved through the workspace resolver.
-- `..` traversal and symlink escapes outside the workspace are rejected.
-- File write tools track changed files and keep original file contents for
-  session diffs.
-- Commands run inside the workspace with timeout and output limits.
-- Shell operators and command substitution are blocked by policy.
-- Dangerous commands such as `rm`, `sudo`, `chmod`, `chown`, `dd`, `mount`,
-  `shutdown`, and `git reset --hard` are blocked.
-- Broad commands such as `git`, `pip`, `python`, `uv`, `curl`, and `wget`
-  require approval unless they match the safe command policy.
-- Pressing Enter accepts an interactive approval. An approved `run_command`
-  with the same arguments and working directory is reused until `/reset` or
-  the process exits.
-- External MCP tools are mapped into the same approval system and are not
-  automatically trusted.
-- MCP server `cwd` is workspace-confined by default; external absolute working
-  directories require explicit `allowExternalCwd`.
-- One-shot mode denies command approvals automatically.
-
-This is a controller-level safety policy, not an operating-system sandbox.
-Run the agent only in repositories where you are comfortable reviewing and
-approving local changes.
-
-## Development Checks
-
-Run the smallest checks after documentation-only changes:
+Live provider calls are opt-in. With no case name, this mode runs only the
+read-only `repository_search` case.
 
 ```bash
-git diff --check
+.venv/bin/agent eval --real-model
+.venv/bin/agent eval --real-model small_bug_fix --max-steps 20
 ```
 
-Run local static checks:
+### SWE-bench-compatible patch generation
+
+Pass a JSON or JSONL export containing `instance_id`, `repo`, `base_commit`, and
+`problem_statement`. The runner clones each selected repository, checks out the
+base commit, runs the live agent, collects the Git diff, and writes JSONL
+predictions with exactly these standard fields:
+
+- `instance_id`
+- `model_name_or_path`
+- `model_patch`
+
+```bash
+.venv/bin/agent eval \
+  --swe-bench instances.jsonl \
+  --instance-id owner__repo-123 \
+  --swe-bench-predictions predictions.jsonl
+```
+
+Use `--swe-bench-limit N` for a prefix of the selected instances and repeat
+`--instance-id` to select several IDs. This mode generates patches only. Use the
+official SWE-bench harness for environment construction and scoring.
+
+## Development checks
+
+Run the normal local checks with the project environment:
 
 ```bash
 .venv/bin/python -m py_compile main.py agent/*.py scripts/*.py
 .venv/bin/ruff check .
 .venv/bin/mypy .
-```
-
-Run tests:
-
-```bash
-.venv/bin/pytest -q
-```
-
-Run deterministic evaluations:
-
-```bash
-.venv/bin/agent eval
-.venv/bin/python scripts/evaluate_tool_selection.py
+.venv/bin/python -m pytest -q
 .venv/bin/python scripts/evaluate_coding_tasks.py
 ```
 
-The `agent eval` command runs the default deterministic coding-task suite of
-13 local tasks. It reports pass rate, average steps, average token cost, average
-tool calls, and failure counts for compile errors, test failures, max step
-exits, and unsafe blocked commands.
-
-Run selected cases or a live-provider smoke case:
-
-```bash
-.venv/bin/agent eval small_bug_fix targeted_refactor
-.venv/bin/agent eval --real-model repository_search
-```
-
-Run SWE-bench-style instances from a local JSONL export:
-
-```bash
-.venv/bin/agent eval --swe-bench swe-bench-lite.jsonl --swe-bench-limit 3
-```
-
-SWE-bench mode checks out each instance's `repo` at `base_commit`, asks the
-agent to produce a patch, writes predictions to
-`.agents/evals/swe-bench-predictions.jsonl`, and runs best-effort local pytest
-targets from `FAIL_TO_PASS` and `PASS_TO_PASS` when present. The predictions
-file uses `instance_id`, `model_name_or_path`, and `model_patch` fields so it
-can be passed to the official SWE-bench harness for Docker-based scoring.
-
-Real API calls should be reserved for behavior experiments that cannot be
-verified with local provider doubles or deterministic tests.
-
-## Packaging Checks
-
-Development install:
-
-```bash
-pip install -e .
-agent --help
-```
-
-Build a wheel and source distribution:
-
-```bash
-python -m pip install build
-python -m build
-```
-
-Install the app from a local checkout with `pipx`:
-
-```bash
-pipx install -e .
-agent --help
-```
-
-If `pipx` was not previously configured, run:
-
-```bash
-pipx ensurepath
-```
-
-Then restart the shell.
-
-## Release Checklist
-
-- Package name, version, and console script are final for the release.
-- `pip install -e .` exposes `agent`.
-- `pipx install -e .` exposes `agent` outside the source checkout.
-- `agent --help` and `agent --version` work without provider configuration.
-- Help output works from a different working directory.
-- The active workspace is the directory where `agent` is started.
-- README covers installation, configuration, CLI commands, tools, sessions,
-  traces, safety, development checks, and limitations.
-- `.env`, API keys, tokens, credentials, and local-only secrets are not
-  committed.
-- `git diff --check` passes.
-- `py_compile`, Ruff, mypy, and pytest pass.
-- Packaging build succeeds.
-- Known limitations are documented.
-
-## Current Limitations
-
-- This is not a hardened sandbox.
-- Model behavior is nondeterministic with the live DeepSeek API.
-- Token cost estimates currently cover the configured pricing model used by
-  the project and may need updates when changing models.
-- Web search requires Tavily configuration.
-- MCP support is limited to local stdio tool discovery and calls; it is not a
-  full MCP client.
-- DeepSeek model support depends on streaming tool-call compatibility.
-- The public Python API is intentionally small and may evolve.
+Tests use fake providers and temporary workspaces; they do not make live API
+calls.

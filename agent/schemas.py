@@ -10,12 +10,6 @@ RunOutcome = Literal[
     "refused",
     "protocol_error",
 ]
-class CalculatorInput(BaseModel):
-    """Input schema for the calculator tool."""
-
-    expression: str = Field(
-        description="The mathematical expression string to be evaluated, e.g., '2 * (3 + 4)' or '1024 / 8'."
-    )
 
 
 class GlobFilesInput(BaseModel):
@@ -316,7 +310,6 @@ SessionEventType = Literal[
     "step_finished",
     "run_finished",
     "compaction_reported",
-    "memory_retrieved",
     "tool_schedule_decided",
     "tool_approval_requested",
     "tool_approval_granted",

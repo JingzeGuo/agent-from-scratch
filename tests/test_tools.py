@@ -723,7 +723,6 @@ def test_read_only_profile_excludes_mutating_and_recursive_tools(
     )
 
     assert set(registry.tools) == {
-        "calculator",
         "read_file",
         "glob_files",
         "search_text",

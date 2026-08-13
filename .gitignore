@@ -21,7 +21,6 @@ wheels/
 # Editor settings
 .vscode/
 
-.agents/memory/
 .agents/sessions/
 .agents/evals/
 

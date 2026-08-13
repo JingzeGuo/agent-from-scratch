@@ -12,20 +12,10 @@ from pydantic import BaseModel
 
 from agent.agent import Agent
 from agent.context import ContextBuilder
-from agent.mcp import McpServerConfig, McpToolInfo, register_mcp_tool
-from agent.memory import (
-    MemoryCandidate,
-    MemoryContext,
-    MemoryRecord,
-    MemoryStore,
-    MemorySummaryResult,
-    MemorySystem,
-)
 from agent.prompts import build_system_prompt
 from agent.schemas import (
     AgentRun,
     AgentStep,
-    CalculatorInput,
     PendingAction,
     ProviderCapabilities,
     ProviderResponse,
@@ -43,7 +33,7 @@ from agent.session import SessionStore
 from agent.setup import create_registry as create_workspace_registry
 from agent.tool import Tool
 from agent.tool_registry import ToolRegistry
-from agent.tools import calculator, run_command
+from agent.tools import run_command
 
 MessageParam = dict[str, Any]
 
@@ -64,6 +54,14 @@ ContentBlock = TextBlock | ToolUseBlock
 StopReason = str
 
 
+class SampleToolInput(BaseModel):
+    value: str
+
+
+def sample_tool(value: str) -> str:
+    return f"processed: {value}"
+
+
 class FakeContextBuilder(ContextBuilder):
     def __init__(self, context: list[MessageParam]) -> None:
         self.context = context
@@ -78,35 +76,12 @@ class FakeContextBuilder(ContextBuilder):
         steps: list[AgentStep] | None = None,
         objective: str | None = None,
         pending_action: PendingAction | None = None,
-        memory_context: MemoryContext | None = None,
     ) -> list[MessageParam]:
         self.calls.append(list(messages))
         self.step_calls.append(list(steps or []))
         self.objective_calls.append(objective)
         self.pending_action_calls.append(pending_action)
         return self.context
-
-
-class FakeMemorySummarizer:
-    async def summarize_run(
-        self,
-        **kwargs: Any,
-    ) -> MemorySummaryResult:
-        return MemorySummaryResult(
-            candidates=[
-                MemoryCandidate(
-                    scope="project",
-                    kind="reflection",
-                    title="Context memory lesson",
-                    content="Retrieved memory helped preserve context boundaries.",
-                    tags=["context"],
-                    confidence="medium",
-                    evidence="The run completed with memory context.",
-                )
-            ],
-            usage=TokenUsage(input_tokens=3, output_tokens=2),
-        )
-
 
 class FakeProviderAdapter:
     def __init__(
@@ -186,10 +161,10 @@ def create_registry() -> ToolRegistry:
     registry = ToolRegistry()
     registry.register(
         Tool(
-            name="calculator",
-            description="Calculate an expression.",
-            input_schema=CalculatorInput,
-            fn=calculator,
+            name="read_file",
+            description="Return a sample value.",
+            input_schema=SampleToolInput,
+            fn=sample_tool,
         )
     )
     return registry
@@ -206,31 +181,6 @@ def create_command_registry(workspace_root: Path) -> ToolRegistry:
         )
     )
     return registry
-
-
-class FakeMcpClient:
-    async def call_tool(self, remote_tool_name: str, arguments: dict[str, Any]) -> str:
-        return f"{remote_tool_name}: {arguments.get('value', '')}"
-
-
-def create_mcp_registry(config: McpServerConfig) -> ToolRegistry:
-    registry = ToolRegistry()
-    register_mcp_tool(
-        registry,
-        cast(Any, FakeMcpClient()),
-        config,
-        McpToolInfo(
-            name="echo",
-            description="Echo value.",
-            inputSchema={
-                "type": "object",
-                "properties": {"value": {"type": "string"}},
-                "required": ["value"],
-            },
-        ),
-    )
-    return registry
-
 
 def create_agent(
     responses: list[ProviderResponse],
@@ -253,34 +203,34 @@ def test_single_tool_call_completes(
         content=[
             ToolUseBlock(
                 id="toolu_test",
-                name="calculator",
-                input={"expression": "1 + 1"},
+                name="read_file",
+                input={"value": "sample"},
                 type="tool_use",
             )
         ],
         stop_reason="tool_use",
     )
     final_response = make_message(
-        content=[TextBlock(text="The answer is 2.", type="text")],
+        content=[TextBlock(text="Done.", type="text")],
         stop_reason="end_turn",
     )
     agent, messages = create_agent([tool_response, final_response])
 
-    agent_run = asyncio.run(agent.run("Calculate 1 + 1"))
+    agent_run = asyncio.run(agent.run("Process a sample value"))
 
     assert messages.call_count == 2
-    assert agent_run.objective == "Calculate 1 + 1"
+    assert agent_run.objective == "Process a sample value"
     assert agent_run.termination == "completed"
     assert agent_run.final_stop_reason == "end_turn"
     assert agent_run.verification.status == "not_run"
     assert agent_run.task_success is None
     assert len(agent_run.steps) == 2
     assert len(agent.steps) == 2
-    assert agent.steps[0].tool_calls[0].name == "calculator"
-    assert agent.steps[0].tool_results[0].content == "2"
+    assert agent.steps[0].tool_calls[0].name == "read_file"
+    assert agent.steps[0].tool_results[0].content == "processed: sample"
     assert agent.steps[0].tool_results[0].is_error is False
-    assert agent.steps[1].text == ["The answer is 2."]
-    assert capsys.readouterr().out == "Running calculator\nThe answer is 2.\n"
+    assert agent.steps[1].text == ["Done."]
+    assert capsys.readouterr().out == "Running read_file\nDone.\n"
 
 
 def test_agent_sends_coding_system_prompt() -> None:
@@ -295,7 +245,7 @@ def test_agent_sends_coding_system_prompt() -> None:
     system_prompt = messages.requests[0]["system"]
     assert system_prompt == agent.system_prompt
     assert "You are a coding agent operating inside a local workspace." in system_prompt
-    assert "`calculator`: Optional helper for math." in system_prompt
+    assert "`read_file`: Read a bounded range of lines" in system_prompt
     assert "Inspect before editing" in system_prompt
     assert "Edit, then verify" in system_prompt
     assert "must run focused verification" in system_prompt
@@ -335,68 +285,6 @@ def test_agent_uses_context_builder_for_model_messages() -> None:
     assert messages.requests[0]["messages"] == built_context
 
 
-def test_agent_retrieves_memory_and_remembers_completed_run(tmp_path: Path) -> None:
-    adapter = FakeProviderAdapter(
-        responses=[
-            ProviderResponse(
-                message={"role": "assistant", "content": "Done."},
-                stop_reason="end_turn",
-                text=["Done."],
-                usage=TokenUsage(input_tokens=10, output_tokens=5),
-            )
-        ]
-    )
-    registry = ToolRegistry(tmp_path)
-    agent = Agent(
-        provider_adapter=adapter,
-        registry=registry,
-        stream_output=False,
-    )
-    project_store = MemoryStore(tmp_path / "project-memory", "project")
-    project_store.save_record(
-        MemoryRecord(
-            id="project-topic-context",
-            scope="project",
-            kind="topic",
-            title="Context compaction",
-            content="Keep tool-call and tool-result boundaries intact.",
-            tags=["context"],
-            created_at="2026-06-28T00:00:00+00:00",
-            updated_at="2026-06-28T00:00:00+00:00",
-        )
-    )
-    memory_system = MemorySystem(
-        project_store=project_store,
-        global_store=MemoryStore(tmp_path / "global-memory", "global"),
-        summarizer=FakeMemorySummarizer(),  # type: ignore[arg-type]
-    )
-    agent.configure_memory(memory_system)
-    session_store = SessionStore(tmp_path / "sessions")
-    agent.configure_session_recording(session_store, "session-one")
-
-    agent_run = asyncio.run(agent.run("Use context compaction memory"))
-
-    first_request_messages = adapter.requests[0]["messages"]
-    assert any(
-        isinstance(message.get("content"), str)
-        and "[Retrieved memory]" in message["content"]
-        for message in first_request_messages
-    )
-    assert agent_run.termination == "completed"
-    saved_titles = {record.title for record in project_store.list_records()}
-    assert "Context memory lesson" in saved_titles
-    memory_events = [
-        event
-        for event in session_store.read_events("session-one")
-        if event.event_type == "memory_retrieved"
-    ]
-    assert len(memory_events) == 1
-    assert memory_events[0].message == "retrieved 1 memory records"
-    assert memory_events[0].text_preview == "Context compaction"
-    assert agent.token_tracker.input_tokens == 13
-    assert agent.token_tracker.output_tokens == 7
-
-
 def test_build_system_prompt_uses_workspace_and_registered_tools(
     tmp_path: Path,
 ) -> None:
@@ -409,10 +297,9 @@ def test_build_system_prompt_uses_workspace_and_registered_tools(
     )
 
     assert workspace_root.as_posix() in prompt
-    assert "`calculator`: Optional helper for math." in prompt
+    assert "`read_file`: Read a bounded range of lines" in prompt
     assert "must run focused verification" in prompt
     assert "`run_command` does not support shell operators" in prompt
-    assert "- `read_file`:" not in prompt
 
 
 def test_build_system_prompt_prefers_observed_venv_python(tmp_path: Path) -> None:
@@ -537,8 +424,8 @@ def test_tool_success_does_not_prove_task_success() -> None:
         content=[
             ToolUseBlock(
                 id="toolu_test",
-                name="calculator",
-                input={"expression": "1 + 1"},
+                name="read_file",
+                input={"value": "sample"},
                 type="tool_use",
             )
         ],
@@ -550,10 +437,10 @@ def test_tool_success_does_not_prove_task_success() -> None:
     )
     agent, _ = create_agent([tool_response, incorrect_final_response])
 
-    agent_run = asyncio.run(agent.run("Calculate 1 + 1"))
+    agent_run = asyncio.run(agent.run("Process a sample value"))
 
     assert agent_run.termination == "completed"
-    assert agent_run.steps[0].tool_results[0].content == "2"
+    assert agent_run.steps[0].tool_results[0].content == "processed: sample"
     assert agent_run.steps[-1].text == ["The answer is 3."]
     assert agent_run.verification.status == "not_run"
     assert agent_run.task_success is None
@@ -805,120 +692,6 @@ def test_agent_denies_command_requiring_approval_by_default(tmp_path: Path) -> N
     assert "tool_started" not in [event.event_type for event in events]
 
 
-def test_agent_runs_mcp_tool_after_required_approval(tmp_path: Path) -> None:
-    registry = create_mcp_registry(
-        McpServerConfig(name="demo", command="python", approval="always")
-    )
-    responses = [
-        make_message(
-            content=[
-                ToolUseBlock(
-                    id="toolu_mcp",
-                    name="mcp_demo__echo",
-                    input={"value": "approved"},
-                    type="tool_use",
-                )
-            ],
-            stop_reason="tool_use",
-        ),
-        make_message(
-            content=[TextBlock(text="MCP tool ran.", type="text")],
-            stop_reason="end_turn",
-        ),
-    ]
-    agent, _ = create_agent(responses, registry=registry)
-    agent.configure_approval_callback(lambda tool_call, policy: True)
-    session_store = SessionStore(tmp_path / "sessions")
-    agent.configure_session_recording(session_store, "session-one")
-
-    agent_run = asyncio.run(agent.run("Run an approved MCP tool"))
-
-    tool_result = agent_run.steps[0].tool_results[0]
-    events = session_store.read_events("session-one")
-    assert tool_result.is_error is False
-    assert tool_result.content == "echo: approved"
-    assert [
-        event.event_type
-        for event in events
-        if event.event_type.startswith("tool_approval")
-    ] == ["tool_approval_requested", "tool_approval_granted"]
-
-
-def test_agent_auto_allows_mcp_read_only_tool(tmp_path: Path) -> None:
-    registry = create_mcp_registry(
-        McpServerConfig(name="demo", command="python", readOnlyTools=["echo"])
-    )
-    responses = [
-        make_message(
-            content=[
-                ToolUseBlock(
-                    id="toolu_mcp",
-                    name="mcp_demo__echo",
-                    input={"value": "read"},
-                    type="tool_use",
-                )
-            ],
-            stop_reason="tool_use",
-        ),
-        make_message(
-            content=[TextBlock(text="MCP read-only tool ran.", type="text")],
-            stop_reason="end_turn",
-        ),
-    ]
-    agent, _ = create_agent(responses, registry=registry)
-    session_store = SessionStore(tmp_path / "sessions")
-    agent.configure_session_recording(session_store, "session-one")
-
-    agent_run = asyncio.run(agent.run("Run a read-only MCP tool"))
-
-    tool_result = agent_run.steps[0].tool_results[0]
-    events = session_store.read_events("session-one")
-    assert tool_result.is_error is False
-    assert tool_result.content == "echo: read"
-    assert [
-        event.event_type
-        for event in events
-        if event.event_type.startswith("tool_approval")
-    ] == []
-
-
-def test_agent_auto_requires_approval_for_unknown_mcp_tool(tmp_path: Path) -> None:
-    registry = create_mcp_registry(McpServerConfig(name="demo", command="python"))
-    responses = [
-        make_message(
-            content=[
-                ToolUseBlock(
-                    id="toolu_mcp",
-                    name="mcp_demo__echo",
-                    input={"value": "blocked"},
-                    type="tool_use",
-                )
-            ],
-            stop_reason="tool_use",
-        ),
-        make_message(
-            content=[TextBlock(text="MCP tool was not approved.", type="text")],
-            stop_reason="end_turn",
-        ),
-    ]
-    agent, _ = create_agent(responses, registry=registry)
-    session_store = SessionStore(tmp_path / "sessions")
-    agent.configure_session_recording(session_store, "session-one")
-
-    agent_run = asyncio.run(agent.run("Run an unknown MCP tool"))
-
-    tool_result = agent_run.steps[0].tool_results[0]
-    events = session_store.read_events("session-one")
-    assert tool_result.is_error is True
-    assert "approval denied" in tool_result.content
-    assert [
-        event.event_type
-        for event in events
-        if event.event_type.startswith("tool_approval")
-    ] == ["tool_approval_requested", "tool_approval_denied"]
-    assert "tool_started" not in [event.event_type for event in events]
-
-
 def test_agent_recovers_from_failed_edit(
     tmp_path: Path,
 ) -> None:
@@ -1008,8 +781,8 @@ def test_agent_stops_at_max_steps(
             content=[
                 ToolUseBlock(
                     id=f"toolu_{step}",
-                    name="calculator",
-                    input={"expression": "1 + 1"},
+                    name="read_file",
+                    input={"value": "sample"},
                     type="tool_use",
                 )
             ],
@@ -1029,8 +802,8 @@ def test_agent_stops_at_max_steps(
     assert len(agent_run.steps) == 2
     assert len(agent.steps) == 2
     assert capsys.readouterr().out == (
-        "Running calculator\n"
-        "Running calculator\n"
+        "Running read_file\n"
+        "Running read_file\n"
         "Agent reached the 2-step limit. Task stopped.\n"
     )
 
@@ -1133,13 +906,13 @@ def test_agent_rejects_parallel_tool_calls_when_provider_does_not_support_them(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     first_call = ToolCall(
-        name="calculator",
-        input={"expression": "1 + 1"},
+        name="read_file",
+        input={"value": "sample"},
         tool_use_id="call_one",
     )
     second_call = ToolCall(
-        name="calculator",
-        input={"expression": "2 + 2"},
+        name="read_file",
+        input={"value": "second sample"},
         tool_use_id="call_two",
     )
     adapter = FakeProviderAdapter(
@@ -1174,7 +947,7 @@ def test_agent_rejects_parallel_tool_calls_when_provider_does_not_support_them(
         registry=create_registry(),
     )
 
-    agent_run = asyncio.run(agent.run("Calculate two expressions"))
+    agent_run = asyncio.run(agent.run("Run two probes"))
 
     assert agent_run.termination == "protocol_error"
     assert agent_run.final_stop_reason == "tool_use"
@@ -1189,24 +962,24 @@ def test_agent_rejects_parallel_tool_calls_when_provider_does_not_support_them(
 def test_agent_executes_multiple_tool_calls_serially() -> None:
     events: list[str] = []
 
-    def first_probe(expression: str) -> str:
+    def first_probe(value: str) -> str:
         events.append("first:start")
         events.append("first:end")
-        return f"first result: {expression}"
+        return f"first result: {value}"
 
-    def second_probe(expression: str) -> str:
+    def second_probe(value: str) -> str:
         events.append("second:start")
         events.append("second:end")
-        return f"second result: {expression}"
+        return f"second result: {value}"
 
     first_call = ToolCall(
         name="first_probe",
-        input={"expression": "1 + 1"},
+        input={"value": "sample"},
         tool_use_id="call_first",
     )
     second_call = ToolCall(
         name="second_probe",
-        input={"expression": "2 + 2"},
+        input={"value": "second sample"},
         tool_use_id="call_second",
     )
     registry = ToolRegistry()
@@ -1214,7 +987,7 @@ def test_agent_executes_multiple_tool_calls_serially() -> None:
         Tool(
             name="first_probe",
             description="Record the first probe execution.",
-            input_schema=CalculatorInput,
+            input_schema=SampleToolInput,
             fn=first_probe,
         )
     )
@@ -1222,7 +995,7 @@ def test_agent_executes_multiple_tool_calls_serially() -> None:
         Tool(
             name="second_probe",
             description="Record the second probe execution.",
-            input_schema=CalculatorInput,
+            input_schema=SampleToolInput,
             fn=second_probe,
         )
     )
@@ -1277,19 +1050,19 @@ def test_agent_executes_multiple_tool_calls_serially() -> None:
         "call_second",
     ]
     assert [result.content for result in agent_run.steps[0].tool_results] == [
-        "first result: 1 + 1",
-        "second result: 2 + 2",
+        "first result: sample",
+        "second result: second sample",
     ]
 
 
 def test_agent_executes_async_tool_calls_serially() -> None:
-    async def async_probe(expression: str) -> str:
+    async def async_probe(value: str) -> str:
         await asyncio.sleep(0)
-        return f"async result: {expression}"
+        return f"async result: {value}"
 
     tool_call = ToolCall(
         name="async_probe",
-        input={"expression": "1 + 1"},
+        input={"value": "sample"},
         tool_use_id="call_async",
     )
     registry = ToolRegistry()
@@ -1297,7 +1070,7 @@ def test_agent_executes_async_tool_calls_serially() -> None:
         Tool(
             name="async_probe",
             description="Run an async probe.",
-            input_schema=CalculatorInput,
+            input_schema=SampleToolInput,
             fn=async_probe,
         )
     )
@@ -1335,7 +1108,7 @@ def test_agent_executes_async_tool_calls_serially() -> None:
     agent_run = asyncio.run(agent.run("Run async probe"))
 
     assert agent_run.termination == "completed"
-    assert agent_run.steps[0].tool_results[0].content == "async result: 1 + 1"
+    assert agent_run.steps[0].tool_results[0].content == "async result: sample"
     assert agent_run.steps[0].tool_results[0].is_error is False
 
 
@@ -1346,8 +1119,8 @@ def test_agent_executes_read_only_tool_calls_concurrently_preserving_order(
     first_started = Event()
     second_started = Event()
 
-    def probe_calculator(expression: str) -> str:
-        if expression == "first":
+    def probe_read(value: str) -> str:
+        if value == "first":
             events.append("first:start")
             first_started.set()
             if not second_started.wait(timeout=1):
@@ -1363,22 +1136,22 @@ def test_agent_executes_read_only_tool_calls_concurrently_preserving_order(
         return "second result"
 
     first_call = ToolCall(
-        name="calculator",
-        input={"expression": "first"},
+        name="read_file",
+        input={"value": "first"},
         tool_use_id="call_first",
     )
     second_call = ToolCall(
-        name="calculator",
-        input={"expression": "second"},
+        name="read_file",
+        input={"value": "second"},
         tool_use_id="call_second",
     )
     registry = ToolRegistry()
     registry.register(
         Tool(
-            name="calculator",
+            name="read_file",
             description="Record overlapping read-only execution.",
-            input_schema=CalculatorInput,
-            fn=probe_calculator,
+            input_schema=SampleToolInput,
+            fn=probe_read,
         )
     )
     adapter = FakeProviderAdapter(
@@ -1439,33 +1212,33 @@ def test_agent_executes_read_only_tool_calls_concurrently_preserving_order(
     ]
     assert len(schedule_events) == 1
     assert schedule_events[0].message == (
-        "parallel: all tool calls are read-only; tools: calculator, calculator"
+        "parallel: all tool calls are read-only; tools: read_file, read_file"
     )
 
 
 def test_agent_preserves_result_order_when_parallel_tool_call_fails() -> None:
-    def probe_calculator(expression: str) -> str:
-        if expression == "bad":
-            raise ValueError("bad expression")
-        return f"{expression} result"
+    def probe_read(value: str) -> str:
+        if value == "bad":
+            raise ValueError("bad value")
+        return f"{value} result"
 
     first_call = ToolCall(
-        name="calculator",
-        input={"expression": "good"},
+        name="read_file",
+        input={"value": "good"},
         tool_use_id="call_good",
     )
     second_call = ToolCall(
-        name="calculator",
-        input={"expression": "bad"},
+        name="read_file",
+        input={"value": "bad"},
         tool_use_id="call_bad",
     )
     registry = ToolRegistry()
     registry.register(
         Tool(
-            name="calculator",
+            name="read_file",
             description="Return one result and one error.",
-            input_schema=CalculatorInput,
-            fn=probe_calculator,
+            input_schema=SampleToolInput,
+            fn=probe_read,
         )
     )
     adapter = FakeProviderAdapter(
@@ -1511,7 +1284,7 @@ def test_agent_preserves_result_order_when_parallel_tool_call_fails() -> None:
     assert [result.tool_use_id for result in results] == ["call_good", "call_bad"]
     assert results[0].content == "good result"
     assert results[0].is_error is False
-    assert "ValueError: bad expression" in results[1].content
+    assert "ValueError: bad value" in results[1].content
     assert results[1].is_error is True
 
 
@@ -1589,7 +1362,6 @@ def test_sub_agent_runs_with_isolated_read_only_context(
     child_request = adapter.requests[1]
     child_tool_names = {tool.name for tool in child_request["tools"]}
     assert child_tool_names == {
-        "calculator",
         "read_file",
         "glob_files",
         "search_text",
@@ -1837,22 +1609,22 @@ def test_agent_records_pending_action_and_tool_events(tmp_path: Path) -> None:
         content=[
             ToolUseBlock(
                 id="toolu_test",
-                name="calculator",
-                input={"expression": "1 + 1"},
+                name="read_file",
+                input={"value": "sample"},
                 type="tool_use",
             )
         ],
         stop_reason="tool_use",
     )
     final_response = make_message(
-        content=[TextBlock(text="The answer is 2.", type="text")],
+        content=[TextBlock(text="Done.", type="text")],
         stop_reason="end_turn",
     )
     agent, _ = create_agent([tool_response, final_response])
     session_store = SessionStore(tmp_path / "sessions")
     agent.configure_session_recording(session_store, "session-one")
 
-    agent_run = asyncio.run(agent.run("Calculate 1 + 1"))
+    agent_run = asyncio.run(agent.run("Process a sample value"))
 
     pending_action = session_store.read_pending_action("session-one")
     events = session_store.read_events("session-one")
@@ -1860,7 +1632,7 @@ def test_agent_records_pending_action_and_tool_events(tmp_path: Path) -> None:
     assert run_id is not None
     assert pending_action is not None
     assert pending_action.step_number == 1
-    assert pending_action.tool_name == "calculator"
+    assert pending_action.tool_name == "read_file"
     assert pending_action.tool_use_id == "toolu_test"
     assert [event.event_type for event in events] == [
         "run_started",
@@ -1875,7 +1647,7 @@ def test_agent_records_pending_action_and_tool_events(tmp_path: Path) -> None:
         "run_finished",
     ]
     assert {event.run_id for event in events} == {run_id}
-    assert events[0].objective == "Calculate 1 + 1"
+    assert events[0].objective == "Process a sample value"
     assert events[0].provider == "deepseek"
     assert events[0].model == "deepseek-v4-flash"
     assert events[2].step_number == 1
@@ -1884,10 +1656,10 @@ def test_agent_records_pending_action_and_tool_events(tmp_path: Path) -> None:
     assert events[2].output_tokens == 5
     assert events[2].tool_call_count == 1
     assert events[2].latency_ms is not None
-    assert events[3].tool_name == "calculator"
+    assert events[3].tool_name == "read_file"
     assert events[4].is_error is False
-    assert events[4].output_preview == "2"
-    assert events[4].output_chars == 1
+    assert events[4].output_preview == "processed: sample"
+    assert events[4].output_chars == 17
     assert events[5].stop_reason == "tool_use"
     assert events[-1].termination == "completed"
     assert events[-1].final_stop_reason == "end_turn"
@@ -1904,9 +1676,9 @@ def test_agent_redacts_secret_like_tool_output_in_trace(
 ) -> None:
     monkeypatch.setenv("AGENT_TRACE_REDACT_PATTERNS", r"CUSTOM-\d+")
 
-    def secret_tool(expression: str) -> str:
+    def secret_tool(value: str) -> str:
         return (
-            f"{expression} api_key=sk-secret123456 "
+            f"{value} api_key=sk-secret123456 "
             "token=plain-secret CUSTOM-12345"
         )
 
@@ -1915,7 +1687,7 @@ def test_agent_redacts_secret_like_tool_output_in_trace(
         Tool(
             name="secret_tool",
             description="Return a secret-like value.",
-            input_schema=CalculatorInput,
+            input_schema=SampleToolInput,
             fn=secret_tool,
         )
     )
@@ -1924,7 +1696,7 @@ def test_agent_redacts_secret_like_tool_output_in_trace(
             ToolUseBlock(
                 id="toolu_secret",
                 name="secret_tool",
-                input={"expression": "result"},
+                input={"value": "result"},
                 type="tool_use",
             )
         ],
@@ -1961,8 +1733,8 @@ def test_agent_records_tool_failure_evidence_in_trace(tmp_path: Path) -> None:
         content=[
             ToolUseBlock(
                 id="toolu_invalid",
-                name="calculator",
-                input={"number": "1 + 1"},
+                name="read_file",
+                input={"number": "sample"},
                 type="tool_use",
             )
         ],
@@ -1976,7 +1748,7 @@ def test_agent_records_tool_failure_evidence_in_trace(tmp_path: Path) -> None:
     session_store = SessionStore(tmp_path / "sessions")
     agent.configure_session_recording(session_store, "session-one")
 
-    asyncio.run(agent.run("Calculate 1 + 1"))
+    asyncio.run(agent.run("Process a sample value"))
 
     tool_finished = [
         event
@@ -1987,7 +1759,7 @@ def test_agent_records_tool_failure_evidence_in_trace(tmp_path: Path) -> None:
     assert tool_finished.output_chars is not None
     assert tool_finished.output_chars > 0
     assert tool_finished.output_preview is not None
-    assert "Validation error for tool 'calculator'" in tool_finished.output_preview
+    assert "Validation error for tool 'read_file'" in tool_finished.output_preview
 
 
 def test_agent_recovers_from_invalid_tool_arguments() -> None:
@@ -1995,8 +1767,8 @@ def test_agent_recovers_from_invalid_tool_arguments() -> None:
         content=[
             ToolUseBlock(
                 id="toolu_invalid",
-                name="calculator",
-                input={"number": "1 + 1"},
+                name="read_file",
+                input={"number": "sample"},
                 type="tool_use",
             )
         ],
@@ -2006,31 +1778,31 @@ def test_agent_recovers_from_invalid_tool_arguments() -> None:
         content=[
             ToolUseBlock(
                 id="toolu_corrected",
-                name="calculator",
-                input={"expression": "1 + 1"},
+                name="read_file",
+                input={"value": "sample"},
                 type="tool_use",
             )
         ],
         stop_reason="tool_use",
     )
     final_response = make_message(
-        content=[TextBlock(text="The answer is 2.", type="text")],
+        content=[TextBlock(text="Done.", type="text")],
         stop_reason="end_turn",
     )
     agent, messages = create_agent(
         [invalid_tool_response, corrected_tool_response, final_response]
     )
 
-    agent_run = asyncio.run(agent.run("Calculate 1 + 1"))
+    agent_run = asyncio.run(agent.run("Process a sample value"))
 
     first_step, second_step, final_step = agent_run.steps
     first_result = first_step.tool_results[0]
     assert first_result.is_error is True
-    assert "field 'expression': Field required" in first_result.content
-    assert second_step.tool_calls[0].input == {"expression": "1 + 1"}
-    assert second_step.tool_results[0].content == "2"
+    assert "field 'value': Field required" in first_result.content
+    assert second_step.tool_calls[0].input == {"value": "sample"}
+    assert second_step.tool_results[0].content == "processed: sample"
     assert second_step.tool_results[0].is_error is False
-    assert final_step.text == ["The answer is 2."]
+    assert final_step.text == ["Done."]
     assert agent_run.termination == "completed"
 
     second_request_messages = messages.requests[1]["messages"]

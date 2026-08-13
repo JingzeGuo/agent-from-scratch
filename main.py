@@ -15,14 +15,11 @@ from agent.cli_commands import (
     COMMANDS,
     CliSessionState,
     checkpoint_session,
-    format_memory_record,
     handle_command,
     handle_command_async,
     prompt_tool_approval,
     report_interrupted_action,
 )
-from agent.mcp import McpError, McpToolManager, load_mcp_tools_from_env
-from agent.memory import MemoryStore, MemorySystem
 from agent.provider import (
     DeepSeekProvider,
     ProviderRequestError,
@@ -40,11 +37,8 @@ __all__ = [
     "CliSessionState",
     "checkpoint_session",
     "default_agent_state_dir",
-    "default_global_memory_dir",
-    "default_project_memory_dir",
     "default_sessions_dir",
     "ensure_agent_state_gitignore",
-    "format_memory_record",
     "generate_session_id",
     "handle_command",
     "handle_command_async",
@@ -180,16 +174,8 @@ def print_configuration_error(error: ValueError) -> None:
     print("Set it in .env or export it in your shell.")
 
 
-def print_mcp_error(error: ValueError | McpError) -> None:
-    print(f"MCP configuration error: {error}")
-
-
 def default_sessions_dir(workspace_root: Path) -> Path:
     return default_agent_state_dir(workspace_root) / "sessions"
-
-
-def default_project_memory_dir(workspace_root: Path) -> Path:
-    return default_agent_state_dir(workspace_root) / "memory"
 
 
 def default_agent_state_dir(workspace_root: Path) -> Path:
@@ -200,45 +186,6 @@ def default_agent_state_dir(workspace_root: Path) -> Path:
             path = workspace_root / path
         return path.resolve()
     return workspace_root / ".agents"
-
-
-def default_global_memory_dir() -> Path:
-    configured = os.getenv("AGENT_MEMORY_GLOBAL_DIR")
-    if configured:
-        return Path(configured).expanduser()
-    return Path("~/.agent-from-scratch/memory").expanduser()
-
-
-def memory_enabled_from_env() -> bool:
-    value = os.getenv("AGENT_MEMORY_ENABLED", "true").strip().lower()
-    return value not in {"0", "false", "no", "off"}
-
-
-def memory_int_from_env(name: str, default: int, minimum: int) -> int:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    try:
-        parsed = int(value)
-    except ValueError:
-        return default
-    return max(minimum, parsed)
-
-
-def create_memory_system(workspace_root: Path) -> MemorySystem:
-    memory_system = MemorySystem(
-        project_store=MemoryStore(default_project_memory_dir(workspace_root), "project"),
-        global_store=MemoryStore(default_global_memory_dir(), "global"),
-        enabled=memory_enabled_from_env(),
-        max_results=memory_int_from_env("AGENT_MEMORY_MAX_RESULTS", 5, 1),
-        max_context_chars=memory_int_from_env(
-            "AGENT_MEMORY_MAX_CONTEXT_CHARS",
-            4_000,
-            200,
-        ),
-    )
-    memory_system.initialize()
-    return memory_system
 
 
 def ensure_agent_state_gitignore(workspace_root: Path) -> None:
@@ -253,10 +200,9 @@ def ensure_agent_state_gitignore(workspace_root: Path) -> None:
     gitignore_path.write_text(
         "\n".join(
             [
-                "# Agent runtime state. Keep MCP config files reviewable,",
-                "# but ignore generated sessions, memory, and eval outputs.",
+                "# Agent runtime state.",
+                "# Ignore generated sessions and evaluation outputs.",
                 "sessions/",
-                "memory/",
                 "evals/",
                 "pending/",
                 "",
@@ -375,61 +321,51 @@ async def main(argv: Sequence[str] | None = None) -> None:
 
     workspace_root = Path.cwd().resolve()
     session_store = SessionStore(default_sessions_dir(workspace_root))
-    mcp_manager = McpToolManager()
     try:
         config = load_deepseek_config(api_key=cli_args.api_key)
     except ValueError as error:
         print_configuration_error(error)
         return
-    try:
-        ensure_agent_state_gitignore(workspace_root)
-        registry = create_registry(workspace_root)
-        try:
-            mcp_manager = await load_mcp_tools_from_env(registry, workspace_root)
-        except (ValueError, McpError) as error:
-            print_mcp_error(error)
-            return
-        agent = Agent(
-            provider_adapter=DeepSeekProvider(
-                model=config.model,
-                api_key=config.api_key,
-                base_url=config.base_url,
-            ),
-            registry=registry,
+    ensure_agent_state_gitignore(workspace_root)
+    registry = create_registry(workspace_root)
+    agent = Agent(
+        provider_adapter=DeepSeekProvider(
+            model=config.model,
+            api_key=config.api_key,
+            base_url=config.base_url,
+        ),
+        registry=registry,
+    )
+    agent.configure_approval_callback(prompt_tool_approval)
+    session_state = CliSessionState(session_id=generate_session_id())
+    if cli_args.resume_session_id is not None:
+        snapshot = session_store.find(cli_args.resume_session_id)
+        agent.restore_snapshot(snapshot)
+        session_state = CliSessionState(
+            session_id=snapshot.session_id,
+            session_name=snapshot.session_name,
         )
-        agent.configure_memory(create_memory_system(workspace_root))
-        agent.configure_approval_callback(prompt_tool_approval)
-        session_state = CliSessionState(session_id=generate_session_id())
-        if cli_args.resume_session_id is not None:
-            snapshot = session_store.find(cli_args.resume_session_id)
-            agent.restore_snapshot(snapshot)
-            session_state = CliSessionState(
-                session_id=snapshot.session_id,
-                session_name=snapshot.session_name,
+        report_interrupted_action(session_store, session_state.session_id)
+        session_store.append_event(
+            SessionEvent(
+                event_type="session_resumed",
+                session_id=session_state.session_id,
+                session_name=session_state.session_name,
+                created_at=utc_timestamp(),
             )
-            report_interrupted_action(session_store, session_state.session_id)
-            session_store.append_event(
-                SessionEvent(
-                    event_type="session_resumed",
-                    session_id=session_state.session_id,
-                    session_name=session_state.session_name,
-                    created_at=utc_timestamp(),
-                )
+        )
+        print(f"Resumed session: {snapshot.session_id}")
+    else:
+        session_store.append_event(
+            SessionEvent(
+                event_type="session_started",
+                session_id=session_state.session_id,
+                created_at=utc_timestamp(),
             )
-            print(f"Resumed session: {snapshot.session_id}")
-        else:
-            session_store.append_event(
-                SessionEvent(
-                    event_type="session_started",
-                    session_id=session_state.session_id,
-                    created_at=utc_timestamp(),
-                )
-            )
-        agent.configure_session_recording(session_store, session_state.session_id)
-        print(f"Provider: {agent.provider} | Model: {agent.model}")
-        await run_cli(agent, session_store, session_state)
-    finally:
-        await mcp_manager.close()
+        )
+    agent.configure_session_recording(session_store, session_state.session_id)
+    print(f"Provider: {agent.provider} | Model: {agent.model}")
+    await run_cli(agent, session_store, session_state)
 
 
 def cli() -> None:

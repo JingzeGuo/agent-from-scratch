@@ -2,10 +2,14 @@ import asyncio
 
 import httpx
 import pytest
+from pydantic import BaseModel
 
 from agent.retry import is_transient_error, retry, retry_async
-from agent.schemas import CalculatorInput
 from agent.tool import Tool
+
+
+class SampleToolInput(BaseModel):
+    value: str
 
 
 def test_retry_succeeds_on_third_attempt(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -147,23 +151,23 @@ def test_async_tool_uses_retry_async(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr("agent.retry.asyncio.sleep", fake_sleep)
 
-    async def calculator(expression: str) -> str:
+    async def sample_tool(value: str) -> str:
         nonlocal attempts
         attempts += 1
         if attempts == 1:
             raise TimeoutError("temporary failure")
-        return expression
+        return value
 
     tool = Tool(
-        name="calculator",
-        description="Calculate an expression.",
-        input_schema=CalculatorInput,
-        fn=calculator,
+        name="read_file",
+        description="Process a value.",
+        input_schema=SampleToolInput,
+        fn=sample_tool,
     )
 
-    output, is_error = asyncio.run(tool.execute_async({"expression": "1 + 1"}))
+    output, is_error = asyncio.run(tool.execute_async({"value": "sample"}))
 
-    assert output == "1 + 1"
+    assert output == "sample"
     assert is_error is False
     assert attempts == 2
     assert sleep_calls == [1.0]
@@ -196,20 +200,20 @@ def test_http_status_error_classification(
 def test_validation_error_does_not_run_tool() -> None:
     attempts = 0
 
-    def calculator(expression: str) -> str:
+    def sample_tool(value: str) -> str:
         nonlocal attempts
         attempts += 1
-        return expression
+        return value
 
     tool = Tool(
-        name="calculator",
-        description="Calculate an expression.",
-        input_schema=CalculatorInput,
-        fn=calculator,
+        name="read_file",
+        description="Process a value.",
+        input_schema=SampleToolInput,
+        fn=sample_tool,
     )
 
     output, is_error = tool.execute({})
 
     assert is_error is True
-    assert "field 'expression': Field required" in output
+    assert "field 'value': Field required" in output
     assert attempts == 0

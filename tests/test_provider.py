@@ -227,15 +227,15 @@ def test_deepseek_provider_normalizes_streamed_tool_response() -> None:
                 "choices": [
                     {
                         "delta": {
-                            "content": "calculate.",
+                            "content": "process it.",
                             "tool_calls": [
                                 {
                                     "index": 0,
-                                    "id": "call_calc",
+                                    "id": "call_sample",
                                     "type": "function",
                                     "function": {
-                                        "name": "calculator",
-                                        "arguments": '{"expression": ',
+                                        "name": "read_file",
+                                        "arguments": '{"value": ',
                                     },
                                 }
                             ],
@@ -253,7 +253,7 @@ def test_deepseek_provider_normalizes_streamed_tool_response() -> None:
                             "tool_calls": [
                                 {
                                     "index": 0,
-                                    "function": {"arguments": '"1 + 1"}'},
+                                    "function": {"arguments": '"sample"}'},
                                 }
                             ]
                         },
@@ -277,23 +277,23 @@ def test_deepseek_provider_normalizes_streamed_tool_response() -> None:
             system="system prompt",
             tools=[
                 ToolDefinition(
-                    name="calculator",
-                    description="Calculate.",
+                    name="read_file",
+                    description="Process input.",
                     input_schema={"type": "object"},
                 )
             ],
-            messages=[{"role": "user", "content": "Calculate 1 + 1"}],
+            messages=[{"role": "user", "content": "Process a sample value"}],
             on_text_delta=streamed.append,
         )
     )
 
-    assert streamed == ["I will ", "calculate."]
+    assert streamed == ["I will ", "process it."]
     assert response.stop_reason == "tool_use"
-    assert response.text == ["I will calculate."]
+    assert response.text == ["I will process it."]
     assert response.tool_calls[0].model_dump() == {
-        "name": "calculator",
-        "input": {"expression": "1 + 1"},
-        "tool_use_id": "call_calc",
+        "name": "read_file",
+        "input": {"value": "sample"},
+        "tool_use_id": "call_sample",
     }
     assert response.usage.input_tokens == 12
     assert response.usage.output_tokens == 6
@@ -323,7 +323,7 @@ def test_deepseek_provider_builds_tool_result_message() -> None:
     provider = make_provider(FakeHttpClient([]))
 
     message = provider.tool_result_message(
-        [ToolResult(tool_use_id="call_calc", content="2", is_error=False)]
+        [ToolResult(tool_use_id="call_sample", content="2", is_error=False)]
     )
 
     assert message == {
@@ -331,7 +331,7 @@ def test_deepseek_provider_builds_tool_result_message() -> None:
         "content": [
             {
                 "type": "tool_result",
-                "tool_use_id": "call_calc",
+                "tool_use_id": "call_sample",
                 "content": "2",
                 "is_error": False,
             }
@@ -340,7 +340,7 @@ def test_deepseek_provider_builds_tool_result_message() -> None:
 
 
 def test_deepseek_provider_converts_tool_result_history() -> None:
-    fake_client = FakeHttpClient(final_text_chunks("The answer is 2."))
+    fake_client = FakeHttpClient(final_text_chunks("Done."))
     provider = make_provider(fake_client)
 
     asyncio.run(
@@ -348,15 +348,15 @@ def test_deepseek_provider_converts_tool_result_history() -> None:
             system="system prompt",
             tools=[],
             messages=[
-                {"role": "user", "content": "Calculate 1 + 1"},
+                {"role": "user", "content": "Process a sample value"},
                 {
                     "role": "assistant",
                     "content": [
                         {
                             "type": "tool_use",
-                            "id": "call_calc",
-                            "name": "calculator",
-                            "input": {"expression": "1 + 1"},
+                            "id": "call_sample",
+                            "name": "read_file",
+                            "input": {"value": "sample"},
                         }
                     ],
                 },
@@ -365,7 +365,7 @@ def test_deepseek_provider_converts_tool_result_history() -> None:
                     "content": [
                         {
                             "type": "tool_result",
-                            "tool_use_id": "call_calc",
+                            "tool_use_id": "call_sample",
                             "content": "2",
                             "is_error": False,
                         }
@@ -377,10 +377,10 @@ def test_deepseek_provider_converts_tool_result_history() -> None:
 
     request_messages = fake_client.requests[0]["json"]["messages"]
     assert request_messages[-2]["role"] == "assistant"
-    assert request_messages[-2]["tool_calls"][0]["id"] == "call_calc"
+    assert request_messages[-2]["tool_calls"][0]["id"] == "call_sample"
     assert request_messages[-1] == {
         "role": "tool",
-        "tool_call_id": "call_calc",
+        "tool_call_id": "call_sample",
         "content": "2",
     }
 
@@ -397,12 +397,12 @@ def test_deepseek_provider_rejects_unsupported_capabilities() -> None:
                 system="system prompt",
                 tools=[
                     ToolDefinition(
-                        name="calculator",
-                        description="Calculate.",
+                        name="read_file",
+                        description="Process input.",
                         input_schema={"type": "object"},
                     )
                 ],
-                messages=[{"role": "user", "content": "Calculate"}],
+                messages=[{"role": "user", "content": "Process input"}],
             )
         )
 

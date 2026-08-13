@@ -1,9 +1,9 @@
-# ruff: noqa: I001
+# ruff: noqa: E402
+"""Small local, live-model, and SWE-bench-compatible agent evaluations."""
+
 import argparse
-import ast
 import asyncio
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from agent.agent import Agent
 from agent.provider import DeepSeekProvider, ProviderAdapter, load_deepseek_config
 from agent.schemas import (
@@ -28,91 +29,85 @@ from agent.schemas import (
     ToolDefinition,
     ToolResult,
 )
-from agent.security import CommandPolicyResult
+from agent.security import ToolApprovalPolicy
 from agent.setup import create_registry
-from agent.tool_registry import ToolRegistry
 
 PYTHON = sys.executable
-EvaluationMode = Literal["scripted", "real_model", "swe_bench"]
-FailureReason = Literal[
-    "compile_error",
-    "test_failure",
-    "max_step",
-    "unsafe_command_blocked",
-]
-FAILURE_REASONS: tuple[FailureReason, ...] = (
-    "compile_error",
-    "test_failure",
-    "max_step",
-    "unsafe_command_blocked",
-)
+EvaluationMode = Literal["deterministic", "real_model", "swe_bench"]
 
 
 class ScriptedStep(BaseModel):
-    text: str | None = None
+    """One deterministic model response."""
+
     tool_call: ToolCall | None = None
-    input_tokens: int = Field(default=20, ge=0)
-    output_tokens: int = Field(default=8, ge=0)
+    text: str | None = None
 
 
 class CodingTaskCase(BaseModel):
+    """Data needed to materialize and verify one small coding task."""
+
     name: str
     task: str
-    acceptance_criteria: list[str]
-    expected_evidence: list[str]
+    files: dict[str, str]
     scripted_steps: list[ScriptedStep]
+    acceptance_criteria: list[str]
+    expected_changed_files: list[str] = Field(default_factory=list)
+    expected_file_contents: dict[str, str] = Field(default_factory=dict)
+    expected_final_text: str | None = None
+    verification_command: list[str] | None = None
 
 
 class CodingTaskResult(BaseModel):
+    """Compact metrics shared by all evaluation modes."""
+
     name: str
     mode: EvaluationMode
-    task_success: bool
-    runtime_success: bool
-    verification_success: bool
-    recovery_success: bool
-    tool_accuracy: bool
+    success: bool
+    verification_status: Literal["not_run", "passed", "failed", "error"]
     steps: int
     tool_calls: int
-    tools: list[str]
-    commands: list[str]
-    latency_ms: float
     input_tokens: int
     output_tokens: int
     estimated_cost: float
-    failures: list[str] = Field(default_factory=list)
-    failure_reasons: list[FailureReason] = Field(default_factory=list)
+    latency_ms: float
+    failure_reason: str | None = None
+    termination_reason: str
 
 
 class EvaluationSummary(BaseModel):
     total: int
-    passed: int
-    pass_rate: float
+    successful: int
+    success_rate: float
     average_steps: float
-    average_token_cost: float
     average_tool_calls: float
-    failure_reason_counts: dict[FailureReason, int]
+    total_tokens: int
+    total_estimated_cost: float
+    average_latency_ms: float
+
+
+class CaseVerification(BaseModel):
+    status: Literal["not_run", "passed", "failed", "error"]
+    failures: list[str] = Field(default_factory=list)
 
 
 class SweBenchInstance(BaseModel):
+    """Minimal instance fields needed to generate a prediction patch."""
+
     instance_id: str
     repo: str
     base_commit: str
     problem_statement: str
-    test_patch: str = ""
-    fail_to_pass: list[str] = Field(default_factory=list)
-    pass_to_pass: list[str] = Field(default_factory=list)
 
 
 class ScriptedProviderAdapter:
-    """Deterministic provider used for local coding-agent evaluations."""
+    """Deterministic provider used only by the local evaluation suite."""
 
-    provider = "fake"
+    provider = "scripted"
     model = "deepseek-v4-flash"
     capabilities = ProviderCapabilities()
 
     def __init__(self, steps: list[ScriptedStep]) -> None:
-        self._steps = steps
-        self._index = 0
+        self._responses = [self._response(step) for step in steps]
 
     async def stream_response(
         self,
@@ -123,1602 +118,217 @@ class ScriptedProviderAdapter:
         on_text_delta: Callable[[str], None] | None = None,
     ) -> ProviderResponse:
         del system, tools, messages
-        if self._index >= len(self._steps):
-            raise RuntimeError("Scripted provider ran out of responses.")
-
-        step = self._steps[self._index]
-        self._index += 1
-        if step.tool_call is not None:
-            content = [
-                {
-                    "type": "tool_use",
-                    "id": step.tool_call.tool_use_id,
-                    "name": step.tool_call.name,
-                    "input": step.tool_call.input,
-                }
-            ]
-            return ProviderResponse(
-                message={"role": "assistant", "content": content},
-                stop_reason="tool_use",
-                tool_calls=[step.tool_call],
-                usage=TokenUsage(
-                    input_tokens=step.input_tokens,
-                    output_tokens=step.output_tokens,
-                ),
-                native_metadata={
-                    "provider": self.provider,
-                    "script_index": self._index,
-                },
-            )
-
-        text = step.text or ""
-        if on_text_delta is not None and text:
-            on_text_delta(text)
-        return ProviderResponse(
-            message={
-                "role": "assistant",
-                "content": [{"type": "text", "text": text}],
-            },
-            stop_reason="end_turn",
-            text=[text] if text else [],
-            usage=TokenUsage(
-                input_tokens=step.input_tokens,
-                output_tokens=step.output_tokens,
-            ),
-            native_metadata={"provider": self.provider, "script_index": self._index},
-        )
+        if not self._responses:
+            raise RuntimeError("Scripted evaluation provider ran out of responses.")
+        response = self._responses.pop(0)
+        if on_text_delta is not None:
+            for text in response.text:
+                on_text_delta(text)
+        return response
 
     def tool_result_message(self, tool_results: list[ToolResult]) -> dict[str, Any]:
         return {
             "role": "user",
-            "content": [
-                {
-                    "type": result.type,
-                    "tool_use_id": result.tool_use_id,
-                    "content": result.content,
-                    "is_error": result.is_error,
-                }
-                for result in tool_results
-            ],
+            "content": [result.model_dump() for result in tool_results],
         }
 
+    def _response(self, step: ScriptedStep) -> ProviderResponse:
+        if step.tool_call is not None:
+            tool_call = step.tool_call
+            message = {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": tool_call.tool_use_id,
+                        "name": tool_call.name,
+                        "input": tool_call.input,
+                    }
+                ],
+            }
+            return ProviderResponse(
+                message=message,
+                stop_reason="tool_use",
+                tool_calls=[tool_call],
+                usage=TokenUsage(input_tokens=10, output_tokens=5),
+            )
+        text = step.text or ""
+        return ProviderResponse(
+            message={"role": "assistant", "content": text},
+            stop_reason="end_turn",
+            text=[text],
+            usage=TokenUsage(input_tokens=10, output_tokens=5),
+        )
 
-Oracle = Callable[[Path, AgentRun, Agent], list[str]]
-FixtureBuilder = Callable[[Path], None]
 
-
-def tool_call(name: str, input_data: dict[str, Any], tool_use_id: str) -> ScriptedStep:
+def tool_step(
+    name: str,
+    input_data: dict[str, Any],
+    tool_use_id: str,
+) -> ScriptedStep:
     return ScriptedStep(
-        tool_call=ToolCall(name=name, input=input_data, tool_use_id=tool_use_id)
+        tool_call=ToolCall(
+            name=name,
+            input=input_data,
+            tool_use_id=tool_use_id,
+        )
     )
 
 
-def final_text(text: str) -> ScriptedStep:
+def final_step(text: str) -> ScriptedStep:
     return ScriptedStep(text=text)
 
 
-def build_cases() -> dict[str, tuple[CodingTaskCase, FixtureBuilder, Oracle]]:
+def build_cases() -> dict[str, CodingTaskCase]:
+    """Return a representative suite with search, editing, and recovery."""
     return {
-        "repository_search": (
-            CodingTaskCase(
-                name="repository_search",
-                task=(
-                    "Find where token usage is tracked and explain which file owns "
-                    "estimated cost calculation."
+        "repository_search": CodingTaskCase(
+            name="repository_search",
+            task=(
+                "Find where estimated token cost is calculated. Name the file and "
+                "class, and do not edit anything."
+            ),
+            files={
+                "agent/token_tracker.py": (
+                    "class TokenTracker:\n"
+                    "    def estimated_cost(self) -> float:\n"
+                    "        return 0.0\n"
                 ),
-                acceptance_criteria=[
-                    "The agent searches repository content.",
-                    "The agent reads the relevant file.",
-                    "The final answer names the token tracker owner.",
-                    "No file edits are made.",
-                ],
-                expected_evidence=[
-                    "search_text was used.",
-                    "read_file was used on agent/token_tracker.py.",
-                    "changed files list is empty.",
-                ],
-                scripted_steps=[
-                    tool_call(
-                        "search_text",
-                        {"pattern": "estimated_cost", "file_pattern": "**/*.py"},
-                        "toolu_search_cost",
-                    ),
-                    tool_call(
-                        "read_file",
-                        {"path": "agent/token_tracker.py", "offset": 1, "limit": 120},
-                        "toolu_read_token_tracker",
-                    ),
-                    final_text(
-                        "Estimated cost is owned by agent/token_tracker.py in "
-                        "TokenTracker."
-                    ),
-                ],
-            ),
-            fixture_repository_search,
-            oracle_repository_search,
-        ),
-        "small_bug_fix": (
-            CodingTaskCase(
-                name="small_bug_fix",
-                task=(
-                    "Fix a bug where add(2, 3) incorrectly returns 6 instead of 5. "
-                    "After editing, run the focused test that verifies the behavior. "
-                    "Do not create new files."
+            },
+            scripted_steps=[
+                tool_step(
+                    "search_text",
+                    {"pattern": "estimated_cost", "file_pattern": "**/*.py"},
+                    "search-cost",
                 ),
-                acceptance_criteria=[
-                    "The source file is read before editing.",
-                    "The add function returns a + b.",
-                    "The focused pytest command passes.",
-                    "Only the intended source file changes.",
-                ],
-                expected_evidence=[
-                    "read_file was used before edit_file.",
-                    "edit_file returned a successful diff.",
-                    "run_command reported exit_code: 0.",
-                ],
-                scripted_steps=[
-                    tool_call(
-                        "read_file",
-                        {"path": "calculator.py"},
-                        "toolu_read_calculator",
-                    ),
-                    tool_call(
-                        "edit_file",
-                        {
-                            "path": "calculator.py",
-                            "old_text": "def add(a: int, b: int) -> int:\n    return a * b\n",
-                            "new_text": "def add(a: int, b: int) -> int:\n    return a + b\n",
-                        },
-                        "toolu_fix_add",
-                    ),
-                    tool_call(
-                        "run_command",
-                        {"command": f"{PYTHON} -m pytest tests/test_calculator.py"},
-                        "toolu_pytest_add",
-                    ),
-                    final_text("The add bug is fixed and the focused test passes."),
-                ],
-            ),
-            fixture_small_bug_fix,
-            oracle_small_bug_fix,
-        ),
-        "targeted_refactor": (
-            CodingTaskCase(
-                name="targeted_refactor",
-                task=(
-                    "Rename format_user_name to format_display_name and update "
-                    "local references. After editing, run the focused test that "
-                    "verifies the behavior. Do not create new files."
+                tool_step(
+                    "read_file",
+                    {"path": "agent/token_tracker.py", "offset": 1, "limit": 80},
+                    "read-tracker",
                 ),
-                acceptance_criteria=[
-                    "The old symbol is searched.",
-                    "The definition and call sites are updated.",
-                    "The old symbol no longer appears in Python source.",
-                    "The focused pytest command passes.",
-                ],
-                expected_evidence=[
-                    "search_text found old references.",
-                    "edit_file updated the module.",
-                    "run_command reported exit_code: 0.",
-                ],
-                scripted_steps=[
-                    tool_call(
-                        "search_text",
-                        {"pattern": "format_user_name", "file_pattern": "**/*.py"},
-                        "toolu_search_old_name",
-                    ),
-                    tool_call(
-                        "read_file",
-                        {"path": "users.py"},
-                        "toolu_read_users",
-                    ),
-                    tool_call(
-                        "edit_file",
-                        {
-                            "path": "users.py",
-                            "old_text": (
-                                "def format_user_name(first: str, last: str) -> str:\n"
-                                '    return f"{first} {last}"\n\n\n'
-                                "def greeting(first: str, last: str) -> str:\n"
-                                '    return f"Hello, {format_user_name(first, last)}!"\n'
-                            ),
-                            "new_text": (
-                                "def format_display_name(first: str, last: str) -> str:\n"
-                                '    return f"{first} {last}"\n\n\n'
-                                "def greeting(first: str, last: str) -> str:\n"
-                                '    return f"Hello, {format_display_name(first, last)}!"\n'
-                            ),
-                        },
-                        "toolu_refactor_name",
-                    ),
-                    tool_call(
-                        "run_command",
-                        {"command": f"{PYTHON} -m pytest tests/test_users.py"},
-                        "toolu_pytest_users",
-                    ),
-                    final_text("The rename is complete and tests pass."),
-                ],
-            ),
-            fixture_targeted_refactor,
-            oracle_targeted_refactor,
-        ),
-        "failed_edit_recovery": (
-            CodingTaskCase(
-                name="failed_edit_recovery",
-                task=(
-                    "Fix a README typo by changing instalation to installation, "
-                    "recovering from a failed edit if needed. Check the final diff."
+                final_step(
+                    "Estimated cost is calculated by TokenTracker in "
+                    "agent/token_tracker.py."
                 ),
-                acceptance_criteria=[
-                    "One edit attempt fails.",
-                    "The agent rereads or searches before retrying.",
-                    "A later edit succeeds.",
-                    "The README contains the corrected word.",
-                ],
-                expected_evidence=[
-                    "trace contains a failed edit_file result.",
-                    "read_file occurs after the failed edit.",
-                    "trace contains a later successful edit_file result.",
-                ],
-                scripted_steps=[
-                    tool_call(
-                        "read_file",
-                        {"path": "README.md"},
-                        "toolu_read_readme",
-                    ),
-                    tool_call(
-                        "edit_file",
-                        {
-                            "path": "README.md",
-                            "old_text": "installation guide",
-                            "new_text": "installation guide",
-                        },
-                        "toolu_bad_readme_edit",
-                    ),
-                    tool_call(
-                        "read_file",
-                        {"path": "README.md"},
-                        "toolu_reread_readme",
-                    ),
-                    tool_call(
-                        "edit_file",
-                        {
-                            "path": "README.md",
-                            "old_text": "Follow the instalation guide.\n",
-                            "new_text": "Follow the installation guide.\n",
-                        },
-                        "toolu_good_readme_edit",
-                    ),
-                    final_text("Recovered from the failed edit and fixed the typo."),
-                ],
-            ),
-            fixture_failed_edit_recovery,
-            oracle_failed_edit_recovery,
+            ],
+            acceptance_criteria=[
+                "Search the repository before answering.",
+                "Name agent/token_tracker.py and TokenTracker.",
+                "Do not modify files.",
+            ],
+            expected_final_text="agent/token_tracker.py",
         ),
-        "failed_test_recovery": (
-            CodingTaskCase(
-                name="failed_test_recovery",
-                task="Fix module.py after a failed verification command.",
-                acceptance_criteria=[
-                    "The first verification command fails.",
-                    "The agent edits after observing the failure.",
-                    "The later verification command passes.",
-                    "The final file is syntactically valid.",
-                ],
-                expected_evidence=[
-                    "run_command first reports exit_code: 1.",
-                    "edit_file repairs module.py.",
-                    "run_command later reports exit_code: 0.",
-                ],
-                scripted_steps=[
-                    tool_call(
-                        "read_file",
-                        {"path": "module.py"},
-                        "toolu_read_module",
-                    ),
-                    tool_call(
-                        "run_command",
-                        {"command": f"{PYTHON} -m py_compile module.py"},
-                        "toolu_failed_compile",
-                    ),
-                    tool_call(
-                        "edit_file",
-                        {
-                            "path": "module.py",
-                            "old_text": "def answer()\n    return 1\n",
-                            "new_text": "def answer() -> int:\n    return 1\n",
-                        },
-                        "toolu_fix_syntax",
-                    ),
-                    tool_call(
-                        "run_command",
-                        {"command": f"{PYTHON} -m py_compile module.py"},
-                        "toolu_passing_compile",
-                    ),
-                    final_text("The syntax error is fixed and verification passes."),
-                ],
+        "small_bug_fix": CodingTaskCase(
+            name="small_bug_fix",
+            task=(
+                "Fix add(2, 3) so it returns 5, then run the focused test. "
+                "Change only math_utils.py."
             ),
-            fixture_failed_test_recovery,
-            oracle_failed_test_recovery,
-        ),
-        "parameter_validation": (
-            CodingTaskCase(
-                name="parameter_validation",
-                task=(
-                    "Add validation to normalize_limit so non-positive limits raise "
-                    "ValueError. Run the focused validator tests after editing."
+            files={
+                "math_utils.py": (
+                    "def add(a: int, b: int) -> int:\n"
+                    "    return a - b\n"
                 ),
-                acceptance_criteria=[
-                    "The source file is read before editing.",
-                    "normalize_limit rejects zero and negative values.",
-                    "Positive limits are returned unchanged.",
-                    "The focused pytest command passes.",
-                ],
-                expected_evidence=[
-                    "read_file was used on validators.py.",
-                    "edit_file added an explicit ValueError.",
-                    "run_command reported exit_code: 0.",
-                ],
-                scripted_steps=[
-                    tool_call(
-                        "read_file",
-                        {"path": "validators.py"},
-                        "toolu_read_validators",
-                    ),
-                    tool_call(
-                        "edit_file",
-                        {
-                            "path": "validators.py",
-                            "old_text": (
-                                "def normalize_limit(limit: int) -> int:\n"
-                                "    return limit\n"
-                            ),
-                            "new_text": (
-                                "def normalize_limit(limit: int) -> int:\n"
-                                "    if limit <= 0:\n"
-                                '        raise ValueError("limit must be positive")\n'
-                                "    return limit\n"
-                            ),
-                        },
-                        "toolu_add_limit_validation",
-                    ),
-                    tool_call(
-                        "run_command",
-                        {"command": f"{PYTHON} -m pytest tests/test_validators.py"},
-                        "toolu_pytest_validators",
-                    ),
-                    final_text("Limit validation is implemented and tests pass."),
-                ],
-            ),
-            fixture_parameter_validation,
-            oracle_parameter_validation,
-        ),
-        "readme_evaluation_docs": (
-            CodingTaskCase(
-                name="readme_evaluation_docs",
-                task=(
-                    "Complete the README evaluation section with the deterministic "
-                    "coding-task command `python scripts/evaluate_coding_tasks.py` "
-                    "and the metrics it reports: pass rate, average steps, average "
-                    "token cost, average tool calls, and failure reason counts."
+                "tests/test_math_utils.py": (
+                    "from math_utils import add\n\n\n"
+                    "def test_add() -> None:\n"
+                    "    assert add(2, 3) == 5\n"
                 ),
-                acceptance_criteria=[
-                    "README.md is read before editing.",
-                    "The section includes the literal command "
-                    "`python scripts/evaluate_coding_tasks.py`.",
-                    "The section includes the literal metric names pass rate, "
-                    "average steps, average token cost, average tool calls, and "
-                    "failure reason counts.",
-                    "The final diff is inspected.",
-                ],
-                expected_evidence=[
-                    "read_file was used on README.md.",
-                    "edit_file replaced the TODO section.",
-                    "get_diff was used after editing.",
-                ],
-                scripted_steps=[
-                    tool_call(
-                        "read_file",
-                        {"path": "README.md"},
-                        "toolu_read_eval_docs",
-                    ),
-                    tool_call(
-                        "edit_file",
-                        {
-                            "path": "README.md",
-                            "old_text": (
-                                "## Evaluation\n\n"
-                                "TODO: document the local coding-task evaluation.\n"
-                            ),
-                            "new_text": (
-                                "## Evaluation\n\n"
-                                "Run the deterministic coding-task suite with:\n\n"
-                                "```bash\n"
-                                "python scripts/evaluate_coding_tasks.py\n"
-                                "```\n\n"
-                                "The report includes pass rate, average steps, "
-                                "average token cost, average tool calls, and "
-                                "failure reason counts.\n"
-                            ),
-                        },
-                        "toolu_update_eval_docs",
-                    ),
-                    tool_call(
-                        "get_diff",
-                        {},
-                        "toolu_diff_eval_docs",
-                    ),
-                    final_text("The README evaluation section now documents the runner."),
-                ],
-            ),
-            fixture_readme_evaluation_docs,
-            oracle_readme_evaluation_docs,
-        ),
-        "provider_adapter_refactor": (
-            CodingTaskCase(
-                name="provider_adapter_refactor",
-                task=(
-                    "Refactor provider.py so chat and reasoner model name "
-                    "formatting share one normalization helper. Run the focused tests."
+            },
+            scripted_steps=[
+                tool_step("read_file", {"path": "math_utils.py"}, "read-math"),
+                tool_step(
+                    "edit_file",
+                    {
+                        "path": "math_utils.py",
+                        "old_text": "    return a - b\n",
+                        "new_text": "    return a + b\n",
+                    },
+                    "fix-add",
                 ),
-                acceptance_criteria=[
-                    "Existing model-name helpers are searched or read.",
-                    "A shared helper is introduced.",
-                    "Both adapters call the shared helper.",
-                    "The focused pytest command passes.",
-                ],
-                expected_evidence=[
-                    "search_text found the model-name helpers.",
-                    "edit_file updated provider.py.",
-                    "run_command reported exit_code: 0.",
-                ],
-                scripted_steps=[
-                    tool_call(
-                        "search_text",
-                        {
-                            "pattern": "model_name",
-                            "file_pattern": "**/*.py",
-                        },
-                        "toolu_search_model_names",
-                    ),
-                    tool_call(
-                        "read_file",
-                        {"path": "provider.py"},
-                        "toolu_read_provider_fixture",
-                    ),
-                    tool_call(
-                        "edit_file",
-                        {
-                            "path": "provider.py",
-                            "old_text": (
-                                "def chat_model_name(model: str) -> str:\n"
-                                "    return model.strip()\n\n\n"
-                                "def reasoner_model_name(model: str) -> str:\n"
-                                "    return model.strip()\n"
-                            ),
-                            "new_text": (
-                                "def normalized_model_name(model: str) -> str:\n"
-                                "    return model.strip()\n\n\n"
-                                "def chat_model_name(model: str) -> str:\n"
-                                "    return normalized_model_name(model)\n\n\n"
-                                "def reasoner_model_name(model: str) -> str:\n"
-                                "    return normalized_model_name(model)\n"
-                            ),
-                        },
-                        "toolu_refactor_provider_fixture",
-                    ),
-                    tool_call(
-                        "run_command",
-                        {"command": f"{PYTHON} -m pytest tests/test_provider.py"},
-                        "toolu_pytest_provider_fixture",
-                    ),
-                    final_text("Provider model normalization now uses a shared helper."),
-                ],
-            ),
-            fixture_provider_adapter_refactor,
-            oracle_provider_adapter_refactor,
-        ),
-        "config_default_fix": (
-            CodingTaskCase(
-                name="config_default_fix",
-                task=(
-                    "Fix load_timeout so a missing value uses the documented "
-                    "30-second default. Run the focused config tests."
+                tool_step(
+                    "run_command",
+                    {
+                        "command": (
+                            f"{PYTHON} -m pytest tests/test_math_utils.py -q"
+                        )
+                    },
+                    "test-add",
                 ),
-                acceptance_criteria=[
-                    "config.py is read before editing.",
-                    "None maps to 30.",
-                    "Explicit values are still parsed as integers.",
-                    "The focused pytest command passes.",
-                ],
-                expected_evidence=[
-                    "read_file was used on config.py.",
-                    "edit_file changed the default timeout.",
-                    "run_command reported exit_code: 0.",
-                ],
-                scripted_steps=[
-                    tool_call(
-                        "read_file",
-                        {"path": "config.py"},
-                        "toolu_read_config",
-                    ),
-                    tool_call(
-                        "edit_file",
-                        {
-                            "path": "config.py",
-                            "old_text": (
-                                "def load_timeout(raw: str | None) -> int:\n"
-                                "    if raw is None:\n"
-                                "        return 0\n"
-                                "    return int(raw)\n"
-                            ),
-                            "new_text": (
-                                "def load_timeout(raw: str | None) -> int:\n"
-                                "    if raw is None:\n"
-                                "        return 30\n"
-                                "    return int(raw)\n"
-                            ),
-                        },
-                        "toolu_fix_timeout_default",
-                    ),
-                    tool_call(
-                        "run_command",
-                        {"command": f"{PYTHON} -m pytest tests/test_config.py"},
-                        "toolu_pytest_config",
-                    ),
-                    final_text("The timeout default now matches the documented value."),
-                ],
-            ),
-            fixture_config_default_fix,
-            oracle_config_default_fix,
+                final_step("The add bug is fixed and the focused test passes."),
+            ],
+            acceptance_criteria=[
+                "Read math_utils.py before editing it.",
+                "Make add return a + b.",
+                "Run tests/test_math_utils.py.",
+                "Change only math_utils.py.",
+            ],
+            expected_changed_files=["math_utils.py"],
+            expected_file_contents={
+                "math_utils.py": (
+                    "def add(a: int, b: int) -> int:\n"
+                    "    return a + b\n"
+                )
+            },
+            verification_command=[
+                PYTHON,
+                "-m",
+                "pytest",
+                "tests/test_math_utils.py",
+                "-q",
+            ],
         ),
-        "list_filter_bug": (
-            CodingTaskCase(
-                name="list_filter_bug",
-                task=(
-                    "Fix active_names so it returns only users whose active flag is "
-                    "true. Run the focused filter tests."
-                ),
-                acceptance_criteria=[
-                    "filters.py is read before editing.",
-                    "Inactive users are excluded.",
-                    "Names remain stringified.",
-                    "The focused pytest command passes.",
-                ],
-                expected_evidence=[
-                    "read_file was used on filters.py.",
-                    "edit_file added an active flag filter.",
-                    "run_command reported exit_code: 0.",
-                ],
-                scripted_steps=[
-                    tool_call(
-                        "read_file",
-                        {"path": "filters.py"},
-                        "toolu_read_filters",
-                    ),
-                    tool_call(
-                        "edit_file",
-                        {
-                            "path": "filters.py",
-                            "old_text": (
-                                "def active_names(users: list[dict[str, object]]) -> list[str]:\n"
-                                "    return [str(user[\"name\"]) for user in users]\n"
-                            ),
-                            "new_text": (
-                                "def active_names(users: list[dict[str, object]]) -> list[str]:\n"
-                                "    return [\n"
-                                "        str(user[\"name\"])\n"
-                                "        for user in users\n"
-                                "        if user.get(\"active\") is True\n"
-                                "    ]\n"
-                            ),
-                        },
-                        "toolu_fix_active_names",
-                    ),
-                    tool_call(
-                        "run_command",
-                        {"command": f"{PYTHON} -m pytest tests/test_filters.py"},
-                        "toolu_pytest_filters",
-                    ),
-                    final_text("active_names now filters inactive users."),
-                ],
+        "failed_edit_recovery": CodingTaskCase(
+            name="failed_edit_recovery",
+            task=(
+                "Change the default timeout from 10 to 30. Inspect the file if an "
+                "edit fails, then compile the module."
             ),
-            fixture_list_filter_bug,
-            oracle_list_filter_bug,
-        ),
-        "add_slugify_helper": (
-            CodingTaskCase(
-                name="add_slugify_helper",
-                task=(
-                    "Add a slugify helper to text_utils.py and cover it with a "
-                    "focused test. Run the new test file."
+            files={"settings.py": "DEFAULT_TIMEOUT = 10\n"},
+            scripted_steps=[
+                tool_step(
+                    "edit_file",
+                    {
+                        "path": "settings.py",
+                        "old_text": "DEFAULT_TIMEOUT = 20",
+                        "new_text": "DEFAULT_TIMEOUT = 30",
+                    },
+                    "failed-edit",
                 ),
-                acceptance_criteria=[
-                    "A focused test file is written.",
-                    "text_utils.py is read before editing.",
-                    "slugify lowercases words and joins whitespace with hyphens.",
-                    "slugify('Hello Local Agent') returns 'hello-local-agent'.",
-                    "slugify('  Mixed   Case  ') returns 'mixed-case'.",
-                    "The focused pytest command passes.",
-                ],
-                expected_evidence=[
-                    "write_file created tests/test_text_utils.py.",
-                    "The test file asserts the required slugify examples.",
-                    "edit_file added slugify.",
-                    "run_command reported exit_code: 0.",
-                ],
-                scripted_steps=[
-                    tool_call(
-                        "write_file",
-                        {
-                            "path": "tests/test_text_utils.py",
-                            "content": (
-                                "from text_utils import slugify\n\n\n"
-                                "def test_slugify_lowercases_and_hyphenates() -> None:\n"
-                                "    assert slugify('Hello Local Agent') == "
-                                "'hello-local-agent'\n"
-                                "    assert slugify('  Mixed   Case  ') == "
-                                "'mixed-case'\n"
-                            ),
-                        },
-                        "toolu_write_slugify_test",
-                    ),
-                    tool_call(
-                        "read_file",
-                        {"path": "text_utils.py"},
-                        "toolu_read_text_utils",
-                    ),
-                    tool_call(
-                        "edit_file",
-                        {
-                            "path": "text_utils.py",
-                            "old_text": (
-                                "def title_case(value: str) -> str:\n"
-                                "    return value.title()\n"
-                            ),
-                            "new_text": (
-                                "def title_case(value: str) -> str:\n"
-                                "    return value.title()\n\n\n"
-                                "def slugify(value: str) -> str:\n"
-                                "    return \"-\".join(value.lower().split())\n"
-                            ),
-                        },
-                        "toolu_add_slugify",
-                    ),
-                    tool_call(
-                        "run_command",
-                        {
-                            "command": (
-                                f"{PYTHON} -m pytest tests/test_text_utils.py"
-                            )
-                        },
-                        "toolu_pytest_slugify",
-                    ),
-                    final_text("slugify is implemented and covered by a focused test."),
-                ],
-            ),
-            fixture_add_slugify_helper,
-            oracle_add_slugify_helper,
-        ),
-        "bounded_output_fix": (
-            CodingTaskCase(
-                name="bounded_output_fix",
-                task=(
-                    "Fix head_lines so it returns exactly the requested number of "
-                    "lines. Run the focused report tests."
+                tool_step("read_file", {"path": "settings.py"}, "read-settings"),
+                tool_step(
+                    "edit_file",
+                    {
+                        "path": "settings.py",
+                        "old_text": "DEFAULT_TIMEOUT = 10",
+                        "new_text": "DEFAULT_TIMEOUT = 30",
+                    },
+                    "fix-timeout",
                 ),
-                acceptance_criteria=[
-                    "reports.py is read before editing.",
-                    "The off-by-one slice is fixed.",
-                    "The focused pytest command passes.",
-                    "No unrelated files change.",
-                ],
-                expected_evidence=[
-                    "read_file was used on reports.py.",
-                    "edit_file changed the slice limit.",
-                    "run_command reported exit_code: 0.",
-                ],
-                scripted_steps=[
-                    tool_call(
-                        "read_file",
-                        {"path": "reports.py"},
-                        "toolu_read_reports",
-                    ),
-                    tool_call(
-                        "edit_file",
-                        {
-                            "path": "reports.py",
-                            "old_text": (
-                                "def head_lines(lines: list[str], limit: int) -> list[str]:\n"
-                                "    return lines[: limit + 1]\n"
-                            ),
-                            "new_text": (
-                                "def head_lines(lines: list[str], limit: int) -> list[str]:\n"
-                                "    return lines[:limit]\n"
-                            ),
-                        },
-                        "toolu_fix_head_lines",
-                    ),
-                    tool_call(
-                        "run_command",
-                        {"command": f"{PYTHON} -m pytest tests/test_reports.py"},
-                        "toolu_pytest_reports",
-                    ),
-                    final_text("head_lines now respects the requested limit."),
-                ],
-            ),
-            fixture_bounded_output_fix,
-            oracle_bounded_output_fix,
-        ),
-        "unsafe_command_blocked": (
-            CodingTaskCase(
-                name="unsafe_command_blocked",
-                task=(
-                    "Demonstrate that a dangerous rm command is blocked by policy "
-                    "and finish without changing files."
+                tool_step(
+                    "run_command",
+                    {"command": f"{PYTHON} -m py_compile settings.py"},
+                    "compile-settings",
                 ),
-                acceptance_criteria=[
-                    "The dangerous command is attempted through run_command.",
-                    "The command is blocked as a recoverable observation.",
-                    "No files are changed.",
-                    "The final answer explains the block.",
-                ],
-                expected_evidence=[
-                    "run_command returned an error observation.",
-                    "The error mentions a blocked dangerous command.",
-                    "changed files list is empty.",
-                ],
-                scripted_steps=[
-                    tool_call(
-                        "run_command",
-                        {"command": "rm -rf ."},
-                        "toolu_block_rm",
-                    ),
-                    final_text(
-                        "The rm command was blocked by policy, and no files changed."
-                    ),
-                ],
-            ),
-            fixture_unsafe_command_blocked,
-            oracle_unsafe_command_blocked,
+                final_step("The timeout is now 30 and the module compiles."),
+            ],
+            acceptance_criteria=[
+                "Recover from the failed edit by reading settings.py.",
+                "Set DEFAULT_TIMEOUT to 30.",
+                "Compile settings.py successfully.",
+            ],
+            expected_changed_files=["settings.py"],
+            expected_file_contents={"settings.py": "DEFAULT_TIMEOUT = 30\n"},
+            verification_command=[PYTHON, "-m", "py_compile", "settings.py"],
         ),
     }
 
 
-def fixture_repository_search(workspace: Path) -> None:
-    package = workspace / "agent"
-    package.mkdir()
-    (package / "__init__.py").write_text("", encoding="utf-8")
-    (package / "token_tracker.py").write_text(
-        "\n".join(
-            [
-                "class TokenTracker:",
-                "    def __init__(self) -> None:",
-                "        self.input_tokens = 0",
-                "        self.output_tokens = 0",
-                "        self._estimated_cost = 0.0",
-                "",
-                "    @property",
-                "    def estimated_cost(self) -> float:",
-                "        return self._estimated_cost",
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
-
-
-def fixture_small_bug_fix(workspace: Path) -> None:
-    (workspace / "calculator.py").write_text(
-        "def add(a: int, b: int) -> int:\n    return a * b\n",
-        encoding="utf-8",
-    )
-    tests = workspace / "tests"
-    tests.mkdir()
-    (tests / "test_calculator.py").write_text(
-        "from calculator import add\n\n\n"
-        "def test_adds_two_numbers() -> None:\n"
-        "    assert add(2, 3) == 5\n",
-        encoding="utf-8",
-    )
-
-
-def fixture_targeted_refactor(workspace: Path) -> None:
-    (workspace / "users.py").write_text(
-        "def format_user_name(first: str, last: str) -> str:\n"
-        '    return f"{first} {last}"\n\n\n'
-        "def greeting(first: str, last: str) -> str:\n"
-        '    return f"Hello, {format_user_name(first, last)}!"\n',
-        encoding="utf-8",
-    )
-    tests = workspace / "tests"
-    tests.mkdir()
-    (tests / "test_users.py").write_text(
-        "from users import greeting\n\n\n"
-        "def test_greeting_uses_display_name() -> None:\n"
-        "    assert greeting('Ada', 'Lovelace') == 'Hello, Ada Lovelace!'\n",
-        encoding="utf-8",
-    )
-
-
-def fixture_failed_edit_recovery(workspace: Path) -> None:
-    (workspace / "README.md").write_text(
-        "# Demo\n\nFollow the instalation guide.\n",
-        encoding="utf-8",
-    )
-
-
-def fixture_failed_test_recovery(workspace: Path) -> None:
-    (workspace / "module.py").write_text(
-        "def answer()\n    return 1\n",
-        encoding="utf-8",
-    )
-
-
-def fixture_parameter_validation(workspace: Path) -> None:
-    (workspace / "validators.py").write_text(
-        "def normalize_limit(limit: int) -> int:\n"
-        "    return limit\n",
-        encoding="utf-8",
-    )
-    tests = workspace / "tests"
-    tests.mkdir()
-    (tests / "test_validators.py").write_text(
-        "import pytest\n\n"
-        "from validators import normalize_limit\n\n\n"
-        "def test_normalize_limit_accepts_positive_values() -> None:\n"
-        "    assert normalize_limit(3) == 3\n\n\n"
-        "def test_normalize_limit_rejects_non_positive_values() -> None:\n"
-        "    with pytest.raises(ValueError, match='positive'):\n"
-        "        normalize_limit(0)\n",
-        encoding="utf-8",
-    )
-
-
-def fixture_readme_evaluation_docs(workspace: Path) -> None:
-    (workspace / "README.md").write_text(
-        "# Demo Agent\n\n"
-        "## Evaluation\n\n"
-        "TODO: document the local coding-task evaluation.\n",
-        encoding="utf-8",
-    )
-
-
-def fixture_provider_adapter_refactor(workspace: Path) -> None:
-    (workspace / "provider.py").write_text(
-        "def chat_model_name(model: str) -> str:\n"
-        "    return model.strip()\n\n\n"
-        "def reasoner_model_name(model: str) -> str:\n"
-        "    return model.strip()\n",
-        encoding="utf-8",
-    )
-    tests = workspace / "tests"
-    tests.mkdir()
-    (tests / "test_provider.py").write_text(
-        "from provider import chat_model_name, reasoner_model_name\n\n\n"
-        "def test_provider_model_names_are_trimmed() -> None:\n"
-        "    assert chat_model_name(' deepseek-chat ') == 'deepseek-chat'\n"
-        "    assert reasoner_model_name(' deepseek-reasoner ') == 'deepseek-reasoner'\n",
-        encoding="utf-8",
-    )
-
-
-def fixture_config_default_fix(workspace: Path) -> None:
-    (workspace / "config.py").write_text(
-        "def load_timeout(raw: str | None) -> int:\n"
-        "    if raw is None:\n"
-        "        return 0\n"
-        "    return int(raw)\n",
-        encoding="utf-8",
-    )
-    tests = workspace / "tests"
-    tests.mkdir()
-    (tests / "test_config.py").write_text(
-        "from config import load_timeout\n\n\n"
-        "def test_load_timeout_uses_documented_default() -> None:\n"
-        "    assert load_timeout(None) == 30\n\n\n"
-        "def test_load_timeout_parses_explicit_value() -> None:\n"
-        "    assert load_timeout('12') == 12\n",
-        encoding="utf-8",
-    )
-
-
-def fixture_list_filter_bug(workspace: Path) -> None:
-    (workspace / "filters.py").write_text(
-        "def active_names(users: list[dict[str, object]]) -> list[str]:\n"
-        "    return [str(user[\"name\"]) for user in users]\n",
-        encoding="utf-8",
-    )
-    tests = workspace / "tests"
-    tests.mkdir()
-    (tests / "test_filters.py").write_text(
-        "from filters import active_names\n\n\n"
-        "def test_active_names_excludes_inactive_users() -> None:\n"
-        "    users = [\n"
-        "        {'name': 'Ada', 'active': True},\n"
-        "        {'name': 'Grace', 'active': False},\n"
-        "        {'name': 'Linus', 'active': True},\n"
-        "    ]\n"
-        "    assert active_names(users) == ['Ada', 'Linus']\n",
-        encoding="utf-8",
-    )
-
-
-def fixture_add_slugify_helper(workspace: Path) -> None:
-    (workspace / "text_utils.py").write_text(
-        "def title_case(value: str) -> str:\n"
-        "    return value.title()\n",
-        encoding="utf-8",
-    )
-
-
-def fixture_bounded_output_fix(workspace: Path) -> None:
-    (workspace / "reports.py").write_text(
-        "def head_lines(lines: list[str], limit: int) -> list[str]:\n"
-        "    return lines[: limit + 1]\n",
-        encoding="utf-8",
-    )
-    tests = workspace / "tests"
-    tests.mkdir()
-    (tests / "test_reports.py").write_text(
-        "from reports import head_lines\n\n\n"
-        "def test_head_lines_returns_exact_limit() -> None:\n"
-        "    assert head_lines(['a', 'b', 'c'], 2) == ['a', 'b']\n",
-        encoding="utf-8",
-    )
-
-
-def fixture_unsafe_command_blocked(workspace: Path) -> None:
-    (workspace / "README.md").write_text(
-        "# Safety Demo\n\nNothing should change here.\n",
-        encoding="utf-8",
-    )
-
-
-def oracle_repository_search(workspace: Path, run: AgentRun, agent: Agent) -> list[str]:
-    failures: list[str] = []
-    calls = tool_names(run)
-    final = final_answer(run)
-    if not any(name in calls for name in {"search_text", "glob_files"}):
-        failures.append("expected repository search or globbing")
-    if "read_file" not in calls:
-        failures.append("expected read_file on the relevant file")
-    if "TokenTracker" not in final or "agent/token_tracker.py" not in final:
-        failures.append("final answer did not identify TokenTracker owner")
-    if agent.registry.changed_files:
-        failures.append("repository search should not change files")
-    if not (workspace / "agent" / "token_tracker.py").exists():
-        failures.append("fixture file disappeared")
-    return failures
-
-
-def oracle_small_bug_fix(workspace: Path, run: AgentRun, agent: Agent) -> list[str]:
-    failures: list[str] = []
-    content = (workspace / "calculator.py").read_text(encoding="utf-8")
-    if "return a + b" not in content:
-        failures.append("calculator.py does not add the inputs")
-    if "return a * b" in content:
-        failures.append("calculator.py still multiplies the inputs")
-    if not oracle_command_passed(
-        workspace,
-        [PYTHON, "-m", "pytest", "tests/test_calculator.py"],
-    ):
-        failures.append("external pytest oracle did not pass")
-    if relative_changed_files(workspace, agent.registry) != ["calculator.py"]:
-        failures.append("changed files were not limited to calculator.py")
-    return failures
-
-
-def oracle_targeted_refactor(workspace: Path, run: AgentRun, agent: Agent) -> list[str]:
-    del agent
-    failures: list[str] = []
-    content = (workspace / "users.py").read_text(encoding="utf-8")
-    if "format_display_name" not in content:
-        failures.append("new symbol is missing")
-    if "format_user_name" in content:
-        failures.append("old symbol still appears in users.py")
-    if not oracle_command_passed(workspace, [PYTHON, "-m", "pytest", "tests/test_users.py"]):
-        failures.append("external pytest oracle did not pass")
-    return failures
-
-
-def oracle_failed_edit_recovery(
-    workspace: Path,
-    run: AgentRun,
-    agent: Agent,
-) -> list[str]:
-    del agent
-    failures: list[str] = []
-    results = [
-        (tool_call.name, tool_result.is_error)
-        for step in run.steps
-        for tool_call, tool_result in zip(step.tool_calls, step.tool_results)
-    ]
-    if ("edit_file", False) not in results:
-        failures.append("missing successful edit_file observation")
-    content = (workspace / "README.md").read_text(encoding="utf-8")
-    if "installation" not in content or "instalation" in content:
-        failures.append("README typo was not corrected")
-    return failures
-
-
-def oracle_failed_test_recovery(
-    workspace: Path,
-    run: AgentRun,
-    agent: Agent,
-) -> list[str]:
-    del agent
-    failures: list[str] = []
-    if not oracle_command_passed(workspace, [PYTHON, "-m", "py_compile", "module.py"]):
-        failures.append("external py_compile oracle did not pass")
-    return failures
-
-
-def oracle_parameter_validation(
-    workspace: Path,
-    run: AgentRun,
-    agent: Agent,
-) -> list[str]:
-    del run
-    failures: list[str] = []
-    content = (workspace / "validators.py").read_text(encoding="utf-8")
-    if "raise ValueError" not in content or "limit <= 0" not in content:
-        failures.append("normalize_limit does not validate non-positive limits")
-    if not oracle_command_passed(
-        workspace,
-        [PYTHON, "-m", "pytest", "tests/test_validators.py"],
-    ):
-        failures.append("external pytest oracle did not pass")
-    if relative_changed_files(workspace, agent.registry) != ["validators.py"]:
-        failures.append("changed files were not limited to validators.py")
-    return failures
-
-
-def oracle_readme_evaluation_docs(
-    workspace: Path,
-    run: AgentRun,
-    agent: Agent,
-) -> list[str]:
-    del run, agent
-    failures: list[str] = []
-    content = (workspace / "README.md").read_text(encoding="utf-8")
-    normalized_content = content.lower()
-    required_markers = [
-        "python scripts/evaluate_coding_tasks.py",
-        "pass rate",
-        "average steps",
-        "average token cost",
-        "average tool calls",
-        "failure reason counts",
-    ]
-    for marker in required_markers:
-        if marker not in normalized_content:
-            failures.append(f"README evaluation docs missing: {marker}")
-    if "TODO" in content:
-        failures.append("README still contains evaluation TODO")
-    return failures
-
-
-def oracle_provider_adapter_refactor(
-    workspace: Path,
-    run: AgentRun,
-    agent: Agent,
-) -> list[str]:
-    del run
-    failures: list[str] = []
-    content = (workspace / "provider.py").read_text(encoding="utf-8")
-    if not provider_helpers_share_normalizer(content):
-        failures.append("adapter helpers do not share one normalization helper")
-    if not oracle_command_passed(
-        workspace,
-        [PYTHON, "-m", "pytest", "tests/test_provider.py"],
-    ):
-        failures.append("external pytest oracle did not pass")
-    if relative_changed_files(workspace, agent.registry) != ["provider.py"]:
-        failures.append("changed files were not limited to provider.py")
-    return failures
-
-
-def oracle_config_default_fix(
-    workspace: Path,
-    run: AgentRun,
-    agent: Agent,
-) -> list[str]:
-    del run
-    failures: list[str] = []
-    content = (workspace / "config.py").read_text(encoding="utf-8")
-    if "return 30" not in content:
-        failures.append("missing documented default timeout")
-    if "return 0" in content:
-        failures.append("old zero timeout default remains")
-    if not oracle_command_passed(
-        workspace,
-        [PYTHON, "-m", "pytest", "tests/test_config.py"],
-    ):
-        failures.append("external pytest oracle did not pass")
-    if relative_changed_files(workspace, agent.registry) != ["config.py"]:
-        failures.append("changed files were not limited to config.py")
-    return failures
-
-
-def oracle_list_filter_bug(
-    workspace: Path,
-    run: AgentRun,
-    agent: Agent,
-) -> list[str]:
-    del run
-    failures: list[str] = []
-    if not oracle_python_code_passed(
-        workspace,
-        (
-            "from filters import active_names\n"
-            "users = [\n"
-            "    {'name': 'Ada', 'active': True},\n"
-            "    {'name': 'Grace', 'active': False},\n"
-            "    {'name': 'Linus', 'active': True},\n"
-            "]\n"
-            "assert active_names(users) == ['Ada', 'Linus']\n"
-        ),
-    ):
-        failures.append("active_names does not filter inactive users")
-    if not oracle_command_passed(
-        workspace,
-        [PYTHON, "-m", "pytest", "tests/test_filters.py"],
-    ):
-        failures.append("external pytest oracle did not pass")
-    if relative_changed_files(workspace, agent.registry) != ["filters.py"]:
-        failures.append("changed files were not limited to filters.py")
-    return failures
-
-
-def oracle_add_slugify_helper(
-    workspace: Path,
-    run: AgentRun,
-    agent: Agent,
-) -> list[str]:
-    del run
-    failures: list[str] = []
-    content = (workspace / "text_utils.py").read_text(encoding="utf-8")
-    if "def slugify" not in content:
-        failures.append("slugify helper is missing")
-    if not oracle_python_code_passed(
-        workspace,
-        (
-            "from text_utils import slugify\n"
-            "assert slugify('Hello Local Agent') == 'hello-local-agent'\n"
-            "assert slugify('  Mixed   Case  ') == 'mixed-case'\n"
-        ),
-    ):
-        failures.append("slugify does not lowercase and hyphenate words")
-    if not oracle_command_passed(
-        workspace,
-        [PYTHON, "-m", "pytest", "tests/test_text_utils.py"],
-    ):
-        failures.append("external pytest oracle did not pass")
-    expected_changes = ["tests/test_text_utils.py", "text_utils.py"]
-    if relative_changed_files(workspace, agent.registry) != expected_changes:
-        failures.append("changed files did not match slugify source and test")
-    return failures
-
-
-def oracle_bounded_output_fix(
-    workspace: Path,
-    run: AgentRun,
-    agent: Agent,
-) -> list[str]:
-    del run
-    failures: list[str] = []
-    content = (workspace / "reports.py").read_text(encoding="utf-8")
-    if "lines[:limit]" not in content:
-        failures.append("head_lines slice still has an off-by-one error")
-    if "limit + 1" in content:
-        failures.append("old off-by-one expression remains")
-    if not oracle_command_passed(
-        workspace,
-        [PYTHON, "-m", "pytest", "tests/test_reports.py"],
-    ):
-        failures.append("external pytest oracle did not pass")
-    if relative_changed_files(workspace, agent.registry) != ["reports.py"]:
-        failures.append("changed files were not limited to reports.py")
-    return failures
-
-
-def oracle_unsafe_command_blocked(
-    workspace: Path,
-    run: AgentRun,
-    agent: Agent,
-) -> list[str]:
-    failures: list[str] = []
-    blocked_results = [
-        tool_result
-        for tool_call, tool_result in iter_tool_results(run)
-        if tool_call.name == "run_command" and command_was_blocked(tool_result)
-    ]
-    if not blocked_results:
-        failures.append("dangerous command was not blocked")
-    if agent.registry.changed_files:
-        failures.append("unsafe command demo should not change files")
-    final = final_answer(run)
-    if "blocked" not in final.lower():
-        failures.append("final answer did not explain the blocked command")
-    readme = (workspace / "README.md").read_text(encoding="utf-8")
-    if "Nothing should change here." not in readme:
-        failures.append("safety demo README changed unexpectedly")
-    return failures
-
-
-def provider_helpers_share_normalizer(content: str) -> bool:
-    try:
-        module = ast.parse(content)
-    except SyntaxError:
-        return False
-    functions = {
-        node.name: node
-        for node in module.body
-        if isinstance(node, ast.FunctionDef)
-    }
-    chat = functions.get("chat_model_name")
-    reasoner = functions.get("reasoner_model_name")
-    if chat is None or reasoner is None:
-        return False
-
-    shared_calls = (
-        called_function_names(chat)
-        & called_function_names(reasoner)
-        & set(functions)
-    )
-    return any(function_contains_strip_call(functions[name]) for name in shared_calls)
-
-
-def called_function_names(function: ast.FunctionDef) -> set[str]:
-    names: set[str] = set()
-    for node in ast.walk(function):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            names.add(node.func.id)
-    return names
-
-
-def function_contains_strip_call(function: ast.FunctionDef) -> bool:
-    for node in ast.walk(function):
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "strip"
-        ):
-            return True
-    return False
-
-
-def oracle_python_code_passed(workspace: Path, code: str) -> bool:
-    return oracle_command_passed(workspace, [PYTHON, "-c", code])
-
-
-def oracle_command_passed(workspace: Path, command: list[str]) -> bool:
-    completed = subprocess.run(
-        command,
-        cwd=workspace,
-        capture_output=True,
-        text=True,
-        timeout=10,
-        check=False,
-    )
-    return completed.returncode == 0
-
-
-async def evaluate_case(
-    case: CodingTaskCase,
-    fixture_builder: FixtureBuilder,
-    oracle: Oracle,
-    *,
-    mode: EvaluationMode,
-    provider_adapter: ProviderAdapter | None,
-    keep_workspace: bool,
-    max_steps: int | None = None,
-) -> CodingTaskResult:
-    workspace = Path(tempfile.mkdtemp(prefix=f"agent-eval-{case.name}-"))
-    original_path = os.environ.get("PATH", "")
-    started = perf_counter()
-    try:
-        fixture_builder(workspace)
-        add_python_shim(workspace)
-        os.environ["PATH"] = (
-            f"{(workspace / '.venv' / 'bin').as_posix()}{os.pathsep}{original_path}"
-        )
-        registry = create_registry(workspace)
-        provider = provider_adapter or ScriptedProviderAdapter(case.scripted_steps)
-        agent = Agent(
-            provider_adapter=provider,
-            registry=registry,
-            stream_output=False,
-            max_steps=max_steps or max(10, len(case.scripted_steps) + 1),
-            approval_callback=approve_eval_diagnostic_command,
-        )
-        run = await agent.run(evaluation_task_prompt(case, mode))
-        latency_ms = (perf_counter() - started) * 1000
-        failures = oracle(workspace, run, agent)
-        task_success = not failures
-        failure_reasons = (
-            [] if task_success else classify_failure_reasons(run, failures)
-        )
-        return CodingTaskResult(
-            name=case.name,
-            mode=mode,
-            task_success=task_success,
-            runtime_success=run.termination == "completed",
-            verification_success=run.verification.status == "passed",
-            recovery_success=recovered_from_error(run),
-            tool_accuracy=tool_accuracy(case, run, mode),
-            steps=len(run.steps),
-            tool_calls=sum(len(step.tool_calls) for step in run.steps),
-            tools=tool_names(run),
-            commands=command_summaries(run),
-            latency_ms=latency_ms,
-            input_tokens=agent.token_tracker.input_tokens,
-            output_tokens=agent.token_tracker.output_tokens,
-            estimated_cost=agent.token_tracker.estimated_cost,
-            failures=failures,
-            failure_reasons=failure_reasons,
-        )
-    finally:
-        os.environ["PATH"] = original_path
-        if keep_workspace:
-            print(f"Kept workspace for {case.name}: {workspace}")
-        else:
-            shutil.rmtree(workspace)
-
-
-def evaluation_task_prompt(case: CodingTaskCase, mode: EvaluationMode) -> str:
-    if mode == "scripted":
-        return case.task
-
-    sections = [
-        case.task,
-        "",
-        "Acceptance criteria:",
-        *format_bullets(case.acceptance_criteria),
-        "",
-        "Expected evidence:",
-        *format_bullets(case.expected_evidence),
-    ]
-    commands = scripted_verification_commands(case)
-    if commands:
-        sections.extend(
-            [
-                "",
-                "Recommended verification command(s):",
-                *format_bullets(commands),
-            ]
-        )
-    sections.extend(
-        [
-            "",
-            "Evaluation guidance:",
-            "- Use the listed evidence as the checklist for this task.",
-            "- Prefer the recommended verification command when it applies.",
-            "- After a verification command passes and the diff is checked, stop and answer.",
-        ]
-    )
-    return "\n".join(sections)
-
-
-def format_bullets(items: list[str]) -> list[str]:
-    return [f"- {item}" for item in items]
-
-
-def scripted_verification_commands(case: CodingTaskCase) -> list[str]:
-    commands: list[str] = []
-    for step in case.scripted_steps:
-        if step.tool_call is None or step.tool_call.name != "run_command":
-            continue
-        command = step.tool_call.input.get("command")
-        if isinstance(command, str):
-            commands.append(command)
-    return commands
-
-
-def add_python_shim(workspace: Path) -> None:
-    bin_dir = workspace / ".venv" / "bin"
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    for executable in ("python", "python3"):
-        python_path = bin_dir / executable
-        try:
-            python_path.symlink_to(PYTHON)
-        except OSError:
-            python_path.write_text(
-                "#!/bin/sh\n"
-                f"exec {PYTHON} \"$@\"\n",
-                encoding="utf-8",
-            )
-            python_path.chmod(0o755)
-
-
-def approve_eval_diagnostic_command(
-    tool_call: ToolCall,
-    policy: CommandPolicyResult,
-) -> bool:
-    del tool_call
-    args = policy.args
-    if not args:
-        return False
-    executable = Path(args[0]).name
-    if executable in {"python", "python3"}:
-        return len(args) >= 2 and args[1] in {"-c", "--version"}
-    return executable in {"which", "ls"}
-
-
-def recovered_from_error(run: AgentRun) -> bool:
-    saw_failure_observation = False
-    for step in run.steps:
-        for tool_call, tool_result in zip(step.tool_calls, step.tool_results):
-            if observation_failed(tool_call, tool_result):
-                saw_failure_observation = True
-            elif saw_failure_observation:
-                return True
-    return False
-
-
-def observation_failed(tool_call: ToolCall, tool_result: ToolResult) -> bool:
-    if tool_result.is_error:
-        return True
-    if tool_call.name != "run_command":
-        return False
-    return "exit_code: 0" not in tool_result.content
-
-
-def tool_accuracy(case: CodingTaskCase, run: AgentRun, mode: EvaluationMode) -> bool:
-    if mode == "scripted":
-        return tool_sequence_matches_script(case, run)
-    return expected_tools_were_used(case, run)
-
-
-def tool_sequence_matches_script(case: CodingTaskCase, run: AgentRun) -> bool:
-    expected = [
-        step.tool_call.name
-        for step in case.scripted_steps
-        if step.tool_call is not None
-    ]
-    return tool_names(run) == expected
-
-
-def expected_tools_were_used(case: CodingTaskCase, run: AgentRun) -> bool:
-    expected = {
-        step.tool_call.name
-        for step in case.scripted_steps
-        if step.tool_call is not None
-    }
-    actual = set(tool_names(run))
-    return expected.issubset(actual)
-
-
-def tool_names(run: AgentRun) -> list[str]:
-    return [tool_call.name for step in run.steps for tool_call in step.tool_calls]
-
-
-def command_summaries(run: AgentRun) -> list[str]:
-    summaries: list[str] = []
-    for step in run.steps:
-        for tool_call, tool_result in zip(step.tool_calls, step.tool_results):
-            if tool_call.name != "run_command":
-                continue
-            command = tool_call.input.get("command")
-            command_text = command if isinstance(command, str) else "[unknown]"
-            exit_code = field_value(tool_result.content, "exit_code") or "error"
-            timed_out = field_value(tool_result.content, "timed_out") or "unknown"
-            summaries.append(
-                f"{command_text} -> exit_code={exit_code}, timed_out={timed_out}"
-            )
-    return summaries
-
-
-def field_value(output: str, field: str) -> str | None:
-    prefix = f"{field}:"
-    for line in output.splitlines():
-        if line.startswith(prefix):
-            return line.removeprefix(prefix).strip()
-    return None
-
-
-def classify_failure_reasons(
-    run: AgentRun,
-    failures: list[str],
-) -> list[FailureReason]:
-    reasons: set[FailureReason] = set()
-    if run.termination == "max_steps":
-        reasons.add("max_step")
-
-    for tool_call, tool_result in iter_tool_results(run):
-        if tool_call.name != "run_command":
-            continue
-        if command_was_blocked(tool_result):
-            reasons.add("unsafe_command_blocked")
-        if not command_failed(tool_result):
-            continue
-        command = command_text(tool_call)
-        output = tool_result.content
-        if command_is_compile(command) or output_has_compile_error(output):
-            reasons.add("compile_error")
-        elif command_is_test(command):
-            reasons.add("test_failure")
-
-    for failure in failures:
-        normalized = failure.lower()
-        if any(marker in normalized for marker in ("py_compile", "syntax", "compile")):
-            reasons.add("compile_error")
-        if any(marker in normalized for marker in ("pytest", "test failure")):
-            reasons.add("test_failure")
-
-    return [reason for reason in FAILURE_REASONS if reason in reasons]
-
-
-def iter_tool_results(run: AgentRun) -> list[tuple[ToolCall, ToolResult]]:
-    return [
-        (tool_call, tool_result)
-        for step in run.steps
-        for tool_call, tool_result in zip(step.tool_calls, step.tool_results)
-    ]
-
-
-def command_text(tool_call: ToolCall) -> str:
-    command = tool_call.input.get("command")
-    if isinstance(command, str):
-        return command
-    return ""
-
-
-def command_failed(tool_result: ToolResult) -> bool:
-    if tool_result.is_error:
-        return True
-    timed_out = field_value(tool_result.content, "timed_out")
-    if timed_out == "true":
-        return True
-    exit_code = field_value(tool_result.content, "exit_code")
-    return exit_code not in {None, "0"}
-
-
-def command_was_blocked(tool_result: ToolResult) -> bool:
-    if not tool_result.is_error:
-        return False
-    normalized = tool_result.content.lower()
-    return any(
-        marker in normalized
-        for marker in (
-            "approval denied",
-            "requires approval",
-            "blocked dangerous command",
-            "shell operators are not supported",
-            "command substitution is not supported",
-        )
-    )
-
-
-def command_is_compile(command: str) -> bool:
-    return "py_compile" in command
-
-
-def command_is_test(command: str) -> bool:
-    return "pytest" in command or "unittest" in command
-
-
-def output_has_compile_error(output: str) -> bool:
-    normalized = output.lower()
-    return any(
-        marker in normalized
-        for marker in ("syntaxerror", "indentationerror", "taberror")
-    )
-
-
-def final_answer(run: AgentRun) -> str:
-    for step in reversed(run.steps):
-        if step.text:
-            return "\n".join(step.text)
-    return ""
-
-
-def relative_changed_files(workspace: Path, registry: ToolRegistry) -> list[str]:
-    root = workspace.resolve()
-    return sorted(
-        path.resolve().relative_to(root).as_posix() for path in registry.changed_files
-    )
+def materialize_case(case: CodingTaskCase, workspace: Path) -> None:
+    for relative_path, content in case.files.items():
+        path = workspace / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
 
 
 def create_real_provider_adapter(api_key: str | None = None) -> ProviderAdapter:
@@ -1730,28 +340,161 @@ def create_real_provider_adapter(api_key: str | None = None) -> ProviderAdapter:
     )
 
 
+async def evaluate_case(
+    case: CodingTaskCase,
+    *,
+    mode: Literal["deterministic", "real_model"],
+    provider_adapter: ProviderAdapter | None = None,
+    keep_workspace: bool = False,
+    max_steps: int | None = None,
+) -> CodingTaskResult:
+    workspace = Path(tempfile.mkdtemp(prefix=f"agent-eval-{case.name}-"))
+    started = perf_counter()
+    try:
+        materialize_case(case, workspace)
+        adapter: ProviderAdapter
+        if mode == "deterministic":
+            adapter = cast(ProviderAdapter, ScriptedProviderAdapter(case.scripted_steps))
+        elif provider_adapter is not None:
+            adapter = provider_adapter
+        else:
+            raise ValueError("Real-model evaluation requires a provider adapter.")
+
+        agent = Agent(
+            provider_adapter=adapter,
+            registry=create_registry(workspace),
+            max_steps=max_steps or 20,
+            stream_output=False,
+            approval_callback=deny_broad_command,
+        )
+        run = await agent.run(evaluation_prompt(case, mode))
+        verification = verify_case(case, workspace, run, agent)
+        failures = list(verification.failures)
+        success = run.termination == "completed" and not failures
+        if run.termination != "completed":
+            failures.insert(0, f"agent terminated with {run.termination}")
+        return result_from_run(
+            name=case.name,
+            mode=mode,
+            run=run,
+            agent=agent,
+            success=success,
+            verification_status=verification.status,
+            latency_ms=(perf_counter() - started) * 1000,
+            failure_reason="; ".join(failures) or None,
+        )
+    finally:
+        if keep_workspace:
+            print(f"Kept evaluation workspace: {workspace}")
+        else:
+            shutil.rmtree(workspace, ignore_errors=True)
+
+
+def evaluation_prompt(
+    case: CodingTaskCase,
+    mode: Literal["deterministic", "real_model"],
+) -> str:
+    if mode == "deterministic":
+        return case.task
+    lines = [case.task, "", "Acceptance criteria:"]
+    lines.extend(f"- {item}" for item in case.acceptance_criteria)
+    if case.verification_command:
+        lines.extend(
+            [
+                "",
+                "Recommended verification command:",
+                f"- {' '.join(case.verification_command)}",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def verify_case(
+    case: CodingTaskCase,
+    workspace: Path,
+    run: AgentRun,
+    agent: Agent,
+) -> CaseVerification:
+    failures: list[str] = []
+    changed_files = relative_changed_files(workspace, agent)
+    if changed_files != case.expected_changed_files:
+        failures.append(
+            "changed files mismatch: "
+            f"expected {case.expected_changed_files}, got {changed_files}"
+        )
+    for relative_path, expected in case.expected_file_contents.items():
+        path = workspace / relative_path
+        actual = path.read_text(encoding="utf-8") if path.exists() else None
+        if actual != expected:
+            failures.append(f"unexpected content in {relative_path}")
+    if case.expected_final_text and case.expected_final_text not in final_answer(run):
+        failures.append(f"final answer missing {case.expected_final_text!r}")
+
+    if case.verification_command is None:
+        return CaseVerification(
+            status="failed" if failures else "not_run",
+            failures=failures,
+        )
+    try:
+        completed = run_subprocess(
+            case.verification_command,
+            cwd=workspace,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        failures.append(f"verification error: {error}")
+        return CaseVerification(status="error", failures=failures)
+    if completed.returncode != 0:
+        failures.append(
+            f"verification exited {completed.returncode}: "
+            f"{completed.stdout}{completed.stderr}".strip()
+        )
+    return CaseVerification(
+        status="failed" if failures else "passed",
+        failures=failures,
+    )
+
+
+def relative_changed_files(workspace: Path, agent: Agent) -> list[str]:
+    root = workspace.resolve()
+    return sorted(
+        path.resolve().relative_to(root).as_posix()
+        for path in agent.registry.changed_files
+    )
+
+
+def final_answer(run: AgentRun) -> str:
+    for step in reversed(run.steps):
+        if step.text:
+            return "\n".join(step.text)
+    return ""
+
+
+def deny_broad_command(
+    tool_call: ToolCall,
+    policy: ToolApprovalPolicy,
+) -> bool:
+    del tool_call, policy
+    return False
+
+
 async def evaluate_cases(
     selected_names: list[str],
     *,
-    mode: EvaluationMode,
+    mode: Literal["deterministic", "real_model"],
     keep_workspaces: bool,
     api_key: str | None = None,
     max_steps: int | None = None,
 ) -> list[CodingTaskResult]:
     cases = build_cases()
+    provider = create_real_provider_adapter(api_key) if mode == "real_model" else None
     results: list[CodingTaskResult] = []
     for name in selected_names:
-        case, fixture_builder, oracle = cases[name]
-        provider_adapter = (
-            create_real_provider_adapter(api_key) if mode == "real_model" else None
-        )
         results.append(
             await evaluate_case(
-                case,
-                fixture_builder,
-                oracle,
+                cases[name],
                 mode=mode,
-                provider_adapter=provider_adapter,
+                provider_adapter=provider,
                 keep_workspace=keep_workspaces,
                 max_steps=max_steps,
             )
@@ -1759,192 +502,42 @@ async def evaluate_cases(
     return results
 
 
-def print_results(results: list[CodingTaskResult]) -> None:
-    mode = results[0].mode if results else "scripted"
-    if mode == "real_model":
-        title = "Coding-agent real-model evaluation"
-    elif mode == "swe_bench":
-        title = "Coding-agent SWE-bench evaluation"
-    else:
-        title = "Coding-agent deterministic evaluation"
-    print(title)
-    print("=" * len(title))
-    for result in results:
-        status = "PASS" if result.task_success else "FAIL"
-        print(f"{status} {result.name}")
-        print(
-            "  "
-            f"runtime={result.runtime_success} "
-            f"verification={result.verification_success} "
-            f"recovery={result.recovery_success} "
-            f"tool_accuracy={result.tool_accuracy}"
-        )
-        print(
-            "  "
-            f"steps={result.steps} "
-            f"tool_calls={result.tool_calls} "
-            f"latency_ms={result.latency_ms:.1f} "
-            f"tokens={result.input_tokens + result.output_tokens} "
-            f"cost=${result.estimated_cost:.6f}"
-        )
-        print(f"  tools={', '.join(result.tools) if result.tools else '[none]'}")
-        for command in result.commands:
-            print(f"  command={command}")
-        if result.failure_reasons:
-            print(f"  failure_reasons={', '.join(result.failure_reasons)}")
-        for failure in result.failures:
-            print(f"  - {failure}")
-    summary = summarize_results(results)
-    print("\nSummary")
-    print(
-        "  "
-        f"pass_rate={summary.passed}/{summary.total} "
-        f"({summary.pass_rate:.1%})"
-    )
-    print(f"  average_steps={summary.average_steps:.2f}")
-    print(f"  average_token_cost=${summary.average_token_cost:.6f}")
-    print(f"  average_tool_calls={summary.average_tool_calls:.2f}")
-    print("  failure_reasons:")
-    for reason in FAILURE_REASONS:
-        print(f"    {reason}={summary.failure_reason_counts[reason]}")
-
-
-def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Run local coding-agent evaluation cases."
-    )
-    parser.add_argument(
-        "cases",
-        nargs="*",
-        help="Case names to run. Defaults to all implemented cases.",
-    )
-    parser.add_argument(
-        "--list",
-        action="store_true",
-        help="List available cases and exit.",
-    )
-    parser.add_argument(
-        "--keep-workspaces",
-        action="store_true",
-        help="Keep temporary workspaces for debugging.",
-    )
-    parser.add_argument(
-        "--real-model",
-        action="store_true",
-        help=(
-            "Call the configured live provider instead of the scripted fake provider. "
-            "Defaults to the read-only repository_search case when no case is named."
-        ),
-    )
-    parser.add_argument(
-        "--max-steps",
-        type=int,
-        default=None,
-        help="Override the agent step limit for each evaluated task.",
-    )
-    parser.add_argument(
-        "--swe-bench",
-        type=Path,
-        default=None,
-        help="Run SWE-bench-style instances from a JSON or JSONL file.",
-    )
-    parser.add_argument(
-        "--swe-bench-limit",
-        type=int,
-        default=None,
-        help="Maximum number of SWE-bench instances to run.",
-    )
-    parser.add_argument(
-        "--swe-bench-cache",
-        type=Path,
-        default=Path(".agents/evals/swe-bench/repos"),
-        help="Repository clone cache used for SWE-bench instances.",
-    )
-    parser.add_argument(
-        "--swe-bench-predictions",
-        type=Path,
-        default=None,
-        help="JSONL predictions path with instance_id, model_name_or_path, model_patch.",
-    )
-    parser.add_argument(
-        "--skip-swe-bench-tests",
-        action="store_true",
-        help="Generate SWE-bench predictions without best-effort local pytest runs.",
-    )
-    return parser.parse_args(argv)
-
-
 def load_swe_bench_instances(
     path: Path,
     *,
     limit: int | None = None,
+    instance_ids: set[str] | None = None,
 ) -> list[SweBenchInstance]:
+    if not path.exists():
+        raise SystemExit(f"SWE-bench file not found: {path}")
     records = load_json_records(path)
+    instances = [SweBenchInstance.model_validate(record) for record in records]
+    if instance_ids:
+        instances = [
+            instance
+            for instance in instances
+            if instance.instance_id in instance_ids
+        ]
     if limit is not None:
-        records = records[:limit]
-    instances = [parse_swe_bench_instance(record) for record in records]
+        instances = instances[:limit]
     if not instances:
-        raise SystemExit(f"No SWE-bench instances found in {path}")
+        raise SystemExit(f"No selected SWE-bench instances found in {path}")
     return instances
 
 
 def load_json_records(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        raise SystemExit(f"SWE-bench file not found: {path}")
     if path.suffix == ".jsonl":
-        records = [
-            json.loads(line)
+        return [
+            cast(dict[str, Any], json.loads(line))
             for line in path.read_text(encoding="utf-8").splitlines()
             if line.strip()
         ]
-    else:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(payload, list):
-            records = payload
-        elif isinstance(payload, dict) and isinstance(payload.get("instances"), list):
-            records = payload["instances"]
-        else:
-            raise SystemExit(
-                "SWE-bench JSON must be a list or an object with an instances list."
-            )
-    return [cast(dict[str, Any], record) for record in records]
-
-
-def parse_swe_bench_instance(record: dict[str, Any]) -> SweBenchInstance:
-    data = {
-        "instance_id": record.get("instance_id"),
-        "repo": record.get("repo"),
-        "base_commit": record.get("base_commit"),
-        "problem_statement": record.get("problem_statement"),
-        "test_patch": record.get("test_patch") or "",
-        "fail_to_pass": normalize_swe_bench_test_ids(
-            record.get("FAIL_TO_PASS", record.get("fail_to_pass", []))
-        ),
-        "pass_to_pass": normalize_swe_bench_test_ids(
-            record.get("PASS_TO_PASS", record.get("pass_to_pass", []))
-        ),
-    }
-    return SweBenchInstance.model_validate(data)
-
-
-def normalize_swe_bench_test_ids(value: Any) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return [str(item) for item in value if str(item).strip()]
-    if isinstance(value, str):
-        stripped = value.strip()
-        if not stripped:
-            return []
-        if stripped.startswith("["):
-            try:
-                parsed = ast.literal_eval(stripped)
-            except (SyntaxError, ValueError):
-                parsed = None
-            if isinstance(parsed, list):
-                return [str(item) for item in parsed if str(item).strip()]
-        return [line.strip() for line in stripped.splitlines() if line.strip()]
-    return [str(value)]
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(payload, list):
+        return [cast(dict[str, Any], record) for record in payload]
+    if isinstance(payload, dict) and isinstance(payload.get("instances"), list):
+        return [cast(dict[str, Any], record) for record in payload["instances"]]
+    raise SystemExit("SWE-bench JSON must be a list or contain an instances list.")
 
 
 async def evaluate_swe_bench_instances(
@@ -1952,27 +545,23 @@ async def evaluate_swe_bench_instances(
     *,
     api_key: str | None,
     keep_workspaces: bool,
-    cache_root: Path,
     predictions_path: Path,
-    run_tests: bool,
-    max_steps: int | None,
+    max_steps: int,
 ) -> list[CodingTaskResult]:
-    provider_adapter = create_real_provider_adapter(api_key)
-    prepare_predictions_file(predictions_path)
+    provider = create_real_provider_adapter(api_key)
+    predictions_path.parent.mkdir(parents=True, exist_ok=True)
+    predictions_path.write_text("", encoding="utf-8")
     results: list[CodingTaskResult] = []
     for instance in instances:
-        results.append(
-            await evaluate_swe_bench_instance(
-                instance,
-                provider_adapter=provider_adapter,
-                keep_workspace=keep_workspaces,
-                cache_root=cache_root,
-                predictions_path=predictions_path,
-                run_tests=run_tests,
-                max_steps=max_steps or 30,
-            )
+        result, patch = await evaluate_swe_bench_instance(
+            instance,
+            provider_adapter=provider,
+            keep_workspace=keep_workspaces,
+            max_steps=max_steps,
         )
-    print(f"\nSWE-bench predictions: {predictions_path}")
+        append_prediction(predictions_path, instance, provider, patch)
+        results.append(result)
+    print(f"Predictions: {predictions_path}")
     return results
 
 
@@ -1981,144 +570,61 @@ async def evaluate_swe_bench_instance(
     *,
     provider_adapter: ProviderAdapter,
     keep_workspace: bool,
-    cache_root: Path,
-    predictions_path: Path,
-    run_tests: bool,
     max_steps: int,
-) -> CodingTaskResult:
+) -> tuple[CodingTaskResult, str]:
     workspace = Path(tempfile.mkdtemp(prefix=f"agent-swe-{instance.instance_id}-"))
-    started = perf_counter()
     repo_workspace = workspace / "repo"
-    failures: list[str] = []
-    commands: list[str] = []
-    model_patch = ""
-    run: AgentRun | None = None
-    agent: Agent | None = None
+    started = perf_counter()
     try:
-        materialize_swe_bench_workspace(instance, repo_workspace, cache_root)
-        registry = create_registry(repo_workspace)
+        clone_instance(instance, repo_workspace)
         agent = Agent(
             provider_adapter=provider_adapter,
-            registry=registry,
-            stream_output=False,
+            registry=create_registry(repo_workspace),
             max_steps=max_steps,
-            approval_callback=deny_eval_command_approval,
+            stream_output=False,
+            approval_callback=deny_broad_command,
         )
         run = await agent.run(swe_bench_prompt(instance))
-        model_patch = git_diff(repo_workspace)
-        write_swe_bench_prediction(predictions_path, instance, provider_adapter, model_patch)
-
+        patch = collect_patch(repo_workspace)
+        success = run.termination == "completed" and bool(patch.strip())
+        failure_reason = None
         if run.termination != "completed":
-            failures.append(f"agent terminated with {run.termination}")
-        if not model_patch.strip():
-            failures.append("no model patch generated")
-        if run_tests:
-            test_success, test_command = run_swe_bench_tests(instance, repo_workspace)
-            commands.append(test_command)
-            if not test_success:
-                failures.append("SWE-bench pytest command did not pass")
-
-        latency_ms = (perf_counter() - started) * 1000
-        assert run is not None
-        assert agent is not None
-        task_success = not failures
-        failure_reasons = (
-            [] if task_success else classify_failure_reasons(run, failures)
-        )
-        return CodingTaskResult(
+            failure_reason = f"agent terminated with {run.termination}"
+        elif not patch.strip():
+            failure_reason = "no patch generated"
+        result = result_from_run(
             name=instance.instance_id,
             mode="swe_bench",
-            task_success=task_success,
-            runtime_success=run.termination == "completed",
-            verification_success=run_tests and not any(
-                failure == "SWE-bench pytest command did not pass"
-                for failure in failures
-            ),
-            recovery_success=recovered_from_error(run),
-            tool_accuracy=bool(model_patch.strip()),
-            steps=len(run.steps),
-            tool_calls=sum(len(step.tool_calls) for step in run.steps),
-            tools=tool_names(run),
-            commands=[*command_summaries(run), *commands],
-            latency_ms=latency_ms,
-            input_tokens=agent.token_tracker.input_tokens,
-            output_tokens=agent.token_tracker.output_tokens,
-            estimated_cost=agent.token_tracker.estimated_cost,
-            failures=failures,
-            failure_reasons=failure_reasons,
+            run=run,
+            agent=agent,
+            success=success,
+            verification_status="not_run",
+            latency_ms=(perf_counter() - started) * 1000,
+            failure_reason=failure_reason,
         )
+        return result, patch
     finally:
         if keep_workspace:
-            print(f"Kept SWE-bench workspace for {instance.instance_id}: {workspace}")
+            print(f"Kept SWE-bench workspace: {workspace}")
         else:
             shutil.rmtree(workspace, ignore_errors=True)
 
 
-def prepare_predictions_file(path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("", encoding="utf-8")
-
-
-def write_swe_bench_prediction(
-    path: Path,
-    instance: SweBenchInstance,
-    provider_adapter: ProviderAdapter,
-    model_patch: str,
-) -> None:
-    record = {
-        "instance_id": instance.instance_id,
-        "model_name_or_path": f"{provider_adapter.provider}/{provider_adapter.model}",
-        "model_patch": model_patch,
-    }
-    with path.open("a", encoding="utf-8") as file:
-        file.write(json.dumps(record) + "\n")
-
-
-def swe_bench_prompt(instance: SweBenchInstance) -> str:
-    return "\n".join(
-        [
-            "Fix this SWE-bench issue in the current repository.",
-            "Make the minimal source changes needed for the described behavior.",
-            "Run focused verification when practical.",
-            "",
-            "Problem statement:",
-            instance.problem_statement,
-        ]
+def clone_instance(instance: SweBenchInstance, destination: Path) -> None:
+    source_path = Path(instance.repo).expanduser()
+    source = (
+        source_path.resolve().as_posix()
+        if source_path.exists()
+        else f"https://github.com/{instance.repo}.git"
+    )
+    run_subprocess(["git", "clone", "--quiet", source, destination.as_posix()])
+    run_subprocess(
+        ["git", "checkout", "--quiet", instance.base_commit],
+        cwd=destination,
     )
 
 
-def deny_eval_command_approval(
-    tool_call: ToolCall,
-    policy: CommandPolicyResult,
-) -> bool:
-    del tool_call, policy
-    return False
-
-
-def materialize_swe_bench_workspace(
-    instance: SweBenchInstance,
-    repo_workspace: Path,
-    cache_root: Path,
-) -> None:
-    cached_repo = ensure_swe_bench_repo_cache(instance, cache_root)
-    run_subprocess(["git", "clone", cached_repo.as_posix(), repo_workspace.as_posix()])
-    run_subprocess(["git", "checkout", instance.base_commit], cwd=repo_workspace)
-
-
-def ensure_swe_bench_repo_cache(
-    instance: SweBenchInstance,
-    cache_root: Path,
-) -> Path:
-    cache_root.mkdir(parents=True, exist_ok=True)
-    cached_repo = cache_root / instance.repo.replace("/", "__")
-    if cached_repo.exists():
-        return cached_repo
-    source = f"https://github.com/{instance.repo}.git"
-    run_subprocess(["git", "clone", source, cached_repo.as_posix()])
-    return cached_repo
-
-
-def git_diff(repo_workspace: Path) -> str:
+def collect_patch(repo_workspace: Path) -> str:
     run_subprocess(["git", "add", "-N", "."], cwd=repo_workspace)
     completed = run_subprocess(
         ["git", "diff", "--binary"],
@@ -2128,33 +634,115 @@ def git_diff(repo_workspace: Path) -> str:
     return completed.stdout
 
 
-def run_swe_bench_tests(
+def append_prediction(
+    path: Path,
     instance: SweBenchInstance,
-    repo_workspace: Path,
-) -> tuple[bool, str]:
-    if instance.test_patch:
-        completed = run_subprocess(
-            ["git", "apply"],
-            cwd=repo_workspace,
-            input_text=instance.test_patch,
-            check=False,
-        )
-        if completed.returncode != 0:
-            summary = (
-                "git apply <test_patch> -> "
-                f"exit_code={completed.returncode}, timed_out=false"
-            )
-            return False, summary
+    provider_adapter: ProviderAdapter,
+    model_patch: str,
+) -> None:
+    prediction = {
+        "instance_id": instance.instance_id,
+        "model_name_or_path": (
+            f"{provider_adapter.provider}/{provider_adapter.model}"
+        ),
+        "model_patch": model_patch,
+    }
+    with path.open("a", encoding="utf-8") as output:
+        output.write(json.dumps(prediction) + "\n")
 
-    tests = [*instance.fail_to_pass, *instance.pass_to_pass]
-    if not tests:
-        return True, "[No SWE-bench test ids supplied]"
-    command = [PYTHON, "-m", "pytest", *tests]
-    completed = run_subprocess(command, cwd=repo_workspace, check=False, timeout=120)
-    command_text = " ".join(command)
-    return (
-        completed.returncode == 0,
-        f"{command_text} -> exit_code={completed.returncode}, timed_out=false",
+
+def swe_bench_prompt(instance: SweBenchInstance) -> str:
+    return "\n".join(
+        [
+            "Fix the issue below in the current repository.",
+            "Make the smallest appropriate change and run focused verification when practical.",
+            "Do not produce benchmark scoring; leave the working tree with the patch.",
+            "",
+            instance.problem_statement,
+        ]
+    )
+
+
+def result_from_run(
+    *,
+    name: str,
+    mode: EvaluationMode,
+    run: AgentRun,
+    agent: Agent,
+    success: bool,
+    verification_status: Literal["not_run", "passed", "failed", "error"],
+    latency_ms: float,
+    failure_reason: str | None,
+) -> CodingTaskResult:
+    return CodingTaskResult(
+        name=name,
+        mode=mode,
+        success=success,
+        verification_status=verification_status,
+        steps=len(run.steps),
+        tool_calls=sum(len(step.tool_calls) for step in run.steps),
+        input_tokens=agent.token_tracker.input_tokens,
+        output_tokens=agent.token_tracker.output_tokens,
+        estimated_cost=agent.token_tracker.estimated_cost,
+        latency_ms=latency_ms,
+        failure_reason=failure_reason,
+        termination_reason=run.termination,
+    )
+
+
+def summarize_results(results: list[CodingTaskResult]) -> EvaluationSummary:
+    total = len(results)
+    successful = sum(result.success for result in results)
+    return EvaluationSummary(
+        total=total,
+        successful=successful,
+        success_rate=successful / total if total else 0.0,
+        average_steps=average(result.steps for result in results),
+        average_tool_calls=average(result.tool_calls for result in results),
+        total_tokens=sum(
+            result.input_tokens + result.output_tokens for result in results
+        ),
+        total_estimated_cost=sum(result.estimated_cost for result in results),
+        average_latency_ms=average(result.latency_ms for result in results),
+    )
+
+
+def average(values: Iterable[int | float]) -> float:
+    numbers = [float(value) for value in values]
+    return sum(numbers) / len(numbers) if numbers else 0.0
+
+
+def print_results(results: list[CodingTaskResult]) -> None:
+    print("Coding-agent evaluation")
+    print("=======================")
+    for result in results:
+        status = "PASS" if result.success else "FAIL"
+        total_tokens = result.input_tokens + result.output_tokens
+        print(
+            f"{status} {result.name}: verification={result.verification_status} "
+            f"termination={result.termination_reason}"
+        )
+        print(
+            f"  steps={result.steps} tool_calls={result.tool_calls} "
+            f"tokens={total_tokens} cost=${result.estimated_cost:.6f} "
+            f"latency_ms={result.latency_ms:.1f}"
+        )
+        if result.failure_reason:
+            print(f"  failure_reason={result.failure_reason}")
+    summary = summarize_results(results)
+    print("Summary")
+    print(
+        f"  success={summary.successful}/{summary.total} "
+        f"({summary.success_rate:.1%})"
+    )
+    print(
+        f"  average_steps={summary.average_steps:.2f} "
+        f"average_tool_calls={summary.average_tool_calls:.2f}"
+    )
+    print(
+        f"  total_tokens={summary.total_tokens} "
+        f"total_cost=${summary.total_estimated_cost:.6f} "
+        f"average_latency_ms={summary.average_latency_ms:.1f}"
     )
 
 
@@ -2162,63 +750,54 @@ def run_subprocess(
     args: list[str],
     *,
     cwd: Path | None = None,
-    input_text: str | None = None,
     check: bool = True,
     timeout: float = 120,
 ) -> subprocess.CompletedProcess[str]:
     completed = subprocess.run(
         args,
         cwd=cwd,
-        input=input_text,
         capture_output=True,
         text=True,
         timeout=timeout,
         check=False,
     )
     if check and completed.returncode != 0:
-        command = " ".join(args)
         raise RuntimeError(
-            f"Command failed: {command}\n{completed.stdout}\n{completed.stderr}"
+            f"Command failed: {' '.join(args)}\n"
+            f"{completed.stdout}{completed.stderr}"
         )
     return completed
 
 
-def default_case_names(
-    mode: EvaluationMode,
-    cases: dict[str, tuple[CodingTaskCase, FixtureBuilder, Oracle]],
-) -> list[str]:
-    if mode == "real_model":
-        return ["repository_search"]
-    return list(cases)
-
-
-def summarize_results(results: list[CodingTaskResult]) -> EvaluationSummary:
-    total = len(results)
-    passed = sum(result.task_success for result in results)
-    failure_reason_counts = {
-        reason: sum(reason in result.failure_reasons for result in results)
-        for reason in FAILURE_REASONS
-    }
-    return EvaluationSummary(
-        total=total,
-        passed=passed,
-        pass_rate=passed / total if total else 0.0,
-        average_steps=average_float(result.steps for result in results),
-        average_token_cost=average_float(result.estimated_cost for result in results),
-        average_tool_calls=average_float(result.tool_calls for result in results),
-        failure_reason_counts=failure_reason_counts,
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("cases", nargs="*", help="Local case names to run.")
+    parser.add_argument("--list", action="store_true", help="List local cases.")
+    parser.add_argument(
+        "--real-model",
+        action="store_true",
+        help="Use the configured live model. Local evaluation is deterministic by default.",
     )
-
-
-def average_float(values: Iterable[float | int]) -> float:
-    numbers = [float(value) for value in values]
-    if not numbers:
-        return 0.0
-    return sum(numbers) / len(numbers)
-
-
-def main() -> None:
-    raise SystemExit(asyncio.run(run_eval_cli()))
+    parser.add_argument("--max-steps", type=int, default=None)
+    parser.add_argument("--keep-workspaces", action="store_true")
+    parser.add_argument(
+        "--swe-bench",
+        type=Path,
+        help="Generate patches for instances in a JSON or JSONL file.",
+    )
+    parser.add_argument("--swe-bench-limit", type=int)
+    parser.add_argument(
+        "--instance-id",
+        action="append",
+        default=[],
+        help="Select an instance ID; may be repeated.",
+    )
+    parser.add_argument(
+        "--swe-bench-predictions",
+        type=Path,
+        default=Path(".agents/evals/swe-bench-predictions.jsonl"),
+    )
+    return parser.parse_args(argv)
 
 
 async def run_eval_cli(
@@ -2229,59 +808,54 @@ async def run_eval_cli(
     args = parse_args(argv)
     cases = build_cases()
     if args.list:
-        for name, (case, _, _) in cases.items():
-            print(f"{name}: {case.task}")
+        for case in cases.values():
+            print(f"{case.name}: {case.task}")
         return 0
 
     if args.swe_bench is not None:
-        load_dotenv()
-        if args.cases:
-            joined = ", ".join(args.cases)
+        if args.cases or args.real_model:
             raise SystemExit(
-                f"Do not pass built-in case names with --swe-bench: {joined}"
+                "Use --swe-bench without local case names or --real-model."
             )
+        load_dotenv()
         instances = load_swe_bench_instances(
             args.swe_bench,
             limit=args.swe_bench_limit,
-        )
-        predictions_path = args.swe_bench_predictions or Path(
-            ".agents/evals/swe-bench-predictions.jsonl"
+            instance_ids=set(args.instance_id),
         )
         results = await evaluate_swe_bench_instances(
             instances,
             api_key=api_key,
             keep_workspaces=args.keep_workspaces,
-            cache_root=args.swe_bench_cache,
-            predictions_path=predictions_path,
-            run_tests=not args.skip_swe_bench_tests,
+            predictions_path=args.swe_bench_predictions,
+            max_steps=args.max_steps or 30,
+        )
+    else:
+        mode: Literal["deterministic", "real_model"] = (
+            "real_model" if args.real_model else "deterministic"
+        )
+        if mode == "real_model":
+            load_dotenv()
+        selected_names = args.cases or (
+            ["repository_search"] if mode == "real_model" else list(cases)
+        )
+        unknown = sorted(set(selected_names) - set(cases))
+        if unknown:
+            raise SystemExit(f"Unknown evaluation case(s): {', '.join(unknown)}")
+        results = await evaluate_cases(
+            selected_names,
+            mode=mode,
+            keep_workspaces=args.keep_workspaces,
+            api_key=api_key,
             max_steps=args.max_steps,
         )
-        print_results(results)
-        if not all(result.task_success for result in results):
-            return 1
-        return 0
 
-    mode: EvaluationMode = "real_model" if args.real_model else "scripted"
-    if mode == "real_model":
-        load_dotenv()
-
-    selected_names = args.cases or default_case_names(mode, cases)
-    unknown = sorted(set(selected_names) - set(cases))
-    if unknown:
-        joined = ", ".join(unknown)
-        raise SystemExit(f"Unknown evaluation case(s): {joined}")
-
-    results = await evaluate_cases(
-        selected_names,
-        mode=mode,
-        keep_workspaces=args.keep_workspaces,
-        api_key=api_key,
-        max_steps=args.max_steps,
-    )
     print_results(results)
-    if not all(result.task_success for result in results):
-        return 1
-    return 0
+    return 0 if all(result.success for result in results) else 1
+
+
+def main() -> None:
+    raise SystemExit(asyncio.run(run_eval_cli()))
 
 
 if __name__ == "__main__":

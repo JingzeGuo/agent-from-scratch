@@ -1,7 +1,6 @@
 from copy import deepcopy
 from typing import Any, Literal, cast
 
-from .memory import MemoryContext
 from .schemas import (
     AgentStep,
     CommandSummary,
@@ -42,7 +41,6 @@ class ContextBuilder:
         steps: list[AgentStep] | None = None,
         objective: str | None = None,
         pending_action: PendingAction | None = None,
-        memory_context: MemoryContext | None = None,
     ) -> list[Message]:
         return cast(
             list[Message],
@@ -51,7 +49,6 @@ class ContextBuilder:
                 steps=steps,
                 objective=objective,
                 pending_action=pending_action,
-                memory_context=memory_context,
             ).messages,
         )
 
@@ -61,7 +58,6 @@ class ContextBuilder:
         steps: list[AgentStep] | None = None,
         objective: str | None = None,
         pending_action: PendingAction | None = None,
-        memory_context: MemoryContext | None = None,
     ) -> ContextBuildResult:
         original_context_chars = self._context_chars(messages)
         context = cast(list[Message], deepcopy(messages))
@@ -82,8 +78,6 @@ class ContextBuilder:
                     )
                 )
             )
-        if memory_context is not None and not memory_context.is_empty():
-            prefix_messages.append(self._memory_message(memory_context))
         context = [*prefix_messages, *context]
 
         hard_collapsed = False
@@ -257,12 +251,6 @@ class ContextBuilder:
         return {
             "role": "user",
             "content": self._format_checkpoint(checkpoint),
-        }
-
-    def _memory_message(self, memory_context: MemoryContext) -> Message:
-        return {
-            "role": "user",
-            "content": memory_context.format_for_prompt(),
         }
 
     def _format_checkpoint(self, checkpoint: ContextCheckpoint) -> str:
