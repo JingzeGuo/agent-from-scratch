@@ -1,10 +1,10 @@
 import asyncio
 import tomllib
-from collections.abc import Sequence
 from pathlib import Path
 from typing import cast
 
 import pytest
+from typer.testing import CliRunner
 
 from agent.agent import Agent
 from agent.provider import DeepSeekProvider, ProviderRequestError
@@ -23,20 +23,19 @@ from agent.session import SessionStore, utc_timestamp
 from agent.tool_registry import ToolRegistry
 from main import (
     CliSessionState,
+    app,
     checkpoint_session,
     default_agent_state_dir,
     default_sessions_dir,
     ensure_agent_state_gitignore,
     generate_session_id,
     handle_command,
-    parse_cli_args,
     prompt_tool_approval,
     report_interrupted_action,
     run_cli,
 )
-from main import (
-    main as cli_main,
-)
+
+runner = CliRunner()
 
 
 class FakeRunAgent:
@@ -275,98 +274,33 @@ def test_trace_command_reports_empty_trace(
     assert capsys.readouterr().out == "[No trace events]\n"
 
 
-def test_parse_cli_args_supports_resume() -> None:
-    args = parse_cli_args(["--resume", "day10"])
-
-    assert args.resume_session_id == "day10"
-    assert args.api_key is None
-
-
-def test_parse_cli_args_supports_equals_resume_form() -> None:
-    args = parse_cli_args(["--resume=day10"])
-
-    assert args.resume_session_id == "day10"
-    assert args.api_key is None
-
-
-def test_parse_cli_args_supports_api_key() -> None:
-    args = parse_cli_args(["--api-key", "cli-key"])
-
-    assert args.resume_session_id is None
-    assert args.api_key == "cli-key"
-
-
-def test_parse_cli_args_supports_equals_api_key_form() -> None:
-    args = parse_cli_args(["--api-key=cli-key"])
-
-    assert args.resume_session_id is None
-    assert args.api_key == "cli-key"
-
-
-def test_parse_cli_args_supports_help_and_version() -> None:
-    help_args = parse_cli_args(["--help"])
-    version_args = parse_cli_args(["--version"])
-
-    assert help_args.show_help is True
-    assert help_args.show_version is False
-    assert version_args.show_help is False
-    assert version_args.show_version is True
-
-
-def test_parse_cli_args_supports_eval_command() -> None:
-    args = parse_cli_args(["--api-key", "cli-key", "eval", "--list"])
-
-    assert args.api_key == "cli-key"
-    assert args.eval_args == ["--list"]
-
-
-def test_parse_cli_args_rejects_positional_task() -> None:
-    with pytest.raises(ValueError, match="Unexpected argument"):
-        parse_cli_args(["Fix", "the", "bug"])
-
-
-def test_parse_cli_args_rejects_invalid_resume_usage() -> None:
-    with pytest.raises(ValueError, match="Usage"):
-        parse_cli_args(["--resume"])
-
-    with pytest.raises(ValueError, match="only once"):
-        parse_cli_args(["--resume", "one", "--resume", "two"])
-
-
-def test_parse_cli_args_rejects_invalid_api_key_usage() -> None:
-    with pytest.raises(ValueError, match="Usage"):
-        parse_cli_args(["--api-key"])
-
-    with pytest.raises(ValueError, match="only once"):
-        parse_cli_args(["--api-key", "one", "--api-key", "two"])
-
-
-def test_pyproject_exposes_agent_console_script() -> None:
+def test_pyproject_exposes_typer_agent_console_script() -> None:
     pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
 
     assert pyproject["project"]["scripts"]["agent"] == "main:cli"
+    assert "typer>=0.16.0" in pyproject["project"]["dependencies"]
 
 
 def test_cli_help_does_not_require_provider_config(
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
 ) -> None:
     def fail_load_deepseek_config(*args: object, **kwargs: object) -> object:
         raise AssertionError("Provider config should not be loaded for --help.")
 
     monkeypatch.setattr("main.load_deepseek_config", fail_load_deepseek_config)
 
-    asyncio.run(cli_main(["--help"]))
+    result = runner.invoke(app, ["--help"])
 
-    output = capsys.readouterr().out
-    assert "Usage:" in output
-    assert "--version" in output
-    assert "/help" in output
+    assert result.exit_code == 0
+    assert "Run a local terminal coding agent." in result.output
+    assert "--resume" in result.output
+    assert "--api-key" in result.output
+    assert "--version" in result.output
+    assert "eval" in result.output
 
 
 def test_cli_version_does_not_require_provider_config(
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
 ) -> None:
     def fail_load_deepseek_config(*args: object, **kwargs: object) -> object:
         raise AssertionError("Provider config should not be loaded for --version.")
@@ -374,50 +308,123 @@ def test_cli_version_does_not_require_provider_config(
     monkeypatch.setattr("main.load_deepseek_config", fail_load_deepseek_config)
     monkeypatch.setattr("main.package_version", lambda: "0.1.0")
 
-    asyncio.run(cli_main(["--version"]))
+    result = runner.invoke(app, ["--version"])
 
-    assert capsys.readouterr().out == "agent-from-scratch 0.1.0\n"
+    assert result.exit_code == 0
+    assert result.output == "agent-from-scratch 0.1.0\n"
 
 
 def test_cli_eval_does_not_require_provider_config(
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    calls: list[tuple[list[str], str | None]] = []
+    calls: list[dict[str, object]] = []
 
     def fail_load_deepseek_config(*args: object, **kwargs: object) -> object:
         raise AssertionError("Provider config should not be loaded for eval.")
 
-    async def fake_run_eval_command(
-        eval_args: Sequence[str],
-        *,
-        api_key: str | None = None,
-    ) -> int:
-        calls.append((list(eval_args), api_key))
+    async def fake_run_evaluation(**kwargs: object) -> int:
+        calls.append(kwargs)
         print("eval ok")
         return 0
 
     monkeypatch.setattr("main.load_deepseek_config", fail_load_deepseek_config)
-    monkeypatch.setattr("main.run_eval_command", fake_run_eval_command)
+    monkeypatch.setattr("main.run_evaluation", fake_run_evaluation)
 
-    asyncio.run(cli_main(["--api-key", "cli-key", "eval", "--list"]))
+    result = runner.invoke(app, ["--api-key", "cli-key", "eval", "--list"])
 
-    assert calls == [(["--list"], "cli-key")]
-    assert capsys.readouterr().out == "eval ok\n"
+    assert result.exit_code == 0
+    assert len(calls) == 1
+    assert calls[0]["api_key"] == "cli-key"
+    assert calls[0]["list_cases"] is True
+    assert result.output == "eval ok\n"
+
+
+def test_cli_forwards_eval_options(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    async def fake_run_evaluation(**kwargs: object) -> int:
+        calls.append(kwargs)
+        return 0
+
+    monkeypatch.setattr("main.run_evaluation", fake_run_evaluation)
+
+    result = runner.invoke(
+        app,
+        [
+            "eval",
+            "--real-model",
+            "--max-steps",
+            "12",
+            "--keep-workspaces",
+            "repository_search",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert len(calls) == 1
+    assert calls[0]["selected_names"] == ["repository_search"]
+    assert calls[0]["real_model"] is True
+    assert calls[0]["max_steps"] == 12
+    assert calls[0]["keep_workspaces"] is True
+
+
+def test_cli_forwards_interactive_options(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str | None, str | None]] = []
+
+    async def fake_run_interactive(
+        *,
+        resume_session_id: str | None = None,
+        api_key: str | None = None,
+    ) -> None:
+        calls.append((resume_session_id, api_key))
+
+    monkeypatch.setattr("main.run_interactive", fake_run_interactive)
+
+    result = runner.invoke(
+        app,
+        ["--resume", "day10", "--api-key", "cli-key"],
+    )
+
+    assert result.exit_code == 0
+    assert calls == [("day10", "cli-key")]
+
+
+def test_cli_rejects_resume_for_eval() -> None:
+    result = runner.invoke(app, ["--resume", "day10", "eval", "--list"])
+
+    assert result.exit_code == 2
+    assert "--resume is only valid" in result.output
+
+
+def test_cli_rejects_top_level_positional_task() -> None:
+    result = runner.invoke(app, ["Fix", "the", "bug"])
+
+    assert result.exit_code == 2
+    assert "No such command" in result.output
+
+
+def test_eval_help_lists_typer_options() -> None:
+    result = runner.invoke(app, ["eval", "--help"])
+
+    assert result.exit_code == 0
+    assert "--real-model" in result.output
+    assert "--max-steps" in result.output
+    assert "--swe-bench" in result.output
+    assert "--instance-id" in result.output
 
 
 def test_cli_reports_configuration_error_without_traceback(
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
 ) -> None:
     def fail_load_deepseek_config(*args: object, **kwargs: object) -> object:
         raise ValueError("DEEPSEEK_API_KEY is not set")
 
     monkeypatch.setattr("main.load_deepseek_config", fail_load_deepseek_config)
 
-    asyncio.run(cli_main([]))
+    result = runner.invoke(app)
 
-    assert capsys.readouterr().out == (
+    assert result.exit_code == 0
+    assert result.output == (
         "Configuration error: DEEPSEEK_API_KEY is not set\n"
         "Set it in .env or export it in your shell.\n"
     )

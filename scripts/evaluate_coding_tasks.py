@@ -1,22 +1,17 @@
-# ruff: noqa: E402
 """Small local, live-model, and SWE-bench-compatible agent evaluations."""
 
-import argparse
-import asyncio
 import json
 import shutil
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Literal, cast
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from agent.agent import Agent
 from agent.provider import DeepSeekProvider, ProviderAdapter, load_deepseek_config
@@ -509,7 +504,7 @@ def load_swe_bench_instances(
     instance_ids: set[str] | None = None,
 ) -> list[SweBenchInstance]:
     if not path.exists():
-        raise SystemExit(f"SWE-bench file not found: {path}")
+        raise ValueError(f"SWE-bench file not found: {path}")
     records = load_json_records(path)
     instances = [SweBenchInstance.model_validate(record) for record in records]
     if instance_ids:
@@ -521,7 +516,7 @@ def load_swe_bench_instances(
     if limit is not None:
         instances = instances[:limit]
     if not instances:
-        raise SystemExit(f"No selected SWE-bench instances found in {path}")
+        raise ValueError(f"No selected SWE-bench instances found in {path}")
     return instances
 
 
@@ -537,7 +532,7 @@ def load_json_records(path: Path) -> list[dict[str, Any]]:
         return [cast(dict[str, Any], record) for record in payload]
     if isinstance(payload, dict) and isinstance(payload.get("instances"), list):
         return [cast(dict[str, Any], record) for record in payload["instances"]]
-    raise SystemExit("SWE-bench JSON must be a list or contain an instances list.")
+    raise ValueError("SWE-bench JSON must be a list or contain an instances list.")
 
 
 async def evaluate_swe_bench_instances(
@@ -769,94 +764,64 @@ def run_subprocess(
     return completed
 
 
-def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("cases", nargs="*", help="Local case names to run.")
-    parser.add_argument("--list", action="store_true", help="List local cases.")
-    parser.add_argument(
-        "--real-model",
-        action="store_true",
-        help="Use the configured live model. Local evaluation is deterministic by default.",
-    )
-    parser.add_argument("--max-steps", type=int, default=None)
-    parser.add_argument("--keep-workspaces", action="store_true")
-    parser.add_argument(
-        "--swe-bench",
-        type=Path,
-        help="Generate patches for instances in a JSON or JSONL file.",
-    )
-    parser.add_argument("--swe-bench-limit", type=int)
-    parser.add_argument(
-        "--instance-id",
-        action="append",
-        default=[],
-        help="Select an instance ID; may be repeated.",
-    )
-    parser.add_argument(
-        "--swe-bench-predictions",
-        type=Path,
-        default=Path(".agents/evals/swe-bench-predictions.jsonl"),
-    )
-    return parser.parse_args(argv)
-
-
-async def run_eval_cli(
-    argv: Sequence[str] | None = None,
+async def run_evaluation(
     *,
+    selected_names: list[str] | None = None,
+    list_cases: bool = False,
+    real_model: bool = False,
+    max_steps: int | None = None,
+    keep_workspaces: bool = False,
+    swe_bench: Path | None = None,
+    swe_bench_limit: int | None = None,
+    instance_ids: list[str] | None = None,
+    predictions_path: Path = Path(
+        ".agents/evals/swe-bench-predictions.jsonl"
+    ),
     api_key: str | None = None,
 ) -> int:
-    args = parse_args(argv)
     cases = build_cases()
-    if args.list:
+    if list_cases:
         for case in cases.values():
             print(f"{case.name}: {case.task}")
         return 0
 
-    if args.swe_bench is not None:
-        if args.cases or args.real_model:
-            raise SystemExit(
+    if swe_bench is not None:
+        if selected_names or real_model:
+            raise ValueError(
                 "Use --swe-bench without local case names or --real-model."
             )
         load_dotenv()
         instances = load_swe_bench_instances(
-            args.swe_bench,
-            limit=args.swe_bench_limit,
-            instance_ids=set(args.instance_id),
+            swe_bench,
+            limit=swe_bench_limit,
+            instance_ids=set(instance_ids or []),
         )
         results = await evaluate_swe_bench_instances(
             instances,
             api_key=api_key,
-            keep_workspaces=args.keep_workspaces,
-            predictions_path=args.swe_bench_predictions,
-            max_steps=args.max_steps or 30,
+            keep_workspaces=keep_workspaces,
+            predictions_path=predictions_path,
+            max_steps=max_steps or 30,
         )
     else:
         mode: Literal["deterministic", "real_model"] = (
-            "real_model" if args.real_model else "deterministic"
+            "real_model" if real_model else "deterministic"
         )
         if mode == "real_model":
             load_dotenv()
-        selected_names = args.cases or (
+        names = selected_names or (
             ["repository_search"] if mode == "real_model" else list(cases)
         )
-        unknown = sorted(set(selected_names) - set(cases))
+        unknown = sorted(set(names) - set(cases))
         if unknown:
-            raise SystemExit(f"Unknown evaluation case(s): {', '.join(unknown)}")
+            raise ValueError(f"Unknown evaluation case(s): {', '.join(unknown)}")
         results = await evaluate_cases(
-            selected_names,
+            names,
             mode=mode,
-            keep_workspaces=args.keep_workspaces,
+            keep_workspaces=keep_workspaces,
             api_key=api_key,
-            max_steps=args.max_steps,
+            max_steps=max_steps,
         )
 
     print_results(results)
     return 0 if all(result.success for result in results) else 1
-
-
-def main() -> None:
-    raise SystemExit(asyncio.run(run_eval_cli()))
-
-
-if __name__ == "__main__":
-    main()

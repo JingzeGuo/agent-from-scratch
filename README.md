@@ -54,7 +54,7 @@ prices only.
 
 ## CLI
 
-Startup options:
+Typer provides the shell-level command and option parsing:
 
 ```text
 agent [--api-key KEY] [--resume SESSION_ID_OR_NAME]
@@ -62,6 +62,9 @@ agent --help
 agent --version
 agent eval [evaluation options]
 ```
+
+With no subcommand, `agent` launches the interactive REPL. Slash commands are
+handled inside that REPL and are not shell-level Typer commands.
 
 Interactive commands:
 
@@ -170,7 +173,7 @@ edits, decisions, commands, errors, pending action, and latest verification.
 
 | File | Responsibility |
 | --- | --- |
-| `main.py` | CLI parsing, provider setup, sessions, and startup wiring |
+| `main.py` | Typer CLI, provider setup, sessions, and startup wiring |
 | `agent/agent.py` | Explicit controller loop, scheduling, approvals, traces, and termination |
 | `agent/provider.py` | DeepSeek transport and provider-neutral response normalization |
 | `agent/setup.py` | Default tool registry and read-only child profile |
@@ -244,7 +247,7 @@ Run the normal local checks with the project environment:
 .venv/bin/ruff check .
 .venv/bin/mypy .
 .venv/bin/python -m pytest -q
-.venv/bin/python scripts/evaluate_coding_tasks.py
+.venv/bin/agent eval
 ```
 
 Tests use fake providers and temporary workspaces; they do not make live API
