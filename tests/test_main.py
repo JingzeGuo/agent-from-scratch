@@ -1,11 +1,10 @@
 import asyncio
 import tomllib
+from collections.abc import Sequence
 from pathlib import Path
 from typing import cast
 
 import pytest
-from rich.text import Text
-from typer.testing import CliRunner
 
 from agent.agent import Agent
 from agent.provider import DeepSeekProvider, ProviderRequestError
@@ -24,23 +23,20 @@ from agent.session import SessionStore, utc_timestamp
 from agent.tool_registry import ToolRegistry
 from main import (
     CliSessionState,
-    app,
     checkpoint_session,
     default_agent_state_dir,
     default_sessions_dir,
     ensure_agent_state_gitignore,
     generate_session_id,
     handle_command,
+    parse_cli_args,
     prompt_tool_approval,
-    repl_loop,
     report_interrupted_action,
+    run_cli,
 )
-
-runner = CliRunner()
-
-
-def plain_cli_output(output: str) -> str:
-    return Text.from_ansi(output).plain
+from main import (
+    main as cli_main,
+)
 
 
 class FakeRunAgent:
@@ -279,34 +275,98 @@ def test_trace_command_reports_empty_trace(
     assert capsys.readouterr().out == "[No trace events]\n"
 
 
-def test_pyproject_exposes_typer_agent_console_script() -> None:
+def test_parse_cli_args_supports_resume() -> None:
+    args = parse_cli_args(["--resume", "day10"])
+
+    assert args.resume_session_id == "day10"
+    assert args.api_key is None
+
+
+def test_parse_cli_args_supports_equals_resume_form() -> None:
+    args = parse_cli_args(["--resume=day10"])
+
+    assert args.resume_session_id == "day10"
+    assert args.api_key is None
+
+
+def test_parse_cli_args_supports_api_key() -> None:
+    args = parse_cli_args(["--api-key", "cli-key"])
+
+    assert args.resume_session_id is None
+    assert args.api_key == "cli-key"
+
+
+def test_parse_cli_args_supports_equals_api_key_form() -> None:
+    args = parse_cli_args(["--api-key=cli-key"])
+
+    assert args.resume_session_id is None
+    assert args.api_key == "cli-key"
+
+
+def test_parse_cli_args_supports_help_and_version() -> None:
+    help_args = parse_cli_args(["--help"])
+    version_args = parse_cli_args(["--version"])
+
+    assert help_args.show_help is True
+    assert help_args.show_version is False
+    assert version_args.show_help is False
+    assert version_args.show_version is True
+
+
+def test_parse_cli_args_supports_eval_command() -> None:
+    args = parse_cli_args(["--api-key", "cli-key", "eval", "--list"])
+
+    assert args.api_key == "cli-key"
+    assert args.eval_args == ["--list"]
+
+
+def test_parse_cli_args_rejects_positional_task() -> None:
+    with pytest.raises(ValueError, match="Unexpected argument"):
+        parse_cli_args(["Fix", "the", "bug"])
+
+
+def test_parse_cli_args_rejects_invalid_resume_usage() -> None:
+    with pytest.raises(ValueError, match="Usage"):
+        parse_cli_args(["--resume"])
+
+    with pytest.raises(ValueError, match="only once"):
+        parse_cli_args(["--resume", "one", "--resume", "two"])
+
+
+def test_parse_cli_args_rejects_invalid_api_key_usage() -> None:
+    with pytest.raises(ValueError, match="Usage"):
+        parse_cli_args(["--api-key"])
+
+    with pytest.raises(ValueError, match="only once"):
+        parse_cli_args(["--api-key", "one", "--api-key", "two"])
+
+
+def test_pyproject_exposes_agent_console_script() -> None:
     pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
 
-    assert pyproject["project"]["scripts"]["agent"] == "main:entrypoint"
-    assert "typer>=0.16.0" in pyproject["project"]["dependencies"]
+    assert pyproject["project"]["scripts"]["agent"] == "main:cli"
 
 
 def test_cli_help_does_not_require_provider_config(
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     def fail_load_deepseek_config(*args: object, **kwargs: object) -> object:
         raise AssertionError("Provider config should not be loaded for --help.")
 
     monkeypatch.setattr("main.load_deepseek_config", fail_load_deepseek_config)
 
-    result = runner.invoke(app, ["--help"], color=True)
-    output = plain_cli_output(result.output)
+    asyncio.run(cli_main(["--help"]))
 
-    assert result.exit_code == 0
-    assert "Run a local terminal coding agent." in output
-    assert "--resume" in output
-    assert "--api-key" in output
+    output = capsys.readouterr().out
+    assert "Usage:" in output
     assert "--version" in output
-    assert "eval" in output
+    assert "/help" in output
 
 
 def test_cli_version_does_not_require_provider_config(
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     def fail_load_deepseek_config(*args: object, **kwargs: object) -> object:
         raise AssertionError("Provider config should not be loaded for --version.")
@@ -314,132 +374,50 @@ def test_cli_version_does_not_require_provider_config(
     monkeypatch.setattr("main.load_deepseek_config", fail_load_deepseek_config)
     monkeypatch.setattr("main.package_version", lambda: "0.1.0")
 
-    result = runner.invoke(app, ["--version"])
+    asyncio.run(cli_main(["--version"]))
 
-    assert result.exit_code == 0
-    assert result.output == "agent-from-scratch 0.1.0\n"
+    assert capsys.readouterr().out == "agent-from-scratch 0.1.0\n"
 
 
 def test_cli_eval_does_not_require_provider_config(
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    calls: list[dict[str, object]] = []
+    calls: list[tuple[list[str], str | None]] = []
 
     def fail_load_deepseek_config(*args: object, **kwargs: object) -> object:
         raise AssertionError("Provider config should not be loaded for eval.")
 
-    async def fake_run_evaluation(**kwargs: object) -> int:
-        calls.append(kwargs)
+    async def fake_run_eval_command(
+        eval_args: Sequence[str],
+        *,
+        api_key: str | None = None,
+    ) -> int:
+        calls.append((list(eval_args), api_key))
         print("eval ok")
         return 0
 
     monkeypatch.setattr("main.load_deepseek_config", fail_load_deepseek_config)
-    monkeypatch.setattr("main.run_evaluation", fake_run_evaluation)
+    monkeypatch.setattr("main.run_eval_command", fake_run_eval_command)
 
-    result = runner.invoke(app, ["--api-key", "cli-key", "eval", "--list"])
+    asyncio.run(cli_main(["--api-key", "cli-key", "eval", "--list"]))
 
-    assert result.exit_code == 0
-    assert len(calls) == 1
-    assert calls[0]["api_key"] == "cli-key"
-    assert calls[0]["list_cases"] is True
-    assert result.output == "eval ok\n"
-
-
-def test_cli_forwards_eval_options(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[dict[str, object]] = []
-
-    async def fake_run_evaluation(**kwargs: object) -> int:
-        calls.append(kwargs)
-        return 0
-
-    monkeypatch.setattr("main.run_evaluation", fake_run_evaluation)
-
-    result = runner.invoke(
-        app,
-        [
-            "eval",
-            "--real-model",
-            "--max-steps",
-            "12",
-            "--keep-workspaces",
-            "repository_search",
-        ],
-    )
-
-    assert result.exit_code == 0
-    assert len(calls) == 1
-    assert calls[0]["selected_names"] == ["repository_search"]
-    assert calls[0]["real_model"] is True
-    assert calls[0]["max_steps"] == 12
-    assert calls[0]["keep_workspaces"] is True
-
-
-def test_cli_forwards_interactive_options(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[tuple[str | None, str | None]] = []
-
-    async def fake_start_interactive_session(
-        *,
-        resume_session_id: str | None = None,
-        api_key: str | None = None,
-    ) -> None:
-        calls.append((resume_session_id, api_key))
-
-    monkeypatch.setattr(
-        "main.start_interactive_session",
-        fake_start_interactive_session,
-    )
-
-    result = runner.invoke(
-        app,
-        ["--resume", "day10", "--api-key", "cli-key"],
-    )
-
-    assert result.exit_code == 0
-    assert calls == [("day10", "cli-key")]
-
-
-def test_cli_rejects_resume_for_eval() -> None:
-    result = runner.invoke(
-        app,
-        ["--resume", "day10", "eval", "--list"],
-        color=True,
-    )
-    output = plain_cli_output(result.output)
-
-    assert result.exit_code == 2
-    assert "--resume is only valid" in output
-
-
-def test_cli_rejects_top_level_positional_task() -> None:
-    result = runner.invoke(app, ["Fix", "the", "bug"])
-
-    assert result.exit_code == 2
-    assert "No such command" in result.output
-
-
-def test_eval_help_lists_typer_options() -> None:
-    result = runner.invoke(app, ["eval", "--help"], color=True)
-    output = plain_cli_output(result.output)
-
-    assert result.exit_code == 0
-    assert "--real-model" in output
-    assert "--max-steps" in output
-    assert "--swe-bench" in output
-    assert "--instance-id" in output
+    assert calls == [(["--list"], "cli-key")]
+    assert capsys.readouterr().out == "eval ok\n"
 
 
 def test_cli_reports_configuration_error_without_traceback(
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     def fail_load_deepseek_config(*args: object, **kwargs: object) -> object:
         raise ValueError("DEEPSEEK_API_KEY is not set")
 
     monkeypatch.setattr("main.load_deepseek_config", fail_load_deepseek_config)
 
-    result = runner.invoke(app)
+    asyncio.run(cli_main([]))
 
-    assert result.exit_code == 0
-    assert result.output == (
+    assert capsys.readouterr().out == (
         "Configuration error: DEEPSEEK_API_KEY is not set\n"
         "Set it in .env or export it in your shell.\n"
     )
@@ -498,7 +476,7 @@ def test_generate_session_id_uses_safe_timestamp_format() -> None:
     assert " " not in session_id
 
 
-def test_repl_loop_executes_interactive_task(
+def test_run_cli_executes_interactive_task(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -507,13 +485,13 @@ def test_repl_loop_executes_interactive_task(
 
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
 
-    asyncio.run(repl_loop(cast(Agent, fake_agent)))
+    asyncio.run(run_cli(cast(Agent, fake_agent)))
 
     assert fake_agent.tasks == ["Fix the bug"]
     assert capsys.readouterr().out == "\nAssistant: done\nGoodbye.\n"
 
 
-def test_repl_loop_submits_multiline_prompt_as_one_task(
+def test_run_cli_submits_multiline_prompt_as_one_task(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -532,7 +510,7 @@ def test_repl_loop_submits_multiline_prompt_as_one_task(
 
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
 
-    asyncio.run(repl_loop(cast(Agent, fake_agent)))
+    asyncio.run(run_cli(cast(Agent, fake_agent)))
 
     assert fake_agent.tasks == [
         "Fix the login flow.\n\n/help\nRun the focused tests."
@@ -545,7 +523,7 @@ def test_repl_loop_submits_multiline_prompt_as_one_task(
     )
 
 
-def test_repl_loop_cancels_multiline_prompt(
+def test_run_cli_cancels_multiline_prompt(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -554,13 +532,13 @@ def test_repl_loop_cancels_multiline_prompt(
 
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
 
-    asyncio.run(repl_loop(cast(Agent, fake_agent)))
+    asyncio.run(run_cli(cast(Agent, fake_agent)))
 
     assert fake_agent.tasks == []
     assert "Multiline prompt canceled.\n" in capsys.readouterr().out
 
 
-def test_repl_loop_rejects_empty_multiline_prompt(
+def test_run_cli_rejects_empty_multiline_prompt(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -569,13 +547,13 @@ def test_repl_loop_rejects_empty_multiline_prompt(
 
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
 
-    asyncio.run(repl_loop(cast(Agent, fake_agent)))
+    asyncio.run(run_cli(cast(Agent, fake_agent)))
 
     assert fake_agent.tasks == []
     assert "Task cannot be empty.\n" in capsys.readouterr().out
 
 
-def test_repl_loop_cancels_multiline_prompt_on_keyboard_interrupt(
+def test_run_cli_cancels_multiline_prompt_on_keyboard_interrupt(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -590,13 +568,13 @@ def test_repl_loop_cancels_multiline_prompt_on_keyboard_interrupt(
 
     monkeypatch.setattr("builtins.input", fake_input)
 
-    asyncio.run(repl_loop(cast(Agent, fake_agent)))
+    asyncio.run(run_cli(cast(Agent, fake_agent)))
 
     assert fake_agent.tasks == []
     assert "\nMultiline prompt canceled.\n" in capsys.readouterr().out
 
 
-def test_repl_loop_exits_cleanly_on_eof(
+def test_run_cli_exits_cleanly_on_eof(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -607,13 +585,13 @@ def test_repl_loop_exits_cleanly_on_eof(
 
     monkeypatch.setattr("builtins.input", raise_eof)
 
-    asyncio.run(repl_loop(cast(Agent, fake_agent)))
+    asyncio.run(run_cli(cast(Agent, fake_agent)))
 
     assert fake_agent.tasks == []
     assert capsys.readouterr().out == "Goodbye.\n"
 
 
-def test_repl_loop_reports_provider_failure_without_traceback(
+def test_run_cli_reports_provider_failure_without_traceback(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -623,7 +601,7 @@ def test_repl_loop_reports_provider_failure_without_traceback(
 
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
 
-    asyncio.run(repl_loop(cast(Agent, fake_agent)))
+    asyncio.run(run_cli(cast(Agent, fake_agent)))
 
     output = capsys.readouterr().out
     assert fake_agent.tasks == ["Build a site"]
@@ -633,7 +611,7 @@ def test_repl_loop_reports_provider_failure_without_traceback(
     assert "Traceback" not in output
 
 
-def test_repl_loop_checkpoints_interactive_task(
+def test_run_cli_checkpoints_interactive_task(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -646,7 +624,7 @@ def test_repl_loop_checkpoints_interactive_task(
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
 
     asyncio.run(
-        repl_loop(
+        run_cli(
             cast(Agent, fake_agent),
             session_store,
             session_state,
@@ -668,7 +646,7 @@ def test_repl_loop_checkpoints_interactive_task(
     )
 
 
-def test_repl_loop_checkpoints_multiline_prompt_once(
+def test_run_cli_checkpoints_multiline_prompt_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -680,7 +658,7 @@ def test_repl_loop_checkpoints_multiline_prompt_once(
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
 
     asyncio.run(
-        repl_loop(
+        run_cli(
             cast(Agent, fake_agent),
             session_store,
             session_state,

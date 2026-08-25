@@ -1,17 +1,18 @@
 import asyncio
 import os
+import sys
 import traceback
+from collections.abc import Sequence
 from datetime import datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import Annotated
 
-import typer
 from dotenv import load_dotenv
 from pydantic import BaseModel
 
 from agent.agent import Agent
 from agent.cli_commands import (
+    COMMANDS,
     CliSessionState,
     checkpoint_session,
     handle_command,
@@ -28,36 +29,34 @@ from agent.provider import (
 from agent.schemas import SessionEvent
 from agent.session import SessionStore, utc_timestamp
 from agent.setup import create_registry
-from scripts.evaluate_coding_tasks import run_evaluation
 
 PACKAGE_NAME = "agent-from-scratch"
 FALLBACK_VERSION = "0.1.0"
-app = typer.Typer(
-    name="agent",
-    help="Run a local terminal coding agent.",
-    add_completion=False,
-    no_args_is_help=False,
-    invoke_without_command=True,
-)
 
 __all__ = [
     "CliSessionState",
-    "app",
     "checkpoint_session",
     "default_agent_state_dir",
     "default_sessions_dir",
     "ensure_agent_state_gitignore",
-    "entrypoint",
-    "eval_command",
     "generate_session_id",
     "handle_command",
     "handle_command_async",
+    "main",
+    "parse_cli_args",
     "prompt_tool_approval",
-    "repl_loop",
     "report_interrupted_action",
-    "root_command",
-    "start_interactive_session",
+    "run_eval_command",
+    "run_cli",
 ]
+
+
+class CliArgs(BaseModel):
+    resume_session_id: str | None
+    api_key: str | None
+    eval_args: list[str] | None
+    show_help: bool = False
+    show_version: bool = False
 
 
 class CliInputResult(BaseModel):
@@ -65,11 +64,109 @@ class CliInputResult(BaseModel):
     should_exit: bool = False
 
 
+def parse_cli_args(argv: Sequence[str]) -> CliArgs:
+    resume_session_id: str | None = None
+    api_key: str | None = None
+    eval_args: list[str] | None = None
+    show_help = False
+    show_version = False
+    index = 0
+
+    while index < len(argv):
+        arg = argv[index]
+        if arg == "eval":
+            eval_args = list(argv[index + 1 :])
+            break
+        if arg in {"--help", "-h"}:
+            show_help = True
+            index += 1
+            continue
+        if arg == "--version":
+            show_version = True
+            index += 1
+            continue
+        if arg == "--resume":
+            if resume_session_id is not None:
+                raise ValueError("Use --resume only once.")
+            if index + 1 >= len(argv):
+                raise ValueError("Usage: --resume <session-id-or-name>")
+            resume_session_id = argv[index + 1]
+            index += 2
+            continue
+        if arg.startswith("--resume="):
+            if resume_session_id is not None:
+                raise ValueError("Use --resume only once.")
+            resume_session_id = arg.removeprefix("--resume=")
+            if not resume_session_id:
+                raise ValueError("Usage: --resume <session-id-or-name>")
+            index += 1
+            continue
+        if arg == "--api-key":
+            if api_key is not None:
+                raise ValueError("Use --api-key only once.")
+            if index + 1 >= len(argv):
+                raise ValueError("Usage: --api-key <key>")
+            api_key = argv[index + 1]
+            index += 2
+            continue
+        if arg.startswith("--api-key="):
+            if api_key is not None:
+                raise ValueError("Use --api-key only once.")
+            api_key = arg.removeprefix("--api-key=")
+            if not api_key:
+                raise ValueError("Usage: --api-key <key>")
+            index += 1
+            continue
+
+        raise ValueError(f"Unexpected argument: {arg}")
+
+    return CliArgs(
+        resume_session_id=resume_session_id,
+        api_key=api_key,
+        eval_args=eval_args,
+        show_help=show_help,
+        show_version=show_version,
+    )
+
+
 def package_version() -> str:
     try:
         return version(PACKAGE_NAME)
     except PackageNotFoundError:
         return FALLBACK_VERSION
+
+
+def print_cli_help() -> None:
+    print("Usage:")
+    print("  agent [options]")
+    print("  agent eval [eval-options] [cases...]")
+    print("")
+    print("Options:")
+    print("  -h, --help                       Show this help message.")
+    print("  --version                        Show the installed version.")
+    print("  --resume <session-id-or-name>    Resume a saved session.")
+    print("  --api-key <key>                  Provide the provider API key.")
+    print("")
+    print("Interactive commands:")
+    width = max(len(name) for name in COMMANDS)
+    for name, description in COMMANDS.items():
+        print(f"  {name:<{width}} {description}")
+
+
+async def run_eval_command(
+    eval_args: Sequence[str],
+    *,
+    api_key: str | None = None,
+) -> int:
+    try:
+        from scripts.evaluate_coding_tasks import run_eval_cli
+    except ModuleNotFoundError as error:
+        if error.name != "scripts":
+            raise
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from scripts.evaluate_coding_tasks import run_eval_cli
+
+    return await run_eval_cli(eval_args, api_key=api_key)
 
 
 def print_configuration_error(error: ValueError) -> None:
@@ -154,12 +251,11 @@ def read_user_task() -> CliInputResult:
         lines.append(line)
 
 
-async def repl_loop(
+async def run_cli(
     agent: Agent,
     session_store: SessionStore | None = None,
     session_state: CliSessionState | None = None,
 ) -> None:
-    """Route terminal input to local slash commands or the Agent execution loop."""
     while True:
         user_input = read_user_task()
         if user_input.should_exit:
@@ -200,17 +296,33 @@ def provider_debug_enabled() -> bool:
     return os.getenv("AGENT_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-async def start_interactive_session(
-    *,
-    resume_session_id: str | None = None,
-    api_key: str | None = None,
-) -> None:
-    """Configure one interactive session, then enter its terminal REPL."""
+async def main(argv: Sequence[str] | None = None) -> None:
     load_dotenv()
+    raw_args = sys.argv[1:] if argv is None else argv
+    try:
+        cli_args = parse_cli_args(raw_args)
+    except ValueError as error:
+        print(error)
+        return
+    if cli_args.show_help:
+        print_cli_help()
+        return
+    if cli_args.show_version:
+        print(f"{PACKAGE_NAME} {package_version()}")
+        return
+    if cli_args.eval_args is not None:
+        if cli_args.resume_session_id is not None:
+            print("Use --resume with interactive tasks, not eval.")
+            return
+        exit_code = await run_eval_command(cli_args.eval_args, api_key=cli_args.api_key)
+        if exit_code:
+            raise SystemExit(exit_code)
+        return
+
     workspace_root = Path.cwd().resolve()
     session_store = SessionStore(default_sessions_dir(workspace_root))
     try:
-        config = load_deepseek_config(api_key=api_key)
+        config = load_deepseek_config(api_key=cli_args.api_key)
     except ValueError as error:
         print_configuration_error(error)
         return
@@ -226,8 +338,8 @@ async def start_interactive_session(
     )
     agent.configure_approval_callback(prompt_tool_approval)
     session_state = CliSessionState(session_id=generate_session_id())
-    if resume_session_id is not None:
-        snapshot = session_store.find(resume_session_id)
+    if cli_args.resume_session_id is not None:
+        snapshot = session_store.find(cli_args.resume_session_id)
         agent.restore_snapshot(snapshot)
         session_state = CliSessionState(
             session_id=snapshot.session_id,
@@ -253,139 +365,12 @@ async def start_interactive_session(
         )
     agent.configure_session_recording(session_store, session_state.session_id)
     print(f"Provider: {agent.provider} | Model: {agent.model}")
-    await repl_loop(agent, session_store, session_state)
+    await run_cli(agent, session_store, session_state)
 
 
-def version_callback(value: bool) -> bool:
-    if value:
-        typer.echo(f"{PACKAGE_NAME} {package_version()}")
-        raise typer.Exit()
-    return value
-
-
-@app.callback()
-def root_command(
-    context: typer.Context,
-    resume_session_id: Annotated[
-        str | None,
-        typer.Option(
-            "--resume",
-            metavar="SESSION",
-            help="Resume a saved interactive session by ID or name.",
-        ),
-    ] = None,
-    api_key: Annotated[
-        str | None,
-        typer.Option("--api-key", help="Override DEEPSEEK_API_KEY."),
-    ] = None,
-    version: Annotated[
-        bool,
-        typer.Option(
-            "--version",
-            callback=version_callback,
-            is_eager=True,
-            help="Show the installed version and exit.",
-        ),
-    ] = False,
-) -> None:
-    """Configure the shell CLI and start a REPL when no subcommand is given."""
-    del version
-    context.obj = {"api_key": api_key}
-    if context.invoked_subcommand is not None:
-        if resume_session_id is not None:
-            raise typer.BadParameter(
-                "--resume is only valid when launching the interactive agent."
-            )
-        return
-    asyncio.run(
-        start_interactive_session(
-            resume_session_id=resume_session_id,
-            api_key=api_key,
-        )
-    )
-
-
-@app.command("eval")
-def eval_command(
-    context: typer.Context,
-    cases: Annotated[
-        list[str] | None,
-        typer.Argument(help="Local evaluation case names."),
-    ] = None,
-    list_cases: Annotated[
-        bool,
-        typer.Option("--list", help="List local evaluation cases and exit."),
-    ] = False,
-    real_model: Annotated[
-        bool,
-        typer.Option("--real-model", help="Use the configured live model."),
-    ] = False,
-    max_steps: Annotated[
-        int | None,
-        typer.Option("--max-steps", min=1, help="Override the agent step limit."),
-    ] = None,
-    keep_workspaces: Annotated[
-        bool,
-        typer.Option("--keep-workspaces", help="Keep temporary task workspaces."),
-    ] = False,
-    swe_bench: Annotated[
-        Path | None,
-        typer.Option(
-            "--swe-bench",
-            exists=True,
-            file_okay=True,
-            dir_okay=False,
-            readable=True,
-            help="Generate patches for instances in a JSON or JSONL file.",
-        ),
-    ] = None,
-    swe_bench_limit: Annotated[
-        int | None,
-        typer.Option("--swe-bench-limit", min=1, help="Limit selected instances."),
-    ] = None,
-    instance_ids: Annotated[
-        list[str] | None,
-        typer.Option(
-            "--instance-id",
-            help="Select an instance ID; may be repeated.",
-        ),
-    ] = None,
-    predictions_path: Annotated[
-        Path,
-        typer.Option(
-            "--swe-bench-predictions",
-            help="Write standard prediction JSONL to this path.",
-        ),
-    ] = Path(".agents/evals/swe-bench-predictions.jsonl"),
-) -> None:
-    """Run deterministic, live-model, or patch-generation evaluation."""
-    root_options = context.find_root().obj or {}
-    api_key = root_options.get("api_key")
-    try:
-        exit_code = asyncio.run(
-            run_evaluation(
-                selected_names=cases,
-                list_cases=list_cases,
-                real_model=real_model,
-                max_steps=max_steps,
-                keep_workspaces=keep_workspaces,
-                swe_bench=swe_bench,
-                swe_bench_limit=swe_bench_limit,
-                instance_ids=instance_ids,
-                predictions_path=predictions_path,
-                api_key=api_key,
-            )
-        )
-    except ValueError as error:
-        raise typer.BadParameter(str(error)) from error
-    if exit_code:
-        raise typer.Exit(exit_code)
-
-
-def entrypoint() -> None:
-    """Run the shell-level Typer application."""
-    app()
+def cli() -> None:
+    asyncio.run(main())
 
 
 if __name__ == "__main__":
-    entrypoint()
+    cli()
