@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [project.scripts]
-agent = "main:cli"
+agent = "main:entrypoint"
 
 [dependency-groups]
 dev = [

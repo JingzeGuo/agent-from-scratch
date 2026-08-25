@@ -47,15 +47,16 @@ __all__ = [
     "default_agent_state_dir",
     "default_sessions_dir",
     "ensure_agent_state_gitignore",
+    "entrypoint",
     "eval_command",
     "generate_session_id",
     "handle_command",
     "handle_command_async",
-    "main",
     "prompt_tool_approval",
+    "repl_loop",
     "report_interrupted_action",
-    "run_cli",
-    "run_interactive",
+    "root_command",
+    "start_interactive_session",
 ]
 
 
@@ -153,11 +154,12 @@ def read_user_task() -> CliInputResult:
         lines.append(line)
 
 
-async def run_cli(
+async def repl_loop(
     agent: Agent,
     session_store: SessionStore | None = None,
     session_state: CliSessionState | None = None,
 ) -> None:
+    """Route terminal input to local slash commands or the Agent execution loop."""
     while True:
         user_input = read_user_task()
         if user_input.should_exit:
@@ -198,11 +200,12 @@ def provider_debug_enabled() -> bool:
     return os.getenv("AGENT_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-async def run_interactive(
+async def start_interactive_session(
     *,
     resume_session_id: str | None = None,
     api_key: str | None = None,
 ) -> None:
+    """Configure one interactive session, then enter its terminal REPL."""
     load_dotenv()
     workspace_root = Path.cwd().resolve()
     session_store = SessionStore(default_sessions_dir(workspace_root))
@@ -250,7 +253,7 @@ async def run_interactive(
         )
     agent.configure_session_recording(session_store, session_state.session_id)
     print(f"Provider: {agent.provider} | Model: {agent.model}")
-    await run_cli(agent, session_store, session_state)
+    await repl_loop(agent, session_store, session_state)
 
 
 def version_callback(value: bool) -> bool:
@@ -261,7 +264,7 @@ def version_callback(value: bool) -> bool:
 
 
 @app.callback()
-def main(
+def root_command(
     context: typer.Context,
     resume_session_id: Annotated[
         str | None,
@@ -285,7 +288,7 @@ def main(
         ),
     ] = False,
 ) -> None:
-    """Launch the interactive agent when no subcommand is given."""
+    """Configure the shell CLI and start a REPL when no subcommand is given."""
     del version
     context.obj = {"api_key": api_key}
     if context.invoked_subcommand is not None:
@@ -295,7 +298,7 @@ def main(
             )
         return
     asyncio.run(
-        run_interactive(
+        start_interactive_session(
             resume_session_id=resume_session_id,
             api_key=api_key,
         )
@@ -379,9 +382,10 @@ def eval_command(
         raise typer.Exit(exit_code)
 
 
-def cli() -> None:
+def entrypoint() -> None:
+    """Run the shell-level Typer application."""
     app()
 
 
 if __name__ == "__main__":
-    cli()
+    entrypoint()

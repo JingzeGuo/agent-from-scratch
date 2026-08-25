@@ -32,8 +32,8 @@ from main import (
     generate_session_id,
     handle_command,
     prompt_tool_approval,
+    repl_loop,
     report_interrupted_action,
-    run_cli,
 )
 
 runner = CliRunner()
@@ -282,7 +282,7 @@ def test_trace_command_reports_empty_trace(
 def test_pyproject_exposes_typer_agent_console_script() -> None:
     pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
 
-    assert pyproject["project"]["scripts"]["agent"] == "main:cli"
+    assert pyproject["project"]["scripts"]["agent"] == "main:entrypoint"
     assert "typer>=0.16.0" in pyproject["project"]["dependencies"]
 
 
@@ -377,14 +377,17 @@ def test_cli_forwards_eval_options(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_cli_forwards_interactive_options(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str | None, str | None]] = []
 
-    async def fake_run_interactive(
+    async def fake_start_interactive_session(
         *,
         resume_session_id: str | None = None,
         api_key: str | None = None,
     ) -> None:
         calls.append((resume_session_id, api_key))
 
-    monkeypatch.setattr("main.run_interactive", fake_run_interactive)
+    monkeypatch.setattr(
+        "main.start_interactive_session",
+        fake_start_interactive_session,
+    )
 
     result = runner.invoke(
         app,
@@ -495,7 +498,7 @@ def test_generate_session_id_uses_safe_timestamp_format() -> None:
     assert " " not in session_id
 
 
-def test_run_cli_executes_interactive_task(
+def test_repl_loop_executes_interactive_task(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -504,13 +507,13 @@ def test_run_cli_executes_interactive_task(
 
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
 
-    asyncio.run(run_cli(cast(Agent, fake_agent)))
+    asyncio.run(repl_loop(cast(Agent, fake_agent)))
 
     assert fake_agent.tasks == ["Fix the bug"]
     assert capsys.readouterr().out == "\nAssistant: done\nGoodbye.\n"
 
 
-def test_run_cli_submits_multiline_prompt_as_one_task(
+def test_repl_loop_submits_multiline_prompt_as_one_task(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -529,7 +532,7 @@ def test_run_cli_submits_multiline_prompt_as_one_task(
 
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
 
-    asyncio.run(run_cli(cast(Agent, fake_agent)))
+    asyncio.run(repl_loop(cast(Agent, fake_agent)))
 
     assert fake_agent.tasks == [
         "Fix the login flow.\n\n/help\nRun the focused tests."
@@ -542,7 +545,7 @@ def test_run_cli_submits_multiline_prompt_as_one_task(
     )
 
 
-def test_run_cli_cancels_multiline_prompt(
+def test_repl_loop_cancels_multiline_prompt(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -551,13 +554,13 @@ def test_run_cli_cancels_multiline_prompt(
 
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
 
-    asyncio.run(run_cli(cast(Agent, fake_agent)))
+    asyncio.run(repl_loop(cast(Agent, fake_agent)))
 
     assert fake_agent.tasks == []
     assert "Multiline prompt canceled.\n" in capsys.readouterr().out
 
 
-def test_run_cli_rejects_empty_multiline_prompt(
+def test_repl_loop_rejects_empty_multiline_prompt(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -566,13 +569,13 @@ def test_run_cli_rejects_empty_multiline_prompt(
 
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
 
-    asyncio.run(run_cli(cast(Agent, fake_agent)))
+    asyncio.run(repl_loop(cast(Agent, fake_agent)))
 
     assert fake_agent.tasks == []
     assert "Task cannot be empty.\n" in capsys.readouterr().out
 
 
-def test_run_cli_cancels_multiline_prompt_on_keyboard_interrupt(
+def test_repl_loop_cancels_multiline_prompt_on_keyboard_interrupt(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -587,13 +590,13 @@ def test_run_cli_cancels_multiline_prompt_on_keyboard_interrupt(
 
     monkeypatch.setattr("builtins.input", fake_input)
 
-    asyncio.run(run_cli(cast(Agent, fake_agent)))
+    asyncio.run(repl_loop(cast(Agent, fake_agent)))
 
     assert fake_agent.tasks == []
     assert "\nMultiline prompt canceled.\n" in capsys.readouterr().out
 
 
-def test_run_cli_exits_cleanly_on_eof(
+def test_repl_loop_exits_cleanly_on_eof(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -604,13 +607,13 @@ def test_run_cli_exits_cleanly_on_eof(
 
     monkeypatch.setattr("builtins.input", raise_eof)
 
-    asyncio.run(run_cli(cast(Agent, fake_agent)))
+    asyncio.run(repl_loop(cast(Agent, fake_agent)))
 
     assert fake_agent.tasks == []
     assert capsys.readouterr().out == "Goodbye.\n"
 
 
-def test_run_cli_reports_provider_failure_without_traceback(
+def test_repl_loop_reports_provider_failure_without_traceback(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -620,7 +623,7 @@ def test_run_cli_reports_provider_failure_without_traceback(
 
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
 
-    asyncio.run(run_cli(cast(Agent, fake_agent)))
+    asyncio.run(repl_loop(cast(Agent, fake_agent)))
 
     output = capsys.readouterr().out
     assert fake_agent.tasks == ["Build a site"]
@@ -630,7 +633,7 @@ def test_run_cli_reports_provider_failure_without_traceback(
     assert "Traceback" not in output
 
 
-def test_run_cli_checkpoints_interactive_task(
+def test_repl_loop_checkpoints_interactive_task(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -643,7 +646,7 @@ def test_run_cli_checkpoints_interactive_task(
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
 
     asyncio.run(
-        run_cli(
+        repl_loop(
             cast(Agent, fake_agent),
             session_store,
             session_state,
@@ -665,7 +668,7 @@ def test_run_cli_checkpoints_interactive_task(
     )
 
 
-def test_run_cli_checkpoints_multiline_prompt_once(
+def test_repl_loop_checkpoints_multiline_prompt_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -677,7 +680,7 @@ def test_run_cli_checkpoints_multiline_prompt_once(
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
 
     asyncio.run(
-        run_cli(
+        repl_loop(
             cast(Agent, fake_agent),
             session_store,
             session_state,
