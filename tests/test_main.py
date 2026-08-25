@@ -7,6 +7,7 @@ from typing import cast
 import pytest
 
 from agent.agent import Agent
+from agent.cli_commands import handle_command
 from agent.provider import DeepSeekProvider, ProviderRequestError
 from agent.schemas import (
     AgentRun,
@@ -28,7 +29,6 @@ from main import (
     default_sessions_dir,
     ensure_agent_state_gitignore,
     generate_session_id,
-    handle_command,
     parse_cli_args,
     prompt_tool_approval,
     report_interrupted_action,

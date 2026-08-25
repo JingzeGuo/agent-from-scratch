@@ -15,7 +15,6 @@ from agent.cli_commands import (
     COMMANDS,
     CliSessionState,
     checkpoint_session,
-    handle_command,
     handle_command_async,
     prompt_tool_approval,
     report_interrupted_action,
@@ -32,23 +31,6 @@ from agent.setup import create_registry
 
 PACKAGE_NAME = "agent-from-scratch"
 FALLBACK_VERSION = "0.1.0"
-
-__all__ = [
-    "CliSessionState",
-    "checkpoint_session",
-    "default_agent_state_dir",
-    "default_sessions_dir",
-    "ensure_agent_state_gitignore",
-    "generate_session_id",
-    "handle_command",
-    "handle_command_async",
-    "main",
-    "parse_cli_args",
-    "prompt_tool_approval",
-    "report_interrupted_action",
-    "run_eval_command",
-    "run_cli",
-]
 
 
 class CliArgs(BaseModel):
@@ -158,13 +140,7 @@ async def run_eval_command(
     *,
     api_key: str | None = None,
 ) -> int:
-    try:
-        from scripts.evaluate_coding_tasks import run_eval_cli
-    except ModuleNotFoundError as error:
-        if error.name != "scripts":
-            raise
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from scripts.evaluate_coding_tasks import run_eval_cli
+    from scripts.evaluate_coding_tasks import run_eval_cli
 
     return await run_eval_cli(eval_args, api_key=api_key)
 
