@@ -238,33 +238,6 @@ class Agent:
             self.messages.append(response.message)
             text_blocks.extend(response.text)
 
-            if self._has_unsupported_parallel_tool_calls(response.tool_calls):
-                tool_calls.extend(response.tool_calls)
-                agent_step = AgentStep(
-                    step_number=step,
-                    stop_reason=response.stop_reason,
-                    text=text_blocks,
-                    tool_calls=tool_calls,
-                    tool_results=tool_results,
-                )
-                run_steps.append(agent_step)
-                self.steps.append(agent_step)
-                self._record_step_finished(
-                    run_id=run_id,
-                    agent_step=agent_step,
-                )
-                print(
-                    "Protocol error: provider returned parallel tool calls "
-                    "but does not support them."
-                )
-                return self._finish_run(
-                    run_id=run_id,
-                    objective=user_task,
-                    steps=run_steps,
-                    termination="protocol_error",
-                    final_stop_reason=response.stop_reason,
-                )
-
             if response.stop_reason != "end_turn":
                 tool_calls.extend(response.tool_calls)
                 tool_results.extend(
@@ -962,15 +935,6 @@ class Agent:
                 "Provider does not support tools, but tools are registered: "
                 f"{provider_adapter.provider}/{provider_adapter.model}"
             )
-
-    def _has_unsupported_parallel_tool_calls(
-        self,
-        tool_calls: list[ToolCall],
-    ) -> bool:
-        return (
-            len(tool_calls) > 1
-            and not self.provider_adapter.capabilities.supports_parallel_tool_calls
-        )
 
     def _snapshot_paths(self, paths: set[Path]) -> list[str]:
         workspace_root = self.registry.workspace_root

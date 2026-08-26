@@ -902,63 +902,6 @@ def test_agent_rejects_provider_without_streaming_support() -> None:
         )
 
 
-def test_agent_rejects_parallel_tool_calls_when_provider_does_not_support_them(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    first_call = ToolCall(
-        name="read_file",
-        input={"value": "sample"},
-        tool_use_id="call_one",
-    )
-    second_call = ToolCall(
-        name="read_file",
-        input={"value": "second sample"},
-        tool_use_id="call_two",
-    )
-    adapter = FakeProviderAdapter(
-        responses=[
-            ProviderResponse(
-                message={
-                    "role": "assistant",
-                    "content": [
-                        {
-                            "type": "tool_use",
-                            "id": first_call.tool_use_id,
-                            "name": first_call.name,
-                            "input": first_call.input,
-                        },
-                        {
-                            "type": "tool_use",
-                            "id": second_call.tool_use_id,
-                            "name": second_call.name,
-                            "input": second_call.input,
-                        },
-                    ],
-                },
-                stop_reason="tool_use",
-                tool_calls=[first_call, second_call],
-                usage=TokenUsage(input_tokens=10, output_tokens=5),
-            )
-        ],
-        capabilities=ProviderCapabilities(supports_parallel_tool_calls=False),
-    )
-    agent = Agent(
-        provider_adapter=adapter,
-        registry=create_registry(),
-    )
-
-    agent_run = asyncio.run(agent.run("Run two probes"))
-
-    assert agent_run.termination == "protocol_error"
-    assert agent_run.final_stop_reason == "tool_use"
-    assert agent_run.steps[0].tool_calls == [first_call, second_call]
-    assert agent_run.steps[0].tool_results == []
-    assert capsys.readouterr().out == (
-        "Protocol error: provider returned parallel tool calls "
-        "but does not support them.\n"
-    )
-
-
 def test_agent_executes_multiple_tool_calls_serially() -> None:
     events: list[str] = []
 

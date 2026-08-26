@@ -216,7 +216,6 @@ class ProviderCapabilities(BaseModel):
 
     supports_tools: bool = True
     supports_streaming: bool = True
-    supports_parallel_tool_calls: bool = True
 
 
 class AgentStep(BaseModel):
