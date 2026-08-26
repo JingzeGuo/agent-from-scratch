@@ -334,12 +334,3 @@ def handle_command(
     print(f"Unknown command: {command}")
     print("Type /help to see available commands.")
     return False
-
-
-async def handle_command_async(
-    command: str,
-    agent: Agent | None = None,
-    session_store: SessionStore | None = None,
-    session_state: CliSessionState | None = None,
-) -> bool:
-    return handle_command(command, agent, session_store, session_state)

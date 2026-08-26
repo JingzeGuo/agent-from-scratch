@@ -15,7 +15,7 @@ from agent.cli_commands import (
     COMMANDS,
     CliSessionState,
     checkpoint_session,
-    handle_command_async,
+    handle_command,
     prompt_tool_approval,
     report_interrupted_action,
 )
@@ -244,7 +244,7 @@ async def run_cli(
             print("Task cannot be empty.")
             continue
         if user_task.startswith("/"):
-            if await handle_command_async(
+            if handle_command(
                 user_task,
                 agent,
                 session_store,
