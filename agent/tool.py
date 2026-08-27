@@ -55,7 +55,10 @@ class Tool:
         if extra_kwargs is not None:
             kwargs.update(extra_kwargs)
 
-        result = self.fn(**kwargs)
+        if self._is_async_callable():
+            result = self.fn(**kwargs)
+        else:
+            result = await asyncio.to_thread(self.fn, **kwargs)
         if inspect.isawaitable(result):
             return await result
         return result

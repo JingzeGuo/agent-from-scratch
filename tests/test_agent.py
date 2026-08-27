@@ -1096,6 +1096,63 @@ def test_agent_executes_read_only_tool_calls_concurrently_preserving_order(
     )
 
 
+def test_agent_does_not_bypass_approval_for_parallel_tool_calls() -> None:
+    executed: list[str] = []
+
+    def approval_required_read(value: str) -> str:
+        executed.append(value)
+        return value
+
+    registry = ToolRegistry()
+    registry.register(
+        Tool(
+            name="read_file",
+            description="Run a read that requires approval.",
+            input_schema=SampleToolInput,
+            fn=approval_required_read,
+            approval_policy=ToolApprovalPolicy(
+                decision="requires_approval",
+                reason="Test approval policy.",
+            ),
+        )
+    )
+    responses = [
+        make_message(
+            content=[
+                ToolUseBlock(
+                    id="call_first",
+                    name="read_file",
+                    input={"value": "first"},
+                ),
+                ToolUseBlock(
+                    id="call_second",
+                    name="read_file",
+                    input={"value": "second"},
+                ),
+            ],
+            stop_reason="tool_use",
+        ),
+        make_message(
+            content=[TextBlock(text="Done.")],
+            stop_reason="end_turn",
+        ),
+    ]
+    agent, _ = create_agent(responses, registry=registry)
+    approval_requests: list[str] = []
+
+    def deny(tool_call: ToolCall, policy: ToolApprovalPolicy) -> bool:
+        approval_requests.append(tool_call.tool_use_id)
+        return False
+
+    agent.configure_approval_callback(deny)
+
+    agent_run = asyncio.run(agent.run("Run two protected reads"))
+
+    assert approval_requests == ["call_first", "call_second"]
+    assert executed == []
+    assert all(result.is_error for result in agent_run.steps[0].tool_results)
+
+
 def test_agent_preserves_result_order_when_parallel_tool_call_fails() -> None:
     def probe_read(value: str) -> str:
         if value == "bad":
