@@ -303,8 +303,6 @@ SessionEventType = Literal[
     "tool_approval_denied",
     "tool_started",
     "tool_finished",
-    "sub_agent_started",
-    "sub_agent_finished",
     "checkpoint_saved",
     "session_renamed",
     "interrupted_action_detected",
@@ -341,7 +339,6 @@ class SessionEvent(BaseModel):
     checkpoint_included: bool | None = None
     tool_name: str | None = None
     tool_use_id: str | None = None
-    child_run_id: str | None = None
     is_error: bool | None = None
     text_preview: str | None = None
     output_preview: str | None = None

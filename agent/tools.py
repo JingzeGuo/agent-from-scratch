@@ -453,20 +453,15 @@ async def sub_agent(
     max_steps: int | None = None,
     *,
     parent_agent: Any | None = None,
-    run_id: str | None = None,
-    step_number: int | None = None,
-    tool_call: Any | None = None,
 ) -> str:
     """Run a bounded read-only child agent and return a compact summary."""
     if parent_agent is None:
         raise ValueError("sub_agent tool is not initialized with a parent agent")
-    if run_id is None or step_number is None or tool_call is None:
-        raise ValueError("sub_agent tool requires parent run metadata")
     if parent_agent.registry.workspace_root is None:
         raise ValueError("Workspace root is required.")
 
     from .agent import Agent
-    from .schemas import SubAgentInput, TokenUsage
+    from .schemas import TokenUsage
     from .setup import AGENT_PROFILES, create_registry
 
     profile_config = AGENT_PROFILES[profile]
@@ -478,18 +473,6 @@ async def sub_agent(
             f"Profile '{profile}' allows at most "
             f"{profile_config.max_steps_cap} steps."
         )
-
-    parsed_input = SubAgentInput(
-        task=task,
-        profile=profile,
-        max_steps=effective_max_steps,
-    )
-    parent_agent._record_sub_agent_started(
-        run_id=run_id,
-        step_number=step_number,
-        tool_call=tool_call,
-        parsed_input=parsed_input,
-    )
 
     child_agent = Agent(
         provider_adapter=parent_agent.provider_adapter,
@@ -509,13 +492,6 @@ async def sub_agent(
             input_tokens=child_agent.token_tracker.input_tokens,
             output_tokens=child_agent.token_tracker.output_tokens,
         )
-    )
-    parent_agent._record_sub_agent_finished(
-        run_id=run_id,
-        step_number=step_number,
-        tool_call=tool_call,
-        child_run=child_run,
-        child_agent=child_agent,
     )
     return cast(
         str,
