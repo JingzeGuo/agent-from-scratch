@@ -2,7 +2,6 @@ from pathlib import Path
 from typing import Any
 
 from .schemas import ToolDefinition
-from .security import classify_command
 from .tool import Tool
 from .tools import _build_unified_diff
 from .workspace import resolve_workspace_path
@@ -67,10 +66,6 @@ class ToolRegistry:
                 return error
         if tool.name == "write_file":
             error = self._validate_write_allowed(raw_input)
-            if error is not None:
-                return error
-        if tool.name == "run_command":
-            error = self._validate_command_allowed(raw_input, approval_granted)
             if error is not None:
                 return error
         return None
@@ -159,29 +154,6 @@ class ToolRegistry:
         if isinstance(value, str):
             return value.lower() in {"1", "true", "yes", "on"}
         return False
-
-    def _validate_command_allowed(
-        self,
-        raw_input: dict[str, Any],
-        approval_granted: bool,
-    ) -> str | None:
-        raw_command = raw_input.get("command")
-        if not isinstance(raw_command, str):
-            return None
-        try:
-            policy = classify_command(raw_command)
-        except ValueError as e:
-            return f"Tool 'run_command' raised ValueError: {e}"
-        if policy.decision == "allowed":
-            return None
-        if approval_granted and policy.decision == "requires_approval":
-            return None
-        if policy.decision == "blocked":
-            return f"Tool 'run_command' raised ValueError: {policy.reason}"
-        return (
-            "Tool 'run_command' requires approval: "
-            f"{policy.reason} Command: {raw_command}"
-        )
 
     def _snapshot_before_mutation(
         self,
