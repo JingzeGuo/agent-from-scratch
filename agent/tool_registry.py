@@ -22,7 +22,7 @@ class ToolRegistry:
     def to_tool_definitions(self) -> list[ToolDefinition]:
         return [tool.to_definition() for tool in self.tools.values()]
 
-    async def execute_async(
+    async def execute(
         self,
         name: str,
         raw_input: dict[str, Any],
@@ -44,7 +44,7 @@ class ToolRegistry:
         )
         if snapshot_error is not None:
             return snapshot_error, True
-        output, is_error = await tool.execute_async(
+        output, is_error = await tool.execute(
             raw_input,
             self._tool_extra_kwargs(name, approval_granted, extra_kwargs),
         )

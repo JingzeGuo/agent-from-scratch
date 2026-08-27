@@ -73,7 +73,7 @@ def test_expected_tool_arguments_match_registered_contract(
 async def test_correct_tool_with_wrong_argument_name_is_an_argument_error() -> None:
     registry = create_registry(Path.cwd())
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "read_file",
         {"filename": "README.md"},
     )

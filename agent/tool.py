@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
-from .retry import retry_async
+from .retry import retry
 from .schemas import ToolDefinition
 from .security import ToolApprovalPolicy
 
@@ -34,8 +34,8 @@ class Tool:
             input_schema=json_schema,
         )
 
-    @retry_async(max_attempts=3, backoff=2)
-    async def _run_async(
+    @retry(max_attempts=3, backoff=2)
+    async def _run(
         self,
         parsed_input: BaseModel,
         extra_kwargs: dict[str, Any] | None = None,
@@ -52,7 +52,7 @@ class Tool:
             return await result
         return result
 
-    async def execute_async(
+    async def execute(
         self,
         raw_input: dict[str, Any],
         extra_kwargs: dict[str, Any] | None = None,
@@ -61,7 +61,7 @@ class Tool:
         if isinstance(parsed_or_error, str):
             return parsed_or_error, True
         try:
-            result = await self._run_async(parsed_or_error, extra_kwargs)
+            result = await self._run(parsed_or_error, extra_kwargs)
             return str(result), False
         except Exception as e:
             return f"Tool '{self.name}' raised {type(e).__name__}: {e}", True

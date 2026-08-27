@@ -27,7 +27,7 @@ def _validate_retry_config(max_attempts: int, backoff: float) -> None:
         raise ValueError("backoff must be at least 1")
 
 
-def retry_async(
+def retry(
     max_attempts: int = 3,
     backoff: float = 2.0,
 ) -> Callable[

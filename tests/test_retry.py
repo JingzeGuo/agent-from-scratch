@@ -2,7 +2,7 @@ import httpx
 import pytest
 from pydantic import BaseModel
 
-from agent.retry import is_transient_error, retry_async
+from agent.retry import is_transient_error, retry
 from agent.tool import Tool
 
 
@@ -11,7 +11,7 @@ class SampleToolInput(BaseModel):
 
 
 @pytest.mark.anyio
-async def test_retry_async_succeeds_on_third_attempt(
+async def test_retry_succeeds_on_third_attempt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     attempts = 0
@@ -22,7 +22,7 @@ async def test_retry_async_succeeds_on_third_attempt(
 
     monkeypatch.setattr("agent.retry.asyncio.sleep", fake_sleep)
 
-    @retry_async(max_attempts=3, backoff=2)
+    @retry(max_attempts=3, backoff=2)
     async def flaky_operation() -> str:
         nonlocal attempts
         attempts += 1
@@ -36,7 +36,7 @@ async def test_retry_async_succeeds_on_third_attempt(
 
 
 @pytest.mark.anyio
-async def test_retry_async_raises_after_max_attempts(
+async def test_retry_raises_after_max_attempts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     attempts = 0
@@ -46,7 +46,7 @@ async def test_retry_async_raises_after_max_attempts(
 
     monkeypatch.setattr("agent.retry.asyncio.sleep", no_sleep)
 
-    @retry_async(max_attempts=3)
+    @retry(max_attempts=3)
     async def failing_operation() -> None:
         nonlocal attempts
         attempts += 1
@@ -67,12 +67,12 @@ async def test_retry_async_raises_after_max_attempts(
     ],
 )
 @pytest.mark.anyio
-async def test_retry_async_does_not_repeat_permanent_errors(
+async def test_retry_does_not_repeat_permanent_errors(
     error: Exception,
 ) -> None:
     attempts = 0
 
-    @retry_async(max_attempts=3)
+    @retry(max_attempts=3)
     async def failing_operation() -> None:
         nonlocal attempts
         attempts += 1
@@ -85,7 +85,7 @@ async def test_retry_async_does_not_repeat_permanent_errors(
 
 
 @pytest.mark.anyio
-async def test_async_tool_uses_retry_async(
+async def test_async_tool_uses_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     attempts = 0
@@ -110,7 +110,7 @@ async def test_async_tool_uses_retry_async(
         fn=sample_tool,
     )
 
-    output, is_error = await tool.execute_async({"value": "sample"})
+    output, is_error = await tool.execute({"value": "sample"})
 
     assert output == "sample"
     assert is_error is False
@@ -158,7 +158,7 @@ async def test_validation_error_does_not_run_tool() -> None:
         fn=sample_tool,
     )
 
-    output, is_error = await tool.execute_async({})
+    output, is_error = await tool.execute({})
 
     assert is_error is True
     assert "field 'value': Field required" in output

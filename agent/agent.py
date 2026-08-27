@@ -498,7 +498,7 @@ class Agent:
         if self.stream_output:
             print(format_tool_activity(tool_call))
         if tool_call.name == "sub_agent":
-            _, output, is_error, latency_ms = await self._run_tool_call_async(
+            _, output, is_error, latency_ms = await self._run_tool_call(
                 tool_call,
                 extra_kwargs={
                     "parent_agent": self,
@@ -508,7 +508,7 @@ class Agent:
                 },
             )
         else:
-            _, output, is_error, latency_ms = await self._run_tool_call_async(
+            _, output, is_error, latency_ms = await self._run_tool_call(
                 tool_call,
                 approval_granted=approval is not None,
             )
@@ -614,7 +614,7 @@ class Agent:
             )
         )
 
-    async def _run_tool_call_async(
+    async def _run_tool_call(
         self,
         tool_call: ToolCall,
         *,
@@ -622,7 +622,7 @@ class Agent:
         extra_kwargs: dict[str, Any] | None = None,
     ) -> tuple[ToolCall, str, bool, float]:
         tool_started = perf_counter()
-        output, is_error = await self.registry.execute_async(
+        output, is_error = await self.registry.execute(
             tool_call.name,
             tool_call.input,
             approval_granted=approval_granted,

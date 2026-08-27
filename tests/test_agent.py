@@ -1419,10 +1419,10 @@ async def test_agent_creates_snapshot_from_current_state(tmp_path: Path) -> None
     registry = create_workspace_registry(tmp_path)
     agent, _ = create_agent([], registry=registry)
 
-    read_output, read_is_error = await registry.execute_async(
+    read_output, read_is_error = await registry.execute(
         "read_file", {"path": "module.py"}
     )
-    edit_output, edit_is_error = await registry.execute_async(
+    edit_output, edit_is_error = await registry.execute(
         "edit_file",
         {
             "path": "module.py",
@@ -1490,8 +1490,8 @@ async def test_agent_restores_snapshot_into_current_state(tmp_path: Path) -> Non
     target.write_text("def answer() -> int:\n    return 1\n", encoding="utf-8")
     registry = create_workspace_registry(tmp_path)
     agent, _ = create_agent([], registry=registry)
-    await registry.execute_async("read_file", {"path": "module.py"})
-    await registry.execute_async(
+    await registry.execute("read_file", {"path": "module.py"})
+    await registry.execute(
         "edit_file",
         {
             "path": "module.py",

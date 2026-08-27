@@ -17,7 +17,7 @@ async def test_glob_files_matches_files_by_pattern(tmp_path: Path) -> None:
     (tests_dir / "helper.py").write_text("", encoding="utf-8")
     registry = create_registry(tmp_path)
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "glob_files",
         {"pattern": "tests/test_*.py"},
     )
@@ -32,7 +32,7 @@ async def test_glob_files_returns_relative_paths(tmp_path: Path) -> None:
     (agent_dir / "tools.py").write_text("", encoding="utf-8")
     registry = create_registry(tmp_path)
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "glob_files",
         {"pattern": "**/*.py"},
     )
@@ -51,7 +51,7 @@ async def test_glob_files_skips_noisy_directories(tmp_path: Path) -> None:
     (venv_dir / "ignored.py").write_text("", encoding="utf-8")
     registry = create_registry(tmp_path)
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "glob_files",
         {"pattern": "**/*.py"},
     )
@@ -69,7 +69,7 @@ async def test_glob_files_allows_explicit_noisy_directory_pattern(
     (venv_bin / "python").write_text("", encoding="utf-8")
     registry = create_registry(tmp_path)
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "glob_files",
         {"pattern": ".venv/bin/python*"},
     )
@@ -88,7 +88,7 @@ async def test_glob_files_allows_explicit_workspace_symlink(tmp_path: Path) -> N
     (venv_bin / "python").symlink_to(external_python)
     registry = create_registry(workspace)
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "glob_files",
         {"pattern": ".venv/bin/python*"},
     )
@@ -102,7 +102,7 @@ async def test_glob_files_truncates_results(tmp_path: Path) -> None:
         (tmp_path / f"file_{index}.py").write_text("", encoding="utf-8")
     registry = create_registry(tmp_path)
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "glob_files",
         {"pattern": "*.py", "max_results": 2},
     )
@@ -117,7 +117,7 @@ async def test_glob_files_rejects_parent_path_escape(tmp_path: Path) -> None:
     (tmp_path / "secret.py").write_text("", encoding="utf-8")
     registry = create_registry(workspace_root)
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "glob_files",
         {"pattern": "../*.py"},
     )
@@ -139,7 +139,7 @@ async def test_search_text_finds_matches_with_path_and_line_number(
     )
     registry = create_registry(tmp_path)
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "search_text",
         {"pattern": r"def resolve_workspace_path", "file_pattern": "**/*.py"},
     )
@@ -159,7 +159,7 @@ async def test_search_text_limits_files_by_pattern(tmp_path: Path) -> None:
     (tests_dir / "test_tools.py").write_text("def target() -> None:\n    pass\n")
     registry = create_registry(tmp_path)
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "search_text",
         {
             "pattern": r"def target",
@@ -180,7 +180,7 @@ async def test_search_text_skips_noisy_directories(tmp_path: Path) -> None:
     (venv_dir / "ignored.py").write_text("needle\n", encoding="utf-8")
     registry = create_registry(tmp_path)
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "search_text",
         {"pattern": "needle", "file_pattern": "**/*.py"},
     )
@@ -195,7 +195,7 @@ async def test_search_text_truncates_matches(tmp_path: Path) -> None:
         (tmp_path / f"file_{index}.py").write_text("needle\n", encoding="utf-8")
     registry = create_registry(tmp_path)
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "search_text",
         {"pattern": "needle", "file_pattern": "*.py", "max_matches": 2},
     )
@@ -209,7 +209,7 @@ async def test_search_text_truncates_matches(tmp_path: Path) -> None:
 async def test_search_text_reports_invalid_regex(tmp_path: Path) -> None:
     registry = create_registry(tmp_path)
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "search_text",
         {"pattern": "["},
     )
@@ -223,7 +223,7 @@ async def test_search_text_rejects_parent_path_escape(tmp_path: Path) -> None:
     workspace_root.mkdir()
     registry = create_registry(workspace_root)
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "search_text",
         {"pattern": "secret", "file_pattern": "../*.py"},
     )
@@ -237,7 +237,7 @@ async def test_read_file_reads_file_inside_workspace(tmp_path: Path) -> None:
     target.write_text("workspace content\nsecond line\n", encoding="utf-8")
     registry = create_registry(tmp_path)
 
-    output, is_error = await registry.execute_async("read_file", {"path": "notes.txt"})
+    output, is_error = await registry.execute("read_file", {"path": "notes.txt"})
 
     assert output == "1: workspace content\n2: second line"
     assert is_error is False
@@ -248,7 +248,7 @@ async def test_read_file_reads_line_range_with_line_numbers(tmp_path: Path) -> N
     target.write_text("one\ntwo\nthree\nfour\n", encoding="utf-8")
     registry = create_registry(tmp_path)
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "read_file",
         {"path": "notes.txt", "offset": 2, "limit": 2},
     )
@@ -262,7 +262,7 @@ async def test_read_file_reports_offset_past_end(tmp_path: Path) -> None:
     target.write_text("one\ntwo\n", encoding="utf-8")
     registry = create_registry(tmp_path)
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "read_file",
         {"path": "notes.txt", "offset": 5, "limit": 2},
     )
@@ -276,7 +276,7 @@ async def test_read_file_rejects_invalid_line_range_arguments(tmp_path: Path) ->
     target.write_text("content", encoding="utf-8")
     registry = create_registry(tmp_path)
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "read_file",
         {"path": "notes.txt", "offset": 0, "limit": 2},
     )
@@ -292,7 +292,7 @@ async def test_read_file_rejects_file_outside_workspace(tmp_path: Path) -> None:
     outside_file.write_text("secret", encoding="utf-8")
     registry = create_registry(workspace_root)
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "read_file",
         {"path": "../secret.txt"},
     )
@@ -306,7 +306,7 @@ async def test_read_file_tracks_read_file(tmp_path: Path) -> None:
     target.write_text("content\n", encoding="utf-8")
     registry = create_registry(tmp_path)
 
-    output, is_error = await registry.execute_async("read_file", {"path": "notes.txt"})
+    output, is_error = await registry.execute("read_file", {"path": "notes.txt"})
 
     assert output == "1: content"
     assert target.resolve() in registry.read_files
@@ -317,9 +317,9 @@ async def test_edit_file_replaces_unique_match_and_returns_diff(tmp_path: Path) 
     target = tmp_path / "notes.txt"
     target.write_text("one\ntwo\nthree\n", encoding="utf-8")
     registry = create_registry(tmp_path)
-    await registry.execute_async("read_file", {"path": "notes.txt"})
+    await registry.execute("read_file", {"path": "notes.txt"})
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "edit_file",
         {
             "path": "notes.txt",
@@ -339,9 +339,9 @@ async def test_edit_file_rejects_missing_match(tmp_path: Path) -> None:
     target = tmp_path / "notes.txt"
     target.write_text("one\ntwo\nthree\n", encoding="utf-8")
     registry = create_registry(tmp_path)
-    await registry.execute_async("read_file", {"path": "notes.txt"})
+    await registry.execute("read_file", {"path": "notes.txt"})
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "edit_file",
         {
             "path": "notes.txt",
@@ -359,9 +359,9 @@ async def test_edit_file_rejects_duplicate_match(tmp_path: Path) -> None:
     target = tmp_path / "notes.txt"
     target.write_text("repeat\nmiddle\nrepeat\n", encoding="utf-8")
     registry = create_registry(tmp_path)
-    await registry.execute_async("read_file", {"path": "notes.txt"})
+    await registry.execute("read_file", {"path": "notes.txt"})
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "edit_file",
         {
             "path": "notes.txt",
@@ -380,7 +380,7 @@ async def test_edit_file_requires_read_before_edit(tmp_path: Path) -> None:
     target.write_text("one\ntwo\nthree\n", encoding="utf-8")
     registry = create_registry(tmp_path)
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "edit_file",
         {
             "path": "notes.txt",
@@ -398,9 +398,9 @@ async def test_edit_file_tracks_changed_file(tmp_path: Path) -> None:
     target = tmp_path / "notes.txt"
     target.write_text("one\ntwo\nthree\n", encoding="utf-8")
     registry = create_registry(tmp_path)
-    await registry.execute_async("read_file", {"path": "notes.txt"})
+    await registry.execute("read_file", {"path": "notes.txt"})
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "edit_file",
         {
             "path": "notes.txt",
@@ -421,7 +421,7 @@ async def test_edit_file_rejects_file_outside_workspace(tmp_path: Path) -> None:
     outside_file.write_text("secret", encoding="utf-8")
     registry = create_registry(workspace_root)
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "edit_file",
         {
             "path": "../secret.txt",
@@ -444,7 +444,7 @@ async def test_edit_file_invalid_utf8_snapshot_returns_tool_error(
     registry = create_registry(tmp_path)
     registry.read_files.add(target.resolve())
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "edit_file",
         {
             "path": "binary.txt",
@@ -464,7 +464,7 @@ async def test_write_file_creates_new_file_and_returns_diff(tmp_path: Path) -> N
     target = tmp_path / "notes.txt"
     registry = create_registry(tmp_path)
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "write_file",
         {
             "path": "notes.txt",
@@ -481,7 +481,7 @@ async def test_write_file_creates_parent_directories(tmp_path: Path) -> None:
     target = tmp_path / "docs" / "notes.txt"
     registry = create_registry(tmp_path)
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "write_file",
         {
             "path": "docs/notes.txt",
@@ -501,7 +501,7 @@ async def test_write_file_rejects_existing_file_without_overwrite(
     target.write_text("original\n", encoding="utf-8")
     registry = create_registry(tmp_path)
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "write_file",
         {
             "path": "notes.txt",
@@ -519,7 +519,7 @@ async def test_write_file_requires_read_before_overwrite(tmp_path: Path) -> None
     target.write_text("original\n", encoding="utf-8")
     registry = create_registry(tmp_path)
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "write_file",
         {
             "path": "notes.txt",
@@ -537,9 +537,9 @@ async def test_write_file_overwrites_after_read(tmp_path: Path) -> None:
     target = tmp_path / "notes.txt"
     target.write_text("original\n", encoding="utf-8")
     registry = create_registry(tmp_path)
-    await registry.execute_async("read_file", {"path": "notes.txt"})
+    await registry.execute("read_file", {"path": "notes.txt"})
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "write_file",
         {
             "path": "notes.txt",
@@ -564,7 +564,7 @@ async def test_write_file_overwrite_invalid_utf8_snapshot_returns_tool_error(
     registry = create_registry(tmp_path)
     registry.read_files.add(target.resolve())
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "write_file",
         {
             "path": "binary.txt",
@@ -580,7 +580,7 @@ async def test_write_file_overwrite_invalid_utf8_snapshot_returns_tool_error(
     assert is_error is True
 
 
-async def test_execute_async_invalid_utf8_snapshot_returns_tool_error(
+async def test_execute_invalid_utf8_snapshot_returns_tool_error(
     tmp_path: Path,
 ) -> None:
     target = tmp_path / "binary.txt"
@@ -589,7 +589,7 @@ async def test_execute_async_invalid_utf8_snapshot_returns_tool_error(
     registry = create_registry(tmp_path)
     registry.read_files.add(target.resolve())
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "edit_file",
         {
             "path": "binary.txt",
@@ -609,7 +609,7 @@ async def test_write_file_tracks_changed_file(tmp_path: Path) -> None:
     target = tmp_path / "notes.txt"
     registry = create_registry(tmp_path)
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "write_file",
         {
             "path": "notes.txt",
@@ -628,7 +628,7 @@ async def test_write_file_rejects_file_outside_workspace(tmp_path: Path) -> None
     outside_file = tmp_path / "secret.txt"
     registry = create_registry(workspace_root)
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "write_file",
         {
             "path": "../secret.txt",
@@ -661,7 +661,7 @@ async def test_sub_agent_requires_parent_agent_when_executed_directly(
 ) -> None:
     registry = create_registry(tmp_path)
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "sub_agent",
         {
             "task": "Explore session resume behavior.",
@@ -678,7 +678,7 @@ async def test_sub_agent_requires_parent_agent_when_executed_directly(
 async def test_sub_agent_rejects_unsupported_profile(tmp_path: Path) -> None:
     registry = create_registry(tmp_path)
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "sub_agent",
         {
             "task": "Explore the repository.",
@@ -694,7 +694,7 @@ async def test_sub_agent_rejects_unsupported_profile(tmp_path: Path) -> None:
 async def test_sub_agent_rejects_excessive_step_budget(tmp_path: Path) -> None:
     registry = create_registry(tmp_path)
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "sub_agent",
         {
             "task": "Explore the repository.",
@@ -729,7 +729,7 @@ async def test_read_only_profile_excludes_mutating_and_recursive_tools(
 async def test_get_diff_returns_no_changes_message(tmp_path: Path) -> None:
     registry = create_registry(tmp_path)
 
-    output, is_error = await registry.execute_async("get_diff", {})
+    output, is_error = await registry.execute("get_diff", {})
 
     assert output == "[No files changed]"
     assert is_error is False
@@ -739,8 +739,8 @@ async def test_get_diff_returns_changed_file_diff(tmp_path: Path) -> None:
     target = tmp_path / "notes.txt"
     target.write_text("one\ntwo\nthree\n", encoding="utf-8")
     registry = create_registry(tmp_path)
-    await registry.execute_async("read_file", {"path": "notes.txt"})
-    await registry.execute_async(
+    await registry.execute("read_file", {"path": "notes.txt"})
+    await registry.execute(
         "edit_file",
         {
             "path": "notes.txt",
@@ -749,7 +749,7 @@ async def test_get_diff_returns_changed_file_diff(tmp_path: Path) -> None:
         },
     )
 
-    output, is_error = await registry.execute_async("get_diff", {})
+    output, is_error = await registry.execute("get_diff", {})
 
     assert output == (
         "--- a/notes.txt\n+++ b/notes.txt\n@@ -1,3 +1,3 @@\n one\n-two\n+TWO\n three"
@@ -763,18 +763,18 @@ async def test_get_diff_filters_by_path(tmp_path: Path) -> None:
     first.write_text("one\n", encoding="utf-8")
     second.write_text("two\n", encoding="utf-8")
     registry = create_registry(tmp_path)
-    await registry.execute_async("read_file", {"path": "first.txt"})
-    await registry.execute_async("read_file", {"path": "second.txt"})
-    await registry.execute_async(
+    await registry.execute("read_file", {"path": "first.txt"})
+    await registry.execute("read_file", {"path": "second.txt"})
+    await registry.execute(
         "edit_file",
         {"path": "first.txt", "old_text": "one", "new_text": "ONE"},
     )
-    await registry.execute_async(
+    await registry.execute(
         "edit_file",
         {"path": "second.txt", "old_text": "two", "new_text": "TWO"},
     )
 
-    output, is_error = await registry.execute_async("get_diff", {"path": "second.txt"})
+    output, is_error = await registry.execute("get_diff", {"path": "second.txt"})
 
     assert "--- a/second.txt" in output
     assert "+TWO" in output
@@ -784,7 +784,7 @@ async def test_get_diff_filters_by_path(tmp_path: Path) -> None:
 
 async def test_get_diff_tracks_new_file_from_write_file(tmp_path: Path) -> None:
     registry = create_registry(tmp_path)
-    await registry.execute_async(
+    await registry.execute(
         "write_file",
         {
             "path": "notes.txt",
@@ -792,7 +792,7 @@ async def test_get_diff_tracks_new_file_from_write_file(tmp_path: Path) -> None:
         },
     )
 
-    output, is_error = await registry.execute_async("get_diff", {})
+    output, is_error = await registry.execute("get_diff", {})
 
     assert output == ("--- a/notes.txt\n+++ b/notes.txt\n@@ -0,0 +1,2 @@\n+one\n+two")
     assert is_error is False
@@ -804,8 +804,8 @@ async def test_get_diff_preserves_original_content_across_multiple_edits(
     target = tmp_path / "notes.txt"
     target.write_text("one\ntwo\nthree\n", encoding="utf-8")
     registry = create_registry(tmp_path)
-    await registry.execute_async("read_file", {"path": "notes.txt"})
-    await registry.execute_async(
+    await registry.execute("read_file", {"path": "notes.txt"})
+    await registry.execute(
         "edit_file",
         {
             "path": "notes.txt",
@@ -813,7 +813,7 @@ async def test_get_diff_preserves_original_content_across_multiple_edits(
             "new_text": "TWO",
         },
     )
-    await registry.execute_async(
+    await registry.execute(
         "edit_file",
         {
             "path": "notes.txt",
@@ -822,7 +822,7 @@ async def test_get_diff_preserves_original_content_across_multiple_edits(
         },
     )
 
-    output, is_error = await registry.execute_async("get_diff", {})
+    output, is_error = await registry.execute("get_diff", {})
 
     assert output == (
         "--- a/notes.txt\n"
@@ -842,7 +842,7 @@ async def test_get_diff_rejects_unchanged_path(tmp_path: Path) -> None:
     target.write_text("content\n", encoding="utf-8")
     registry = create_registry(tmp_path)
 
-    output, is_error = await registry.execute_async("get_diff", {"path": "notes.txt"})
+    output, is_error = await registry.execute("get_diff", {"path": "notes.txt"})
 
     assert "File has not changed in this session" in output
     assert is_error is True
@@ -853,7 +853,7 @@ async def test_run_command_returns_success_result(tmp_path: Path) -> None:
     target.write_text("print('ok')\n", encoding="utf-8")
     registry = create_registry(tmp_path)
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "run_command",
         {"command": f"{shlex.quote(sys.executable)} -m py_compile module.py"},
     )
@@ -870,7 +870,7 @@ async def test_run_command_returns_failure_exit_code(tmp_path: Path) -> None:
     target.write_text("def broken(:\n", encoding="utf-8")
     registry = create_registry(tmp_path)
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "run_command",
         {"command": f"{shlex.quote(sys.executable)} -m py_compile module.py"},
     )
@@ -889,7 +889,7 @@ async def test_run_command_times_out(tmp_path: Path) -> None:
     )
     registry = create_registry(tmp_path)
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "run_command",
         {
             "command": f"{shlex.quote(sys.executable)} -m pytest test_slow.py",
@@ -910,7 +910,7 @@ async def test_run_command_truncates_long_output(tmp_path: Path) -> None:
     )
     registry = create_registry(tmp_path)
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "run_command",
         {
             "command": f"{shlex.quote(sys.executable)} -m pytest test_long_output.py",
@@ -926,7 +926,7 @@ async def test_run_command_truncates_long_output(tmp_path: Path) -> None:
 async def test_run_command_rejects_dangerous_command(tmp_path: Path) -> None:
     registry = create_registry(tmp_path)
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "run_command",
         {"command": "rm -rf ."},
     )
@@ -940,7 +940,7 @@ async def test_run_command_requires_approval_for_arbitrary_python(
 ) -> None:
     registry = create_registry(tmp_path)
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "run_command",
         {"command": f"{shlex.quote(sys.executable)} -c \"print('needs approval')\""},
     )
@@ -953,7 +953,7 @@ async def test_run_command_requires_approval_for_arbitrary_python(
 async def test_run_command_allows_python_version_probe(tmp_path: Path) -> None:
     registry = create_registry(tmp_path)
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "run_command",
         {"command": f"{shlex.quote(sys.executable)} --version"},
     )
@@ -974,7 +974,7 @@ async def test_run_command_resolves_workspace_venv_from_subdirectory(
     (tmp_path / "package").mkdir()
     registry = create_registry(tmp_path)
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "run_command",
         {"command": ".venv/bin/python --version", "cwd": "package"},
     )
@@ -987,7 +987,7 @@ async def test_run_command_resolves_workspace_venv_from_subdirectory(
 async def test_run_command_executes_after_approval(tmp_path: Path) -> None:
     registry = create_registry(tmp_path)
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "run_command",
         {"command": f"{shlex.quote(sys.executable)} -c \"print('approved')\""},
         approval_granted=True,
@@ -1004,7 +1004,7 @@ async def test_run_command_uses_workspace_relative_cwd(tmp_path: Path) -> None:
     (subdir / "module.py").write_text("value = 1\n", encoding="utf-8")
     registry = create_registry(tmp_path)
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "run_command",
         {
             "command": f"{shlex.quote(sys.executable)} -m py_compile module.py",
@@ -1023,7 +1023,7 @@ async def test_run_command_rejects_cwd_outside_workspace(tmp_path: Path) -> None
     (workspace_root / "module.py").write_text("value = 1\n", encoding="utf-8")
     registry = create_registry(workspace_root)
 
-    output, is_error = await registry.execute_async(
+    output, is_error = await registry.execute(
         "run_command",
         {
             "command": f"{shlex.quote(sys.executable)} -m py_compile module.py",
