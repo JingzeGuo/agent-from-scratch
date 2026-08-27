@@ -119,7 +119,7 @@ For each user task, `Agent.run`:
 3. Streams a normalized provider response.
 4. Validates and schedules requested tools.
 5. Returns tool results as observations and continues the loop.
-6. Records verification evidence and a termination reason.
+6. Records the run steps and termination reason.
 
 Multiple calls run concurrently only when every requested tool is in the
 controller's read-only set. Mutating or order-sensitive calls run serially.
@@ -164,7 +164,7 @@ are written.
 
 Long conversations use deterministic context compaction. Older large tool
 results are shortened, while a structured checkpoint retains the goal, files,
-edits, decisions, commands, errors, pending action, and latest verification.
+edits, decisions, commands, errors, and pending action.
 
 ## Architecture
 
@@ -182,7 +182,6 @@ edits, decisions, commands, errors, pending action, and latest verification.
 | `agent/schemas.py` | Provider-neutral controller and session models |
 | `agent/security.py` | Command policy and trace redaction |
 | `agent/token_tracker.py` | Token totals and estimated cost |
-| `agent/verification.py` | Verification evidence and task-success inference |
 | `scripts/evaluate_coding_tasks.py` | Deterministic, live-model, and patch-generation evaluation |
 
 ## Evaluation

@@ -10,7 +10,6 @@ from agent.schemas import (
     SessionSnapshot,
     ToolCall,
     ToolResult,
-    VerificationEvidence,
 )
 from agent.session import SessionStore
 
@@ -41,7 +40,6 @@ def make_snapshot(
         steps=[step],
         termination="completed",
         final_stop_reason="end_turn",
-        verification=VerificationEvidence(status="not_run"),
     )
     return SessionSnapshot(
         session_id=session_id,

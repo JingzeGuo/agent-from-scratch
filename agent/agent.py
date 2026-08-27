@@ -26,7 +26,6 @@ from .security import ToolApprovalPolicy, classify_command, redact_text
 from .session import SessionStore, utc_timestamp
 from .token_tracker import TokenTracker
 from .tool_registry import ToolRegistry
-from .verification import extract_verification_evidence, infer_task_success
 from .workspace import resolve_workspace_path
 
 TRACE_PREVIEW_CHARS = 500
@@ -301,15 +300,12 @@ class Agent:
         termination: RunOutcome,
         final_stop_reason: str | None,
     ) -> AgentRun:
-        verification = extract_verification_evidence(steps)
         agent_run = AgentRun(
             run_id=run_id,
             objective=objective,
             steps=steps,
             termination=termination,
             final_stop_reason=final_stop_reason,
-            verification=verification,
-            task_success=infer_task_success(verification),
         )
         self.completed_runs.append(agent_run)
         self._record_run_finished(
@@ -894,8 +890,6 @@ class Agent:
                 objective=objective,
                 termination=agent_run.termination,
                 final_stop_reason=agent_run.final_stop_reason,
-                task_success=agent_run.task_success,
-                verification_status=agent_run.verification.status,
                 step_count=len(agent_run.steps),
                 input_tokens=self.token_tracker.input_tokens,
                 output_tokens=self.token_tracker.output_tokens,

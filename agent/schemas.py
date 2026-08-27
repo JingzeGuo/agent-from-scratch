@@ -226,21 +226,12 @@ class AgentStep(BaseModel):
     tool_results: list[ToolResult] = Field(default_factory=list)
 
 
-class VerificationEvidence(BaseModel):
-    status: Literal["not_run", "passed", "failed", "error"]
-    command: str | None = None
-    exit_code: int | None = None
-    output: str | None = None
-
-
 class AgentRun(BaseModel):
     run_id: str | None = None
     objective: str
     steps: list[AgentStep]
     termination: RunOutcome
     final_stop_reason: str | None
-    verification: VerificationEvidence
-    task_success: bool | None = None
 
 
 class CommandSummary(BaseModel):
@@ -282,9 +273,6 @@ class ContextCheckpoint(BaseModel):
     commands_run: list[CommandSummary] = Field(default_factory=list)
     tool_errors: list[ToolErrorSummary] = Field(default_factory=list)
     pending_action: PendingAction | None = None
-    latest_verification: VerificationEvidence = Field(
-        default_factory=lambda: VerificationEvidence(status="not_run")
-    )
 
 
 class ContextBuildResult(BaseModel):
@@ -338,8 +326,6 @@ class SessionEvent(BaseModel):
     stop_reason: str | None = None
     termination: RunOutcome | None = None
     final_stop_reason: str | None = None
-    task_success: bool | None = None
-    verification_status: str | None = None
     step_count: int | None = Field(default=None, ge=0)
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)

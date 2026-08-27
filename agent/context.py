@@ -11,7 +11,6 @@ from .schemas import (
     ToolErrorSummary,
     ToolResult,
 )
-from .verification import extract_verification_evidence
 
 OMITTED_TOOL_RESULT_TEMPLATE = "[Older tool result omitted: {char_count} chars]"
 CONTEXT_CHECKPOINT_HEADER = "[Structured context checkpoint]"
@@ -162,7 +161,6 @@ class ContextBuilder:
             commands_run=commands_run,
             tool_errors=tool_errors,
             pending_action=pending_action,
-            latest_verification=extract_verification_evidence(steps),
         )
 
     def _snip_large_tool_results(self, message: Message) -> int:
@@ -305,12 +303,6 @@ class ContextBuilder:
                 f"({pending.tool_use_id})"
             )
 
-        verification = checkpoint.latest_verification
-        lines.append("Latest verification:")
-        if verification.command is None:
-            lines.append(f"- {verification.status}")
-        else:
-            lines.append(f"- {verification.status}: {verification.command}")
         return "\n".join(lines)
 
     def _format_list(self, heading: str, values: list[str]) -> list[str]:

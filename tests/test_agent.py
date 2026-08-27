@@ -26,7 +26,6 @@ from agent.schemas import (
     ToolCall,
     ToolDefinition,
     ToolResult,
-    VerificationEvidence,
 )
 from agent.security import ToolApprovalPolicy
 from agent.session import SessionStore
@@ -222,8 +221,6 @@ def test_single_tool_call_completes(
     assert agent_run.objective == "Process a sample value"
     assert agent_run.termination == "completed"
     assert agent_run.final_stop_reason == "end_turn"
-    assert agent_run.verification.status == "not_run"
-    assert agent_run.task_success is None
     assert len(agent_run.steps) == 2
     assert len(agent.steps) == 2
     assert agent.steps[0].tool_calls[0].name == "read_file"
@@ -405,10 +402,6 @@ def test_agent_completes_read_search_edit_test_trajectory(
     ]
     assert target.read_text(encoding="utf-8") == "def answer() -> int:\n    return 2\n"
     assert "exit_code: 0" in agent_run.steps[3].tool_results[0].content
-    assert agent_run.verification.status == "passed"
-    assert agent_run.verification.command == f"{sys.executable} -m py_compile module.py"
-    assert agent_run.verification.exit_code == 0
-    assert agent_run.task_success is None
     assert agent_run.steps[-1].text == ["Verified the focused command."]
     assert capsys.readouterr().out == (
         "Reading module.py\n"
@@ -417,33 +410,6 @@ def test_agent_completes_read_search_edit_test_trajectory(
         "Running command\n"
         "Verified the focused command.\n"
     )
-
-
-def test_tool_success_does_not_prove_task_success() -> None:
-    tool_response = make_message(
-        content=[
-            ToolUseBlock(
-                id="toolu_test",
-                name="read_file",
-                input={"value": "sample"},
-                type="tool_use",
-            )
-        ],
-        stop_reason="tool_use",
-    )
-    incorrect_final_response = make_message(
-        content=[TextBlock(text="The answer is 3.", type="text")],
-        stop_reason="end_turn",
-    )
-    agent, _ = create_agent([tool_response, incorrect_final_response])
-
-    agent_run = asyncio.run(agent.run("Process a sample value"))
-
-    assert agent_run.termination == "completed"
-    assert agent_run.steps[0].tool_results[0].content == "processed: sample"
-    assert agent_run.steps[-1].text == ["The answer is 3."]
-    assert agent_run.verification.status == "not_run"
-    assert agent_run.task_success is None
 
 
 def test_failed_command_followed_by_repair_and_passing_command(
@@ -515,10 +481,6 @@ def test_failed_command_followed_by_repair_and_passing_command(
     assert agent_run.steps[1].tool_results[0].is_error is False
     assert "exit_code: 1" in agent_run.steps[1].tool_results[0].content
     assert "exit_code: 0" in agent_run.steps[3].tool_results[0].content
-    assert agent_run.verification.status == "passed"
-    assert agent_run.verification.command == command
-    assert agent_run.verification.exit_code == 0
-    assert agent_run.task_success is None
 
 
 def test_agent_runs_approved_command_requiring_approval(tmp_path: Path) -> None:
@@ -797,8 +759,6 @@ def test_agent_stops_at_max_steps(
     assert messages.call_count == 2
     assert agent_run.termination == "max_steps"
     assert agent_run.final_stop_reason == "tool_use"
-    assert agent_run.verification.status == "not_run"
-    assert agent_run.task_success is None
     assert len(agent_run.steps) == 2
     assert len(agent.steps) == 2
     assert capsys.readouterr().out == (
@@ -822,8 +782,6 @@ def test_agent_handles_protocol_error_stop_reason(
     assert messages.call_count == 1
     assert agent_run.termination == "protocol_error"
     assert agent_run.final_stop_reason == "max_tokens"
-    assert agent_run.verification.status == "not_run"
-    assert agent_run.task_success is None
     assert len(agent_run.steps) == 1
     assert len(agent.steps) == 1
     assert agent.steps[0].stop_reason == "max_tokens"
@@ -831,27 +789,6 @@ def test_agent_handles_protocol_error_stop_reason(
         "Partial response\n"
         "Protocol error stop reason: max_tokens\n"
     )
-
-
-def test_completed_run_can_contain_failed_verification() -> None:
-    agent_run = AgentRun(
-        objective="Fix the bug",
-        steps=[],
-        termination="completed",
-        final_stop_reason="end_turn",
-        verification=VerificationEvidence(
-            status="failed",
-            command="pytest",
-            exit_code=1,
-            output="1 failed",
-        ),
-        task_success=False,
-    )
-
-    assert agent_run.termination == "completed"
-    assert agent_run.final_stop_reason == "end_turn"
-    assert agent_run.verification.status == "failed"
-    assert agent_run.task_success is False
 
 
 def test_agent_run_contains_only_current_task_steps() -> None:
@@ -1452,7 +1389,6 @@ def test_agent_creates_snapshot_from_current_state(tmp_path: Path) -> None:
         steps=[step],
         termination="completed",
         final_stop_reason="end_turn",
-        verification=VerificationEvidence(status="not_run"),
     )
     agent.messages = cast(
         list[dict[str, Any]],
@@ -1606,7 +1542,6 @@ def test_agent_records_pending_action_and_tool_events(tmp_path: Path) -> None:
     assert events[5].stop_reason == "tool_use"
     assert events[-1].termination == "completed"
     assert events[-1].final_stop_reason == "end_turn"
-    assert events[-1].verification_status == "not_run"
     assert events[-1].step_count == 2
     assert events[-1].input_tokens == 20
     assert events[-1].output_tokens == 10

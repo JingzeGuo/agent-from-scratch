@@ -209,8 +209,6 @@ def test_context_builder_extracts_structured_checkpoint() -> None:
     assert checkpoint.tool_errors[0].step_number == 2
     assert checkpoint.tool_errors[0].tool_name == "edit_file"
     assert "Exact text was not found" in checkpoint.tool_errors[0].message
-    assert checkpoint.latest_verification.status == "passed"
-    assert checkpoint.latest_verification.command == ".venv/bin/python -m pytest"
     assert checkpoint.pending_action == pending_action
 
 
@@ -518,7 +516,5 @@ def test_context_builder_records_reduction_for_synthetic_long_trajectory() -> No
     assert result.hard_collapsed is True
     assert result.checkpoint_included is True
     assert "- agent/context.py" in checkpoint_content
-    assert "Latest verification:" in checkpoint_content
-    assert "- passed: .venv/bin/python -m pytest tests/test_context.py" in checkpoint_content
     assert "Pending action:" in checkpoint_content
     assert "- step 10 run_command (toolu_pending)" in checkpoint_content

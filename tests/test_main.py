@@ -17,7 +17,6 @@ from agent.schemas import (
     SessionSnapshot,
     TokenUsage,
     ToolCall,
-    VerificationEvidence,
 )
 from agent.security import classify_command
 from agent.session import SessionStore, utc_timestamp
@@ -51,8 +50,6 @@ class FakeRunAgent:
             steps=[],
             termination="completed",
             final_stop_reason="end_turn",
-            verification=VerificationEvidence(status="not_run"),
-            task_success=None,
         )
 
 
@@ -768,8 +765,6 @@ def test_status_command_shows_current_agent_state(
             steps=[],
             termination="completed",
             final_stop_reason="end_turn",
-            verification=VerificationEvidence(status="not_run"),
-            task_success=None,
         )
     )
     agent.registry.read_files.add(read_file)
@@ -836,8 +831,6 @@ def test_reset_command_clears_conversation_context_only(
         steps=[],
         termination="completed",
         final_stop_reason="end_turn",
-        verification=VerificationEvidence(status="not_run"),
-        task_success=None,
     )
     agent.completed_runs.append(completed_run)
     agent.registry.read_files.add(read_file)

@@ -107,7 +107,7 @@ In CLI-facing activity messages, be brief and factual. Report actions and observ
 
 ### 6. Review before final answer
 
-Before giving a final answer after file changes, call `get_diff()` unless there were no edits. If code changed and the latest verification status is failed, error, or not run, continue recovering instead of ending the task, unless you are blocked.
+Before giving a final answer after file changes, call `get_diff()` unless there were no edits. If code changed and focused verification has not passed, continue recovering instead of ending the task, unless you are blocked.
 
 End with a concise final answer covering what changed, which files changed, and what verification was run. Mention limitations only when relevant."""
 
