@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
-from .retry import retry, retry_async
+from .retry import retry_async
 from .schemas import ToolDefinition
 from .security import ToolApprovalPolicy
 
@@ -34,17 +34,6 @@ class Tool:
             input_schema=json_schema,
         )
 
-    @retry(max_attempts=3, backoff=2)
-    def _run(
-        self,
-        parsed_input: BaseModel,
-        extra_kwargs: dict[str, Any] | None = None,
-    ) -> Any:
-        kwargs = parsed_input.model_dump()
-        if extra_kwargs is not None:
-            kwargs.update(extra_kwargs)
-        return self.fn(**kwargs)
-
     @retry_async(max_attempts=3, backoff=2)
     async def _run_async(
         self,
@@ -62,27 +51,6 @@ class Tool:
         if inspect.isawaitable(result):
             return await result
         return result
-
-    def execute(
-        self,
-        raw_input: dict[str, Any],
-        extra_kwargs: dict[str, Any] | None = None,
-    ) -> tuple[str, bool]:
-        if self._is_async_callable():
-            try:
-                asyncio.get_running_loop()
-            except RuntimeError:
-                return asyncio.run(self.execute_async(raw_input, extra_kwargs))
-            return f"Tool '{self.name}' requires async execution.", True
-
-        parsed_or_error = self._parse(raw_input)
-        if isinstance(parsed_or_error, str):
-            return parsed_or_error, True
-        try:
-            result = self._run(parsed_or_error, extra_kwargs)
-            return str(result), False
-        except Exception as e:
-            return f"Tool '{self.name}' raised {type(e).__name__}: {e}", True
 
     async def execute_async(
         self,

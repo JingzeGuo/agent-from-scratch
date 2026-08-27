@@ -22,36 +22,6 @@ class ToolRegistry:
     def to_tool_definitions(self) -> list[ToolDefinition]:
         return [tool.to_definition() for tool in self.tools.values()]
 
-    def execute(
-        self,
-        name: str,
-        raw_input: dict[str, Any],
-        *,
-        approval_granted: bool = False,
-        extra_kwargs: dict[str, Any] | None = None,
-    ) -> tuple[str, bool]:
-        tool = self.tools.get(name)
-        if tool is None:
-            return f"Unknown tool: '{name}'. Available: {list(self.tools)}", True
-
-        error = self._validate_execution_allowed(tool, raw_input, approval_granted)
-        if error is not None:
-            return error, True
-
-        snapshot_error, original_snapshot = self._prepare_mutation_snapshot(
-            name,
-            raw_input,
-        )
-        if snapshot_error is not None:
-            return snapshot_error, True
-        output, is_error = tool.execute(
-            raw_input,
-            self._tool_extra_kwargs(name, approval_granted, extra_kwargs),
-        )
-        if not is_error:
-            self._record_successful_file_action(name, raw_input, original_snapshot)
-        return output, is_error
-
     async def execute_async(
         self,
         name: str,

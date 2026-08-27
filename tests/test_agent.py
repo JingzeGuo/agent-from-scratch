@@ -82,6 +82,7 @@ class FakeContextBuilder(ContextBuilder):
         self.pending_action_calls.append(pending_action)
         return self.context
 
+
 class FakeProviderAdapter:
     def __init__(
         self,
@@ -180,6 +181,7 @@ def create_command_registry(workspace_root: Path) -> ToolRegistry:
         )
     )
     return registry
+
 
 def create_agent(
     responses: list[ProviderResponse],
@@ -566,7 +568,9 @@ def test_agent_reuses_approval_for_same_command(tmp_path: Path) -> None:
     agent_run = asyncio.run(agent.run("Run the same approved command twice"))
 
     assert approval_requests == 1
-    assert all(not result.is_error for step in agent_run.steps for result in step.tool_results)
+    assert all(
+        not result.is_error for step in agent_run.steps for result in step.tool_results
+    )
 
 
 def test_agent_requests_approval_again_for_different_cwd(tmp_path: Path) -> None:
@@ -786,8 +790,7 @@ def test_agent_handles_protocol_error_stop_reason(
     assert len(agent.steps) == 1
     assert agent.steps[0].stop_reason == "max_tokens"
     assert capsys.readouterr().out == (
-        "Partial response\n"
-        "Protocol error stop reason: max_tokens\n"
+        "Partial response\nProtocol error stop reason: max_tokens\n"
     )
 
 
@@ -1409,14 +1412,17 @@ def test_sub_agent_enforces_child_step_budget(tmp_path: Path) -> None:
     )
 
 
-def test_agent_creates_snapshot_from_current_state(tmp_path: Path) -> None:
+@pytest.mark.anyio
+async def test_agent_creates_snapshot_from_current_state(tmp_path: Path) -> None:
     target = tmp_path / "module.py"
     target.write_text("def answer() -> int:\n    return 1\n", encoding="utf-8")
     registry = create_workspace_registry(tmp_path)
     agent, _ = create_agent([], registry=registry)
 
-    read_output, read_is_error = registry.execute("read_file", {"path": "module.py"})
-    edit_output, edit_is_error = registry.execute(
+    read_output, read_is_error = await registry.execute_async(
+        "read_file", {"path": "module.py"}
+    )
+    edit_output, edit_is_error = await registry.execute_async(
         "edit_file",
         {
             "path": "module.py",
@@ -1478,13 +1484,14 @@ def test_agent_creates_snapshot_from_current_state(tmp_path: Path) -> None:
     assert snapshot.estimated_cost > 0
 
 
-def test_agent_restores_snapshot_into_current_state(tmp_path: Path) -> None:
+@pytest.mark.anyio
+async def test_agent_restores_snapshot_into_current_state(tmp_path: Path) -> None:
     target = tmp_path / "module.py"
     target.write_text("def answer() -> int:\n    return 1\n", encoding="utf-8")
     registry = create_workspace_registry(tmp_path)
     agent, _ = create_agent([], registry=registry)
-    registry.execute("read_file", {"path": "module.py"})
-    registry.execute(
+    await registry.execute_async("read_file", {"path": "module.py"})
+    await registry.execute_async(
         "edit_file",
         {
             "path": "module.py",
@@ -1612,10 +1619,7 @@ def test_agent_redacts_secret_like_tool_output_in_trace(
     monkeypatch.setenv("AGENT_TRACE_REDACT_PATTERNS", r"CUSTOM-\d+")
 
     def secret_tool(value: str) -> str:
-        return (
-            f"{value} api_key=sk-secret123456 "
-            "token=plain-secret CUSTOM-12345"
-        )
+        return f"{value} api_key=sk-secret123456 token=plain-secret CUSTOM-12345"
 
     registry = ToolRegistry()
     registry.register(
