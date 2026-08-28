@@ -34,6 +34,30 @@ from agent.setup import create_registry
 
 PYTHON = sys.executable
 EvaluationMode = Literal["deterministic", "real_model", "swe_bench"]
+SWE_BENCH_FINALIZATION_STEPS = 2
+SWE_BENCH_SYSTEM_PROMPT_SUFFIX = """
+## SWE-bench patch-generation profile
+
+These profile instructions override the generic verification and recovery rules
+below when they conflict.
+
+Treat verification as best-effort because this checkout may not contain the
+benchmark's dependency environment. After an edit, run one focused existing
+verification command when practical. If it fails because dependencies are
+missing, the interpreter or platform is incompatible, or the repository needs
+external environment setup, treat that as an environment block, stop
+verification, review the diff, and finish. Do not try to recover from an
+environment block inside the repository.
+Do not modify product code or repository configuration to repair the evaluation
+environment.
+
+Do not create dependency shims, any conftest.py, pytest.ini, temporary
+verification scripts, scratch files, or paths beginning with _tmp. In
+particular, never add distutils, pytz, or asgiref replacements. Do not install
+dependencies. Use the existing repository files only, except for changes that
+directly implement the reported issue and focused regression tests that belong
+in the project's existing test suite.
+"""
 
 
 class ScriptedStep(BaseModel):
@@ -72,6 +96,24 @@ class CodingTaskResult(BaseModel):
     latency_ms: float
     failure_reason: str | None = None
     termination_reason: str
+    final_stop_reason: str | None = None
+    changed_files: list[str] = Field(default_factory=list)
+
+
+class SweBenchRunMetrics(BaseModel):
+    """Per-instance diagnostics written alongside standard predictions."""
+
+    instance_id: str
+    termination: str
+    final_stop_reason: str | None = None
+    steps: int
+    tool_calls: int
+    changed_files: list[str] = Field(default_factory=list)
+    input_tokens: int
+    output_tokens: int
+    estimated_cost: float
+    latency_ms: float
+    failure_reason: str | None = None
 
 
 class EvaluationSummary(BaseModel):
@@ -547,10 +589,16 @@ async def evaluate_swe_bench_instances(
     keep_workspaces: bool,
     predictions_path: Path,
     max_steps: int,
+    metrics_path: Path | None = None,
 ) -> list[CodingTaskResult]:
     provider = create_real_provider_adapter(api_key)
+    resolved_metrics_path = metrics_path or default_swe_bench_metrics_path(
+        predictions_path
+    )
     predictions_path.parent.mkdir(parents=True, exist_ok=True)
+    resolved_metrics_path.parent.mkdir(parents=True, exist_ok=True)
     predictions_path.write_text("", encoding="utf-8")
+    resolved_metrics_path.write_text("", encoding="utf-8")
     results: list[CodingTaskResult] = []
     for instance in instances:
         result, patch = await evaluate_swe_bench_instance(
@@ -560,8 +608,11 @@ async def evaluate_swe_bench_instances(
             max_steps=max_steps,
         )
         append_prediction(predictions_path, instance, provider, patch)
+        append_swe_bench_metrics(resolved_metrics_path, result)
         results.append(result)
+        print_swe_bench_result(result, resolved_metrics_path)
     print(f"Predictions: {predictions_path}")
+    print(f"Metrics: {resolved_metrics_path}")
     return results
 
 
@@ -575,6 +626,8 @@ async def evaluate_swe_bench_instance(
     workspace = Path(tempfile.mkdtemp(prefix=f"agent-swe-{instance.instance_id}-"))
     repo_workspace = workspace / "repo"
     started = perf_counter()
+    activity_prefix = f"[swe:{instance.instance_id}]"
+    print(f"{activity_prefix}[main] Starting with max_steps={max_steps}.")
     try:
         clone_instance(instance, repo_workspace)
         agent = Agent(
@@ -583,9 +636,14 @@ async def evaluate_swe_bench_instance(
             max_steps=max_steps,
             stream_output=False,
             approval_callback=deny_broad_command,
+            system_prompt_suffix=SWE_BENCH_SYSTEM_PROMPT_SUFFIX,
+            reserve_finalization_steps=SWE_BENCH_FINALIZATION_STEPS,
+            activity_prefix=activity_prefix,
+            activity_label="main",
         )
         run = await agent.run(swe_bench_prompt(instance))
         patch = collect_patch(repo_workspace)
+        changed_files = collect_patch_files(repo_workspace)
         success = run.termination == "completed" and bool(patch.strip())
         failure_reason = None
         if run.termination != "completed":
@@ -602,6 +660,7 @@ async def evaluate_swe_bench_instance(
             latency_ms=(perf_counter() - started) * 1000,
             failure_reason=failure_reason,
         )
+        result.changed_files = changed_files
         return result, patch
     finally:
         if keep_workspace:
@@ -634,6 +693,23 @@ def collect_patch(repo_workspace: Path) -> str:
     return completed.stdout
 
 
+def collect_patch_files(repo_workspace: Path) -> list[str]:
+    completed = run_subprocess(
+        ["git", "diff", "--name-only"],
+        cwd=repo_workspace,
+        check=False,
+    )
+    return [line for line in completed.stdout.splitlines() if line]
+
+
+def default_swe_bench_metrics_path(predictions_path: Path) -> Path:
+    suffix = predictions_path.suffix
+    stem = (
+        predictions_path.name.removesuffix(suffix) if suffix else predictions_path.name
+    )
+    return predictions_path.with_name(f"{stem}.metrics.jsonl")
+
+
 def append_prediction(
     path: Path,
     instance: SweBenchInstance,
@@ -649,6 +725,40 @@ def append_prediction(
     }
     with path.open("a", encoding="utf-8") as output:
         output.write(json.dumps(prediction) + "\n")
+
+
+def append_swe_bench_metrics(
+    path: Path,
+    result: CodingTaskResult,
+) -> None:
+    metrics = SweBenchRunMetrics(
+        instance_id=result.name,
+        termination=result.termination_reason,
+        final_stop_reason=result.final_stop_reason,
+        steps=result.steps,
+        tool_calls=result.tool_calls,
+        changed_files=result.changed_files,
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
+        estimated_cost=result.estimated_cost,
+        latency_ms=result.latency_ms,
+        failure_reason=result.failure_reason,
+    )
+    with path.open("a", encoding="utf-8") as output:
+        output.write(json.dumps(metrics.model_dump()) + "\n")
+
+
+def print_swe_bench_result(
+    result: CodingTaskResult,
+    metrics_path: Path,
+) -> None:
+    print(
+        f"[swe:{result.name}][main] Finished "
+        f"termination={result.termination_reason} steps={result.steps} "
+        f"tool_calls={result.tool_calls} "
+        f"changed_files={len(result.changed_files)}."
+    )
+    print(f"[swe:{result.name}][metrics] Appended to {metrics_path}.")
 
 
 def swe_bench_prompt(instance: SweBenchInstance) -> str:
@@ -687,6 +797,7 @@ def result_from_run(
         latency_ms=latency_ms,
         failure_reason=failure_reason,
         termination_reason=run.termination,
+        final_stop_reason=run.final_stop_reason,
     )
 
 
@@ -797,6 +908,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=Path(".agents/evals/swe-bench-predictions.jsonl"),
     )
+    parser.add_argument(
+        "--swe-bench-metrics",
+        type=Path,
+        help=(
+            "Write per-instance SWE-bench diagnostics as JSONL. Defaults to "
+            "<predictions-stem>.metrics.jsonl."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -829,6 +948,7 @@ async def run_eval_cli(
             keep_workspaces=args.keep_workspaces,
             predictions_path=args.swe_bench_predictions,
             max_steps=args.max_steps or 30,
+            metrics_path=args.swe_bench_metrics,
         )
     else:
         mode: Literal["deterministic", "real_model"] = (

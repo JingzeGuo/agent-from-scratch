@@ -774,6 +774,87 @@ def test_agent_stops_at_max_steps(
     )
 
 
+def test_agent_reserves_diff_review_and_final_answer_steps(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "module.py"
+    target.write_text("answer = 1\n", encoding="utf-8")
+    responses = [
+        make_message(
+            content=[
+                ToolUseBlock(
+                    id="toolu_read",
+                    name="read_file",
+                    input={"path": "module.py"},
+                )
+            ],
+            stop_reason="tool_use",
+        ),
+        make_message(
+            content=[
+                ToolUseBlock(
+                    id="toolu_diff",
+                    name="get_diff",
+                    input={},
+                )
+            ],
+            stop_reason="tool_use",
+        ),
+        make_message(
+            content=[TextBlock(text="Done.")],
+            stop_reason="end_turn",
+        ),
+    ]
+    adapter = FakeProviderAdapter(responses)
+    agent = Agent(
+        provider_adapter=adapter,
+        registry=create_workspace_registry(tmp_path),
+        max_steps=3,
+        stream_output=False,
+        reserve_finalization_steps=2,
+    )
+
+    agent_run = asyncio.run(agent.run("Fix module.py"))
+
+    assert agent_run.termination == "completed"
+    assert {tool.name for tool in adapter.requests[0]["tools"]} > {"get_diff"}
+    assert [tool.name for tool in adapter.requests[1]["tools"]] == ["get_diff"]
+    assert adapter.requests[2]["tools"] == []
+    assert "Current step: 1/3" in adapter.requests[0]["messages"][-1]["content"]
+    assert "final diff-review step" in adapter.requests[1]["messages"][-1]["content"]
+    assert "final-answer step" in adapter.requests[2]["messages"][-1]["content"]
+
+
+def test_agent_prefixes_step_limit_activity(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    response = make_message(
+        content=[
+            ToolUseBlock(
+                id="toolu_read",
+                name="read_file",
+                input={"value": "sample"},
+            )
+        ],
+        stop_reason="tool_use",
+    )
+    adapter = FakeProviderAdapter([response])
+    agent = Agent(
+        provider_adapter=adapter,
+        registry=create_registry(),
+        max_steps=1,
+        stream_output=False,
+        activity_prefix="[swe:demo__repo-1]",
+        activity_label="main",
+    )
+
+    asyncio.run(agent.run("Keep reading"))
+
+    assert capsys.readouterr().out == (
+        "[swe:demo__repo-1][main] Agent reached the 1-step limit. Task stopped.\n"
+    )
+
+
 def test_agent_handles_protocol_error_stop_reason(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -1330,7 +1411,10 @@ def test_sub_agent_runs_with_isolated_read_only_context(
     assert capsys.readouterr().out == "Running sub_agent\nDone.\n"
 
 
-def test_sub_agent_enforces_child_step_budget(tmp_path: Path) -> None:
+def test_sub_agent_enforces_child_step_budget(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     target = tmp_path / "notes.txt"
     target.write_text("content\n", encoding="utf-8")
     sub_agent_call = ToolCall(
@@ -1391,6 +1475,8 @@ def test_sub_agent_enforces_child_step_budget(tmp_path: Path) -> None:
     agent = Agent(
         provider_adapter=adapter,
         registry=create_workspace_registry(tmp_path),
+        activity_prefix="[swe:demo__repo-1]",
+        activity_label="main",
     )
 
     agent_run = asyncio.run(agent.run("Delegate exploration"))
@@ -1402,6 +1488,18 @@ def test_sub_agent_enforces_child_step_budget(tmp_path: Path) -> None:
     assert "final_answer:\n[No final text returned by child agent.]" in (
         sub_agent_result.content
     )
+    output = capsys.readouterr().out
+    assert (
+        "[swe:demo__repo-1][sub:read_only_explorer] Starting with max_steps=1."
+    ) in output
+    assert (
+        "[swe:demo__repo-1][sub:read_only_explorer] "
+        "Agent reached the 1-step limit. Task stopped."
+    ) in output
+    assert (
+        "[swe:demo__repo-1][sub:read_only_explorer] "
+        "Finished termination=max_steps steps=1."
+    ) in output
 
 
 @pytest.mark.anyio

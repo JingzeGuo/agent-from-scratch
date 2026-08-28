@@ -6,15 +6,19 @@ import pytest
 
 from agent.provider import DeepSeekProvider
 from scripts.evaluate_coding_tasks import (
+    SWE_BENCH_SYSTEM_PROMPT_SUFFIX,
     CodingTaskResult,
     SweBenchInstance,
     append_prediction,
+    append_swe_bench_metrics,
     build_cases,
+    default_swe_bench_metrics_path,
     evaluate_cases,
     evaluation_prompt,
     load_swe_bench_instances,
     print_results,
     summarize_results,
+    swe_bench_prompt,
 )
 
 
@@ -139,6 +143,64 @@ def test_append_prediction_writes_standard_fields(tmp_path: Path) -> None:
         "model_name_or_path": "deepseek/deepseek-v4-flash",
         "model_patch": "diff --git a/a.py b/a.py\n",
     }
+
+
+def test_swe_bench_profile_stops_on_environment_failures() -> None:
+    instance = SweBenchInstance(
+        instance_id="demo__repo-1",
+        repo="demo/repo",
+        base_commit="abc123",
+        problem_statement="Fix the bug.",
+    )
+
+    assert "when practical" in swe_bench_prompt(instance)
+    assert "treat that as an environment block" in (SWE_BENCH_SYSTEM_PROMPT_SUFFIX)
+    assert "override the generic verification and recovery rules" in (
+        SWE_BENCH_SYSTEM_PROMPT_SUFFIX
+    )
+    assert "Do not create dependency shims" in SWE_BENCH_SYSTEM_PROMPT_SUFFIX
+    assert "conftest.py" in SWE_BENCH_SYSTEM_PROMPT_SUFFIX
+    assert "paths beginning with _tmp" in SWE_BENCH_SYSTEM_PROMPT_SUFFIX
+    assert "never add distutils, pytz, or asgiref" in (SWE_BENCH_SYSTEM_PROMPT_SUFFIX)
+
+
+def test_append_swe_bench_metrics_writes_diagnostics(tmp_path: Path) -> None:
+    path = tmp_path / "predictions.metrics.jsonl"
+    result = make_result(
+        "demo__repo-1",
+        False,
+        steps=30,
+        tool_calls=29,
+        tokens=100,
+        cost=0.05,
+        failure_reason="agent terminated with max_steps",
+    )
+    result.changed_files = ["src/module.py", "tests/test_module.py"]
+    result.final_stop_reason = "tool_use"
+
+    append_swe_bench_metrics(path, result)
+
+    assert json.loads(path.read_text(encoding="utf-8")) == {
+        "instance_id": "demo__repo-1",
+        "termination": "max_steps",
+        "final_stop_reason": "tool_use",
+        "steps": 30,
+        "tool_calls": 29,
+        "changed_files": ["src/module.py", "tests/test_module.py"],
+        "input_tokens": 95,
+        "output_tokens": 5,
+        "estimated_cost": 0.05,
+        "latency_ms": 1.0,
+        "failure_reason": "agent terminated with max_steps",
+    }
+
+
+def test_default_swe_bench_metrics_path_uses_prediction_stem() -> None:
+    predictions = Path(".agents/evals/lite-50.jsonl")
+
+    assert default_swe_bench_metrics_path(predictions) == Path(
+        ".agents/evals/lite-50.metrics.jsonl"
+    )
 
 
 def test_deterministic_suite_passes() -> None:

@@ -485,8 +485,17 @@ async def sub_agent(
         max_steps=effective_max_steps,
         stream_output=False,
         system_prompt_suffix=profile_config.system_prompt_suffix,
+        activity_prefix=parent_agent.activity_prefix,
+        activity_label=(f"sub:{profile}" if parent_agent.activity_prefix else None),
     )
+    if child_agent.activity_prefix:
+        child_agent.print_activity(f"Starting with max_steps={effective_max_steps}.")
     child_run = await child_agent.run(task)
+    if child_agent.activity_prefix:
+        child_agent.print_activity(
+            f"Finished termination={child_run.termination} "
+            f"steps={len(child_run.steps)}."
+        )
     parent_agent.token_tracker.add(
         TokenUsage(
             input_tokens=child_agent.token_tracker.input_tokens,

@@ -227,12 +227,22 @@ predictions with exactly these standard fields:
 .venv/bin/agent eval \
   --swe-bench instances.jsonl \
   --instance-id owner__repo-123 \
-  --swe-bench-predictions predictions.jsonl
+  --swe-bench-predictions predictions.jsonl \
+  --swe-bench-metrics predictions.metrics.jsonl
 ```
 
 Use `--swe-bench-limit N` for a prefix of the selected instances and repeat
 `--instance-id` to select several IDs. This mode generates patches only. Use the
 official SWE-bench harness for environment construction and scoring.
+
+SWE-bench runs use a dedicated patch-generation profile. Environment or missing
+dependency failures stop best-effort verification instead of triggering changes
+to the repository, and the last two model steps are reserved for diff review and
+the final answer. Each completed instance is immediately appended to a metrics
+JSONL file with termination, step, tool-call, token, and changed-file details.
+When `--swe-bench-metrics` is omitted, the path defaults to
+`<predictions-stem>.metrics.jsonl`. Evaluation activity is prefixed with the
+instance ID and `main` or `sub` agent role.
 
 ## Development checks
 

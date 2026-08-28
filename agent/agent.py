@@ -19,6 +19,7 @@ from .schemas import (
     SessionEventType,
     SessionSnapshot,
     ToolCall,
+    ToolDefinition,
     ToolResult,
 )
 from .security import ToolApprovalPolicy, classify_command, redact_text
@@ -69,7 +70,14 @@ class Agent:
         stream_output: bool = True,
         approval_callback: ApprovalCallback | None = None,
         system_prompt_suffix: str = "",
+        reserve_finalization_steps: int = 0,
+        activity_prefix: str = "",
+        activity_label: str | None = None,
     ) -> None:
+        if reserve_finalization_steps < 0:
+            raise ValueError("reserve_finalization_steps cannot be negative")
+        if reserve_finalization_steps > max_steps:
+            raise ValueError("reserve_finalization_steps cannot exceed max_steps")
         self.provider_adapter = provider_adapter
         self.registry = registry
         self.model = provider_adapter.model if model is None else model
@@ -79,6 +87,9 @@ class Agent:
         self.approval_callback = approval_callback
         self._approved_commands: set[str] = set()
         self.system_prompt_suffix = system_prompt_suffix
+        self.reserve_finalization_steps = reserve_finalization_steps
+        self.activity_prefix = activity_prefix
+        self.activity_label = activity_label
         self.messages: list[dict[str, Any]] = []
         self.steps: list[AgentStep] = []
         self.completed_runs: list[AgentRun] = []
@@ -180,6 +191,7 @@ class Agent:
             }
         )
         for step in range(1, self.max_steps + 1):
+            remaining_steps = self.max_steps - step + 1
             text_blocks: list[str] = []
             tool_calls: list[ToolCall] = []
             tool_results: list[ToolResult] = []
@@ -188,6 +200,8 @@ class Agent:
 
             def print_text_delta(text: str) -> None:
                 nonlocal streamed_text
+                if not streamed_text and self._activity_log_prefix():
+                    print(f"{self._activity_log_prefix()} ", end="", flush=True)
                 print(text, end="", flush=True)
                 streamed_text = True
 
@@ -200,6 +214,16 @@ class Agent:
                     pending_action=self._current_pending_action(),
                 ),
             )
+            if self.reserve_finalization_steps:
+                model_messages.append(
+                    {
+                        "role": "user",
+                        "content": self._step_budget_message(
+                            step=step,
+                            remaining_steps=remaining_steps,
+                        ),
+                    }
+                )
             model_request_started = perf_counter()
             self._record_model_request_started(
                 run_id=run_id,
@@ -207,7 +231,7 @@ class Agent:
             )
             response = await self.provider_adapter.stream_response(
                 system=self.system_prompt,
-                tools=self.registry.to_tool_definitions(),
+                tools=self._tool_definitions_for_step(remaining_steps),
                 messages=model_messages,
                 on_text_delta=print_text_delta if self.stream_output else None,
             )
@@ -270,7 +294,9 @@ class Agent:
                 )
 
             if not tool_results:
-                print(f"Protocol error stop reason: {response.stop_reason}")
+                self.print_activity(
+                    f"Protocol error stop reason: {response.stop_reason}"
+                )
                 return self._finish_run(
                     run_id=run_id,
                     objective=user_task,
@@ -282,7 +308,9 @@ class Agent:
             self.messages.append(
                 self.provider_adapter.tool_result_message(tool_results)
             )
-        print(f"Agent reached the {self.max_steps}-step limit. Task stopped.")
+        self.print_activity(
+            f"Agent reached the {self.max_steps}-step limit. Task stopped."
+        )
         return self._finish_run(
             run_id=run_id,
             objective=user_task,
@@ -313,6 +341,65 @@ class Agent:
             agent_run=agent_run,
         )
         return agent_run
+
+    def print_activity(self, message: str) -> None:
+        """Print one activity line with optional evaluation context."""
+        prefix = self._activity_log_prefix()
+        print(f"{prefix} {message}" if prefix else message)
+
+    def _activity_log_prefix(self) -> str:
+        label = f"[{self.activity_label}]" if self.activity_label else ""
+        return f"{self.activity_prefix}{label}"
+
+    def _step_budget_message(self, *, step: int, remaining_steps: int) -> str:
+        lines = [
+            "[Runtime step budget]",
+            f"Current step: {step}/{self.max_steps}",
+            f"Steps remaining including this response: {remaining_steps}",
+            (f"Reserved finalization steps: {self.reserve_finalization_steps}"),
+        ]
+        if remaining_steps == 1:
+            lines.extend(
+                [
+                    "This is the final-answer step.",
+                    "No tools are available. Return the concise final answer now.",
+                ]
+            )
+        elif remaining_steps <= self.reserve_finalization_steps:
+            lines.extend(
+                [
+                    "This is the final diff-review step.",
+                    "Do not make new edits, explore, or run verification.",
+                    (
+                        "Use get_diff if a review is still needed, then use the "
+                        "next step for the final answer."
+                    ),
+                ]
+            )
+        else:
+            finalization_starts = self.max_steps - self.reserve_finalization_steps + 1
+            lines.append(
+                "Complete implementation and verification before step "
+                f"{finalization_starts}."
+            )
+        return "\n".join(lines)
+
+    def _tool_definitions_for_step(
+        self,
+        remaining_steps: int,
+    ) -> list[ToolDefinition]:
+        definitions = self.registry.to_tool_definitions()
+        if not self.reserve_finalization_steps:
+            return definitions
+        if remaining_steps == 1:
+            return []
+        if remaining_steps <= self.reserve_finalization_steps:
+            return [
+                definition
+                for definition in definitions
+                if definition.name == "get_diff"
+            ]
+        return definitions
 
     def _new_run_id(self) -> str:
         return f"run-{uuid4().hex}"
@@ -495,7 +582,7 @@ class Agent:
             tool_call=tool_call,
         )
         if self.stream_output:
-            print(format_tool_activity(tool_call))
+            self.print_activity(format_tool_activity(tool_call))
         if tool_call.name == "sub_agent":
             _, output, is_error, latency_ms = await self._run_tool_call(
                 tool_call,
