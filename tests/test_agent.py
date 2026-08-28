@@ -250,7 +250,9 @@ def test_agent_sends_coding_system_prompt() -> None:
     assert "must run focused verification" in system_prompt
     assert "Do not run the same failing command again" in system_prompt
     assert "Do not create temporary verification scripts" in system_prompt
-    assert "When a focused verification command passes" in system_prompt
+    assert "When all requested changes are complete" in system_prompt
+    assert "proceed to the required final diff review" in system_prompt
+    assert "6-8 child steps" not in system_prompt
 
 
 def test_agent_uses_context_builder_for_model_messages() -> None:
