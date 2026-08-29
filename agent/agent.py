@@ -95,6 +95,7 @@ class Agent:
         self.completed_runs: list[AgentRun] = []
         self.session_store: SessionStore | None = None
         self.session_id: str | None = None
+        self.record_pending_actions = True
         self.context_builder = ContextBuilder()
         self.token_tracker = TokenTracker(model=self.model)
         self.system_prompt = build_system_prompt(
@@ -108,9 +109,12 @@ class Agent:
         self,
         session_store: SessionStore | None,
         session_id: str | None,
+        *,
+        record_pending_actions: bool = True,
     ) -> None:
         self.session_store = session_store
         self.session_id = session_id
+        self.record_pending_actions = record_pending_actions
 
     def configure_approval_callback(
         self,
@@ -476,13 +480,14 @@ class Agent:
         if self.session_store is None or self.session_id is None:
             return
         created_at = utc_timestamp()
-        pending_action = PendingAction(
-            session_id=self.session_id,
-            step_number=step_number,
-            tool_name=tool_call.name,
-            tool_use_id=tool_call.tool_use_id,
-        )
-        self.session_store.write_pending_action(pending_action)
+        if self.record_pending_actions:
+            pending_action = PendingAction(
+                session_id=self.session_id,
+                step_number=step_number,
+                tool_name=tool_call.name,
+                tool_use_id=tool_call.tool_use_id,
+            )
+            self.session_store.write_pending_action(pending_action)
         self._append_session_event(
             SessionEvent(
                 event_type="tool_started",
@@ -492,6 +497,8 @@ class Agent:
                 step_number=step_number,
                 tool_name=tool_call.name,
                 tool_use_id=tool_call.tool_use_id,
+                tool_input=tool_call.input,
+                command=self._tool_command(tool_call),
             )
         )
 
@@ -820,6 +827,8 @@ class Agent:
                 step_number=step_number,
                 tool_name=tool_call.name,
                 tool_use_id=tool_call.tool_use_id,
+                tool_input=tool_call.input,
+                command=self._tool_command(tool_call),
                 is_error=is_error,
                 latency_ms=latency_ms,
                 output_preview=self._preview_text(output),
@@ -871,11 +880,20 @@ class Agent:
         if self.session_store is None or self.session_id is None:
             return
         self.session_store.append_event(
-            event.model_copy(update={"session_id": self.session_id})
+            event.model_copy(
+                update={
+                    "session_id": self.session_id,
+                    "agent_label": self.activity_label,
+                }
+            )
         )
 
     def _current_pending_action(self) -> PendingAction | None:
-        if self.session_store is None or self.session_id is None:
+        if (
+            self.session_store is None
+            or self.session_id is None
+            or not self.record_pending_actions
+        ):
             return None
         return self.session_store.read_pending_action(self.session_id)
 
@@ -884,6 +902,10 @@ class Agent:
         if len(redacted) <= TRACE_PREVIEW_CHARS:
             return redacted
         return redacted[:TRACE_PREVIEW_CHARS] + "... [truncated]"
+
+    def _tool_command(self, tool_call: ToolCall) -> str | None:
+        command = tool_call.input.get("command")
+        return command if isinstance(command, str) else None
 
     def _validate_provider_capabilities(
         self,

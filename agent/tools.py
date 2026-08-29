@@ -479,6 +479,8 @@ async def sub_agent(
         registry=create_registry(
             parent_agent.registry.workspace_root,
             allowed_tools=profile_config.allowed_tools,
+            blocked_path_parts=parent_agent.registry.blocked_path_parts,
+            blocked_command_names=parent_agent.registry.blocked_command_names,
         ),
         model=parent_agent.model,
         provider=parent_agent.provider,
@@ -486,7 +488,12 @@ async def sub_agent(
         stream_output=False,
         system_prompt_suffix=profile_config.system_prompt_suffix,
         activity_prefix=parent_agent.activity_prefix,
-        activity_label=(f"sub:{profile}" if parent_agent.activity_prefix else None),
+        activity_label=f"sub:{profile}",
+    )
+    child_agent.configure_session_recording(
+        parent_agent.session_store,
+        parent_agent.session_id,
+        record_pending_actions=False,
     )
     if child_agent.activity_prefix:
         child_agent.print_activity(f"Starting with max_steps={effective_max_steps}.")

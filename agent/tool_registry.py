@@ -1,3 +1,4 @@
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -8,9 +9,17 @@ from .workspace import resolve_workspace_path
 
 
 class ToolRegistry:
-    def __init__(self, workspace_root: Path | None = None) -> None:
+    def __init__(
+        self,
+        workspace_root: Path | None = None,
+        *,
+        blocked_path_parts: frozenset[str] = frozenset(),
+        blocked_command_names: frozenset[str] = frozenset(),
+    ) -> None:
         self.tools: dict[str, Tool] = {}
         self.workspace_root = workspace_root
+        self.blocked_path_parts = blocked_path_parts
+        self.blocked_command_names = blocked_command_names
         self.read_files: set[Path] = set()
         self.changed_files: set[Path] = set()
         self.original_file_contents: dict[Path, str | None] = {}
@@ -60,6 +69,9 @@ class ToolRegistry:
         approval_error = self._validate_tool_approval(tool, approval_granted)
         if approval_error is not None:
             return approval_error
+        isolation_error = self._validate_isolation_policy(tool.name, raw_input)
+        if isolation_error is not None:
+            return isolation_error
         if tool.name == "edit_file":
             error = self._validate_edit_allowed(raw_input)
             if error is not None:
@@ -68,6 +80,74 @@ class ToolRegistry:
             error = self._validate_write_allowed(raw_input)
             if error is not None:
                 return error
+        return None
+
+    def _validate_isolation_policy(
+        self,
+        tool_name: str,
+        raw_input: dict[str, Any],
+    ) -> str | None:
+        path_field = {
+            "read_file": "path",
+            "edit_file": "path",
+            "write_file": "path",
+            "get_diff": "path",
+            "glob_files": "pattern",
+            "search_text": "file_pattern",
+        }.get(tool_name)
+        if path_field is not None:
+            raw_path = raw_input.get(path_field)
+            if isinstance(raw_path, str):
+                blocked_part = self._blocked_path_part(raw_path)
+                if blocked_part is not None:
+                    return (
+                        f"Tool '{tool_name}' blocked by workspace isolation: "
+                        f"path component '{blocked_part}' is unavailable."
+                    )
+
+        if tool_name != "run_command":
+            return None
+        raw_command = raw_input.get("command")
+        if not isinstance(raw_command, str):
+            return None
+        try:
+            args = shlex.split(raw_command)
+        except ValueError:
+            return None
+        if not args:
+            return None
+        command_name = Path(args[0]).name
+        if command_name in self.blocked_command_names:
+            return (
+                "Tool 'run_command' blocked by workspace isolation: "
+                f"command '{command_name}' is unavailable."
+            )
+        for argument in args[1:]:
+            blocked_part = self._blocked_path_part(argument)
+            if blocked_part is not None:
+                return (
+                    "Tool 'run_command' blocked by workspace isolation: "
+                    f"path component '{blocked_part}' is unavailable."
+                )
+        return None
+
+    def _blocked_path_part(self, raw_path: str) -> str | None:
+        if not self.blocked_path_parts:
+            return None
+        raw_parts = set(Path(raw_path).parts)
+        for blocked_part in sorted(self.blocked_path_parts):
+            if blocked_part in raw_parts:
+                return blocked_part
+        if self.workspace_root is None or any(char in raw_path for char in "*?[]"):
+            return None
+        try:
+            resolved = resolve_workspace_path(self.workspace_root, raw_path)
+            relative_parts = set(resolved.relative_to(self.workspace_root.resolve()).parts)
+        except (OSError, ValueError):
+            return None
+        for blocked_part in sorted(self.blocked_path_parts):
+            if blocked_part in relative_parts:
+                return blocked_part
         return None
 
     def _validate_tool_approval(

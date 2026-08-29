@@ -157,6 +157,33 @@ def test_session_store_appends_and_reads_events(tmp_path: Path) -> None:
     assert store.list_snapshots() == []
 
 
+def test_session_store_resets_events_and_pending_action(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    store.append_event(
+        SessionEvent(
+            event_type="run_started",
+            session_id="session-one",
+            created_at="2026-06-25T00:00:00+00:00",
+        )
+    )
+    store.write_pending_action(
+        PendingAction(
+            session_id="session-one",
+            step_number=1,
+            tool_name="read_file",
+            tool_use_id="tool-one",
+        )
+    )
+
+    store.reset_events("session-one")
+
+    assert store.read_events("session-one") == []
+    assert store.read_pending_action("session-one") is None
+    assert store.event_log_path("session-one") == (
+        tmp_path / "sessions" / "events" / "session-one.jsonl"
+    )
+
+
 def test_session_store_redacts_secret_like_event_fields(tmp_path: Path) -> None:
     store = SessionStore(tmp_path / "sessions")
     event = SessionEvent(
@@ -164,6 +191,8 @@ def test_session_store_redacts_secret_like_event_fields(tmp_path: Path) -> None:
         session_id="session-one",
         created_at="2026-06-25T00:00:00+00:00",
         output_preview="api_key=sk-secret123456 token=plain-secret",
+        tool_input={"command": "pytest --token=plain-secret"},
+        command="pytest --token=plain-secret",
         native_metadata={"header": "Bearer abcdefghijklmnop"},
     )
 
@@ -173,6 +202,8 @@ def test_session_store_redacts_secret_like_event_fields(tmp_path: Path) -> None:
     assert "sk-secret123456" not in (stored.output_preview or "")
     assert "plain-secret" not in (stored.output_preview or "")
     assert stored.output_preview == "api_key=[REDACTED] token=[REDACTED]"
+    assert stored.tool_input == {"command": "pytest --token=[REDACTED]"}
+    assert stored.command == "pytest --token=[REDACTED]"
     assert stored.native_metadata == {"header": "Bearer [REDACTED]"}
 
 

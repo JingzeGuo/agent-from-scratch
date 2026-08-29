@@ -12,6 +12,7 @@ from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Literal, cast
+from uuid import uuid4
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
@@ -30,11 +31,27 @@ from agent.schemas import (
     ToolResult,
 )
 from agent.security import ToolApprovalPolicy
+from agent.session import SessionStore
 from agent.setup import create_registry
+from agent.tool_registry import ToolRegistry
 
 PYTHON = sys.executable
 EvaluationMode = Literal["deterministic", "real_model", "swe_bench"]
 SWE_BENCH_FINALIZATION_STEPS = 2
+SWE_BENCH_ALLOWED_TOOLS = frozenset(
+    {
+        "read_file",
+        "glob_files",
+        "search_text",
+        "edit_file",
+        "write_file",
+        "get_diff",
+        "run_command",
+        "sub_agent",
+    }
+)
+SWE_BENCH_BLOCKED_PATH_PARTS = frozenset({".git"})
+SWE_BENCH_BLOCKED_COMMAND_NAMES = frozenset({"git"})
 SWE_BENCH_SYSTEM_PROMPT_SUFFIX = """
 ## SWE-bench patch-generation profile
 
@@ -50,6 +67,11 @@ verification, review the diff, and finish. Do not try to recover from an
 environment block inside the repository.
 Do not modify product code or repository configuration to repair the evaluation
 environment.
+
+The benchmark workspace is intentionally isolated. Do not inspect Git metadata,
+history, refs, remotes, newer revisions, issue trackers, pull requests, or any
+other network source. Solve the task only from the checked-out files and problem
+statement provided in this run.
 
 Do not create dependency shims, any conftest.py, pytest.ini, temporary
 verification scripts, scratch files, or paths beginning with _tmp. In
@@ -590,13 +612,18 @@ async def evaluate_swe_bench_instances(
     predictions_path: Path,
     max_steps: int,
     metrics_path: Path | None = None,
+    trajectories_dir: Path | None = None,
 ) -> list[CodingTaskResult]:
     provider = create_real_provider_adapter(api_key)
     resolved_metrics_path = metrics_path or default_swe_bench_metrics_path(
         predictions_path
     )
+    resolved_trajectories_dir = (
+        trajectories_dir or default_swe_bench_trajectories_dir(predictions_path)
+    )
     predictions_path.parent.mkdir(parents=True, exist_ok=True)
     resolved_metrics_path.parent.mkdir(parents=True, exist_ok=True)
+    resolved_trajectories_dir.mkdir(parents=True, exist_ok=True)
     predictions_path.write_text("", encoding="utf-8")
     resolved_metrics_path.write_text("", encoding="utf-8")
     results: list[CodingTaskResult] = []
@@ -606,6 +633,7 @@ async def evaluate_swe_bench_instances(
             provider_adapter=provider,
             keep_workspace=keep_workspaces,
             max_steps=max_steps,
+            trajectories_dir=resolved_trajectories_dir,
         )
         append_prediction(predictions_path, instance, provider, patch)
         append_swe_bench_metrics(resolved_metrics_path, result)
@@ -613,6 +641,7 @@ async def evaluate_swe_bench_instances(
         print_swe_bench_result(result, resolved_metrics_path)
     print(f"Predictions: {predictions_path}")
     print(f"Metrics: {resolved_metrics_path}")
+    print(f"Trajectories: {resolved_trajectories_dir / 'events'}")
     return results
 
 
@@ -622,17 +651,23 @@ async def evaluate_swe_bench_instance(
     provider_adapter: ProviderAdapter,
     keep_workspace: bool,
     max_steps: int,
+    trajectories_dir: Path | None = None,
 ) -> tuple[CodingTaskResult, str]:
-    workspace = Path(tempfile.mkdtemp(prefix=f"agent-swe-{instance.instance_id}-"))
+    workspace = create_swe_bench_workspace()
     repo_workspace = workspace / "repo"
     started = perf_counter()
     activity_prefix = f"[swe:{instance.instance_id}]"
+    trajectory_store = (
+        SessionStore(trajectories_dir) if trajectories_dir is not None else None
+    )
+    if trajectory_store is not None:
+        trajectory_store.reset_events(instance.instance_id)
     print(f"{activity_prefix}[main] Starting with max_steps={max_steps}.")
     try:
         clone_instance(instance, repo_workspace)
         agent = Agent(
             provider_adapter=provider_adapter,
-            registry=create_registry(repo_workspace),
+            registry=create_swe_bench_registry(repo_workspace),
             max_steps=max_steps,
             stream_output=False,
             approval_callback=deny_broad_command,
@@ -641,7 +676,14 @@ async def evaluate_swe_bench_instance(
             activity_prefix=activity_prefix,
             activity_label="main",
         )
+        if trajectory_store is not None:
+            agent.configure_session_recording(
+                trajectory_store,
+                instance.instance_id,
+            )
         run = await agent.run(swe_bench_prompt(instance))
+        if trajectory_store is not None:
+            trajectory_store.clear_pending_action(instance.instance_id)
         patch = collect_patch(repo_workspace)
         changed_files = collect_patch_files(repo_workspace)
         success = run.termination == "completed" and bool(patch.strip())
@@ -661,12 +703,30 @@ async def evaluate_swe_bench_instance(
             failure_reason=failure_reason,
         )
         result.changed_files = changed_files
+        if trajectory_store is not None:
+            print(
+                f"{activity_prefix}[trajectory] Saved to "
+                f"{trajectory_store.event_log_path(instance.instance_id)}."
+            )
         return result, patch
     finally:
         if keep_workspace:
             print(f"Kept SWE-bench workspace: {workspace}")
         else:
             shutil.rmtree(workspace, ignore_errors=True)
+
+
+def create_swe_bench_workspace() -> Path:
+    return Path(tempfile.mkdtemp(prefix=f"agent-swe-{uuid4().hex}-"))
+
+
+def create_swe_bench_registry(workspace_root: Path) -> ToolRegistry:
+    return create_registry(
+        workspace_root,
+        allowed_tools=SWE_BENCH_ALLOWED_TOOLS,
+        blocked_path_parts=SWE_BENCH_BLOCKED_PATH_PARTS,
+        blocked_command_names=SWE_BENCH_BLOCKED_COMMAND_NAMES,
+    )
 
 
 def clone_instance(instance: SweBenchInstance, destination: Path) -> None:
@@ -676,11 +736,18 @@ def clone_instance(instance: SweBenchInstance, destination: Path) -> None:
         if source_path.exists()
         else f"https://github.com/{instance.repo}.git"
     )
-    run_subprocess(["git", "clone", "--quiet", source, destination.as_posix()])
+    destination.mkdir(parents=True)
+    run_subprocess(["git", "init", "--quiet"], cwd=destination)
+    run_subprocess(["git", "remote", "add", "origin", source], cwd=destination)
     run_subprocess(
-        ["git", "checkout", "--quiet", instance.base_commit],
+        ["git", "fetch", "--quiet", "--depth", "1", "origin", instance.base_commit],
         cwd=destination,
     )
+    run_subprocess(
+        ["git", "checkout", "--quiet", "--detach", instance.base_commit],
+        cwd=destination,
+    )
+    run_subprocess(["git", "remote", "remove", "origin"], cwd=destination)
 
 
 def collect_patch(repo_workspace: Path) -> str:
@@ -708,6 +775,14 @@ def default_swe_bench_metrics_path(predictions_path: Path) -> Path:
         predictions_path.name.removesuffix(suffix) if suffix else predictions_path.name
     )
     return predictions_path.with_name(f"{stem}.metrics.jsonl")
+
+
+def default_swe_bench_trajectories_dir(predictions_path: Path) -> Path:
+    suffix = predictions_path.suffix
+    stem = (
+        predictions_path.name.removesuffix(suffix) if suffix else predictions_path.name
+    )
+    return predictions_path.with_name(f"{stem}.trajectories")
 
 
 def append_prediction(
@@ -916,6 +991,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "<predictions-stem>.metrics.jsonl."
         ),
     )
+    parser.add_argument(
+        "--swe-bench-trajectories",
+        type=Path,
+        help=(
+            "Write per-instance structured trajectory JSONL files. Defaults to "
+            "<predictions-stem>.trajectories/events/<instance-id>.jsonl."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -949,6 +1032,7 @@ async def run_eval_cli(
             predictions_path=args.swe_bench_predictions,
             max_steps=args.max_steps or 30,
             metrics_path=args.swe_bench_metrics,
+            trajectories_dir=args.swe_bench_trajectories,
         )
     else:
         mode: Literal["deterministic", "real_model"] = (

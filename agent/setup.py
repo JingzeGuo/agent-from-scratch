@@ -61,8 +61,14 @@ def create_registry(
     workspace_root: Path,
     *,
     allowed_tools: frozenset[str] | None = None,
+    blocked_path_parts: frozenset[str] = frozenset(),
+    blocked_command_names: frozenset[str] = frozenset(),
 ) -> ToolRegistry:
-    registry = ToolRegistry(workspace_root)
+    registry = ToolRegistry(
+        workspace_root,
+        blocked_path_parts=blocked_path_parts,
+        blocked_command_names=blocked_command_names,
+    )
     tool_catalog = _create_tool_catalog(workspace_root, registry)
     if allowed_tools is not None:
         unknown_tools = allowed_tools.difference(tool_catalog)

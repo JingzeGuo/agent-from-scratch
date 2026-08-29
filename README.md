@@ -228,7 +228,8 @@ predictions with exactly these standard fields:
   --swe-bench instances.jsonl \
   --instance-id owner__repo-123 \
   --swe-bench-predictions predictions.jsonl \
-  --swe-bench-metrics predictions.metrics.jsonl
+  --swe-bench-metrics predictions.metrics.jsonl \
+  --swe-bench-trajectories predictions.trajectories
 ```
 
 Use `--swe-bench-limit N` for a prefix of the selected instances and repeat
@@ -243,6 +244,14 @@ JSONL file with termination, step, tool-call, token, and changed-file details.
 When `--swe-bench-metrics` is omitted, the path defaults to
 `<predictions-stem>.metrics.jsonl`. Evaluation activity is prefixed with the
 instance ID and `main` or `sub` agent role.
+
+The SWE-bench profile removes `search_web` and `fetch_url`, uses an anonymous
+UUID workspace, fetches only the requested `base_commit`, removes the Git
+remote, and blocks Agent access to Git commands and `.git` metadata. Structured
+per-instance trajectory events record the Agent role, tool name, complete tool
+input, and command while redacting configured secrets. When
+`--swe-bench-trajectories` is omitted, trajectories default to
+`<predictions-stem>.trajectories/events/<instance-id>.jsonl`.
 
 ## Development checks
 

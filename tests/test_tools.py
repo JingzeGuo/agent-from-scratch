@@ -78,6 +78,56 @@ async def test_glob_files_allows_explicit_noisy_directory_pattern(
     assert is_error is False
 
 
+@pytest.mark.parametrize(
+    ("tool_name", "tool_input"),
+    [
+        ("read_file", {"path": ".git/HEAD"}),
+        ("glob_files", {"pattern": ".git/**/*"}),
+        (
+            "search_text",
+            {"pattern": "secret", "file_pattern": ".git/**/*"},
+        ),
+    ],
+)
+async def test_registry_can_block_git_metadata_paths(
+    tmp_path: Path,
+    tool_name: str,
+    tool_input: dict[str, object],
+) -> None:
+    git_dir = tmp_path / ".git"
+    git_dir.mkdir()
+    (git_dir / "HEAD").write_text("future-ref\n", encoding="utf-8")
+    registry = create_registry(
+        tmp_path,
+        blocked_path_parts=frozenset({".git"}),
+    )
+
+    output, is_error = await registry.execute(tool_name, tool_input)
+
+    assert "blocked by workspace isolation" in output
+    assert "'.git' is unavailable" in output
+    assert is_error is True
+
+
+async def test_registry_can_block_git_commands_even_with_approval(
+    tmp_path: Path,
+) -> None:
+    registry = create_registry(
+        tmp_path,
+        blocked_command_names=frozenset({"git"}),
+    )
+
+    output, is_error = await registry.execute(
+        "run_command",
+        {"command": "git diff HEAD origin/main"},
+        approval_granted=True,
+    )
+
+    assert "blocked by workspace isolation" in output
+    assert "command 'git' is unavailable" in output
+    assert is_error is True
+
+
 async def test_glob_files_allows_explicit_workspace_symlink(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()

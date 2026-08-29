@@ -24,4 +24,7 @@ wheels/
 .agents/sessions/
 .agents/evals/
 
+# Local SWE-bench dataset exports
+/swe_bench*.jsonl
+
 docs/

@@ -316,6 +316,7 @@ class SessionEvent(BaseModel):
     session_id: str
     created_at: str
     run_id: str | None = None
+    agent_label: str | None = None
     session_name: str | None = None
     objective: str | None = None
     step_number: int | None = Field(default=None, ge=1)
@@ -339,6 +340,8 @@ class SessionEvent(BaseModel):
     checkpoint_included: bool | None = None
     tool_name: str | None = None
     tool_use_id: str | None = None
+    tool_input: dict[str, Any] | None = None
+    command: str | None = None
     is_error: bool | None = None
     text_preview: str | None = None
     output_preview: str | None = None

@@ -1315,6 +1315,9 @@ def test_sub_agent_runs_with_isolated_read_only_context(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    agent_dir = tmp_path / "agent"
+    agent_dir.mkdir()
+    (agent_dir / "session.py").write_text("class SessionStore: pass\n")
     sub_agent_call = ToolCall(
         name="sub_agent",
         input={
@@ -1323,6 +1326,11 @@ def test_sub_agent_runs_with_isolated_read_only_context(
             "max_steps": 2,
         },
         tool_use_id="call_sub_agent",
+    )
+    child_read_call = ToolCall(
+        name="read_file",
+        input={"path": "agent/session.py"},
+        tool_use_id="call_child_read",
     )
     adapter = FakeProviderAdapter(
         responses=[
@@ -1341,6 +1349,22 @@ def test_sub_agent_runs_with_isolated_read_only_context(
                 stop_reason="tool_use",
                 tool_calls=[sub_agent_call],
                 usage=TokenUsage(input_tokens=10, output_tokens=5),
+            ),
+            ProviderResponse(
+                message={
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": child_read_call.tool_use_id,
+                            "name": child_read_call.name,
+                            "input": child_read_call.input,
+                        }
+                    ],
+                },
+                stop_reason="tool_use",
+                tool_calls=[child_read_call],
+                usage=TokenUsage(input_tokens=6, output_tokens=2),
             ),
             ProviderResponse(
                 message={
@@ -1394,8 +1418,8 @@ def test_sub_agent_runs_with_isolated_read_only_context(
         {"role": "user", "content": "Find session resume code."}
     ]
     assert "Parent-only history" not in str(child_request["messages"])
-    assert agent.token_tracker.input_tokens == 29
-    assert agent.token_tracker.output_tokens == 12
+    assert agent.token_tracker.input_tokens == 35
+    assert agent.token_tracker.output_tokens == 14
     tool_events = [
         event
         for event in session_store.read_events("session-one")
@@ -1408,6 +1432,20 @@ def test_sub_agent_runs_with_isolated_read_only_context(
     ]
     assert all(event.run_id == agent_run.run_id for event in tool_events)
     assert all(event.tool_name == "sub_agent" for event in tool_events)
+    child_tool_events = [
+        event
+        for event in session_store.read_events("session-one")
+        if event.event_type in {"tool_started", "tool_finished"}
+        and event.tool_use_id == "call_child_read"
+    ]
+    assert [event.event_type for event in child_tool_events] == [
+        "tool_started",
+        "tool_finished",
+    ]
+    assert all(
+        event.agent_label == "sub:read_only_explorer" for event in child_tool_events
+    )
+    assert child_tool_events[0].tool_input == {"path": "agent/session.py"}
     assert capsys.readouterr().out == "Running sub_agent\nDone.\n"
 
 
@@ -1690,6 +1728,8 @@ def test_agent_records_pending_action_and_tool_events(tmp_path: Path) -> None:
     assert events[2].tool_call_count == 1
     assert events[2].latency_ms is not None
     assert events[3].tool_name == "read_file"
+    assert events[3].tool_input == {"value": "sample"}
+    assert events[3].command is None
     assert events[4].is_error is False
     assert events[4].output_preview == "processed: sample"
     assert events[4].output_chars == 17

@@ -115,6 +115,15 @@ class SessionStore:
             if line
         ]
 
+    def reset_events(self, session_id: str) -> None:
+        safe_session_id = self._validate_session_id(session_id)
+        self._event_log_path(safe_session_id).unlink(missing_ok=True)
+        self.clear_pending_action(safe_session_id)
+
+    def event_log_path(self, session_id: str) -> Path:
+        safe_session_id = self._validate_session_id(session_id)
+        return self._event_log_path(safe_session_id)
+
     def _pending_dir(self) -> Path:
         return self.sessions_dir / "pending"
 
@@ -148,12 +157,20 @@ class SessionStore:
 
     def _redact_event(self, event: SessionEvent) -> SessionEvent:
         updates: dict[str, object] = {}
-        for field_name in ("text_preview", "output_preview", "message", "objective"):
+        for field_name in (
+            "text_preview",
+            "output_preview",
+            "message",
+            "objective",
+            "command",
+        ):
             value = getattr(event, field_name)
             if isinstance(value, str):
                 updates[field_name] = redact_text(value)
         if event.native_metadata is not None:
             updates["native_metadata"] = self._redact_value(event.native_metadata)
+        if event.tool_input is not None:
+            updates["tool_input"] = self._redact_value(event.tool_input)
         if not updates:
             return event
         return event.model_copy(update=updates)
