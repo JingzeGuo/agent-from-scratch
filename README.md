@@ -10,6 +10,11 @@ command operations to the current workspace, validates every tool input,
 records resumable sessions and JSONL traces, compacts long conversations into
 structured checkpoints, and tracks token use and estimated cost.
 
+In an audited run on a fixed random 50-instance subset of SWE-bench Lite, the
+agent resolved **29/50 instances (58%)** with DeepSeek V4 Flash. Patches were
+scored by the official SWE-bench harness under the isolated evaluation profile
+described below.
+
 ## Requirements and setup
 
 - Python 3.12 or newer
@@ -213,6 +218,28 @@ read-only `repository_search` case.
 ```
 
 ### SWE-bench-compatible patch generation
+
+#### Audited result
+
+The isolated evaluation profile was run against a fixed random 50-instance
+subset of SWE-bench Lite and scored with the official harness on `linux/amd64`.
+The denominator includes empty patches.
+
+| Metric | Result |
+| --- | ---: |
+| Resolved | **29/50 (58%)** |
+| Unresolved after harness execution | 17 |
+| Empty patches | 4 |
+| Submitted | 50 |
+| Completed by the harness | 46 |
+| Infrastructure failures | 0 |
+| Evaluator errors | 0 |
+
+One unresolved instance, `pytest-dev__pytest-5692`, was marked ambiguous
+because the harness collected no tests. The run used DeepSeek V4 Flash, one
+harness worker, a 3,600-second per-instance timeout, and run ID
+`deepseek-v4-flash-audit-random-50-v2-amd64`. This is a subset result, not a
+claim about the complete SWE-bench Lite test set or leaderboard.
 
 Pass a JSON or JSONL export containing `instance_id`, `repo`, `base_commit`, and
 `problem_statement`. The runner clones each selected repository, checks out the
