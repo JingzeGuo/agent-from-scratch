@@ -19,7 +19,6 @@ from .schemas import (
     SessionEventType,
     SessionSnapshot,
     ToolCall,
-    ToolDefinition,
     ToolResult,
 )
 from .security import ToolApprovalPolicy, classify_command, redact_text
@@ -70,10 +69,12 @@ class Agent:
         stream_output: bool = True,
         approval_callback: ApprovalCallback | None = None,
         system_prompt_suffix: str = "",
-        reserve_finalization_steps: int = 0,
+        reserve_finalization_steps: int | None = None,
         activity_prefix: str = "",
         activity_label: str | None = None,
     ) -> None:
+        if reserve_finalization_steps is None:
+            reserve_finalization_steps = min(2, max_steps)
         if reserve_finalization_steps < 0:
             raise ValueError("reserve_finalization_steps cannot be negative")
         if reserve_finalization_steps > max_steps:
@@ -235,7 +236,7 @@ class Agent:
             )
             response = await self.provider_adapter.stream_response(
                 system=self.system_prompt,
-                tools=self._tool_definitions_for_step(remaining_steps),
+                tools=self.registry.to_tool_definitions(),
                 messages=model_messages,
                 on_text_delta=print_text_delta if self.stream_output else None,
             )
@@ -366,17 +367,16 @@ class Agent:
             lines.extend(
                 [
                     "This is the final-answer step.",
-                    "No tools are available. Return the concise final answer now.",
+                    "Return the concise final answer now. Do not call tools.",
                 ]
             )
         elif remaining_steps <= self.reserve_finalization_steps:
             lines.extend(
                 [
-                    "This is the final diff-review step.",
-                    "Do not make new edits, explore, or run verification.",
+                    "This is the penultimate step. Begin wrapping up.",
                     (
-                        "Use get_diff if a review is still needed, then use the "
-                        "next step for the final answer."
+                        "Complete any remaining checks or tool work now, then use "
+                        "the next step for the final answer."
                     ),
                 ]
             )
@@ -387,23 +387,6 @@ class Agent:
                 f"{finalization_starts}."
             )
         return "\n".join(lines)
-
-    def _tool_definitions_for_step(
-        self,
-        remaining_steps: int,
-    ) -> list[ToolDefinition]:
-        definitions = self.registry.to_tool_definitions()
-        if not self.reserve_finalization_steps:
-            return definitions
-        if remaining_steps == 1:
-            return []
-        if remaining_steps <= self.reserve_finalization_steps:
-            return [
-                definition
-                for definition in definitions
-                if definition.name == "get_diff"
-            ]
-        return definitions
 
     def _new_run_id(self) -> str:
         return f"run-{uuid4().hex}"

@@ -736,7 +736,7 @@ def test_agent_recovers_from_failed_edit(
     assert agent_run.steps[3].tool_results[0].is_error is False
     assert target.read_text(encoding="utf-8") == "def answer() -> int:\n    return 2\n"
 
-    recovery_observation = messages.requests[2]["messages"][-1]["content"][0]
+    recovery_observation = messages.requests[2]["messages"][-2]["content"][0]
     assert recovery_observation["tool_use_id"] == "toolu_bad_edit"
     assert recovery_observation["is_error"] is True
 
@@ -774,7 +774,7 @@ def test_agent_stops_at_max_steps(
     )
 
 
-def test_agent_reserves_diff_review_and_final_answer_steps(
+def test_agent_warns_during_default_finalization_steps_without_restricting_tools(
     tmp_path: Path,
 ) -> None:
     target = tmp_path / "module.py"
@@ -811,18 +811,19 @@ def test_agent_reserves_diff_review_and_final_answer_steps(
         registry=create_workspace_registry(tmp_path),
         max_steps=3,
         stream_output=False,
-        reserve_finalization_steps=2,
     )
 
     agent_run = asyncio.run(agent.run("Fix module.py"))
 
     assert agent_run.termination == "completed"
-    assert {tool.name for tool in adapter.requests[0]["tools"]} > {"get_diff"}
-    assert [tool.name for tool in adapter.requests[1]["tools"]] == ["get_diff"]
-    assert adapter.requests[2]["tools"] == []
+    tool_names = {tool.name for tool in adapter.requests[0]["tools"]}
+    assert tool_names > {"get_diff"}
+    assert {tool.name for tool in adapter.requests[1]["tools"]} == tool_names
+    assert {tool.name for tool in adapter.requests[2]["tools"]} == tool_names
     assert "Current step: 1/3" in adapter.requests[0]["messages"][-1]["content"]
-    assert "final diff-review step" in adapter.requests[1]["messages"][-1]["content"]
+    assert "penultimate step" in adapter.requests[1]["messages"][-1]["content"]
     assert "final-answer step" in adapter.requests[2]["messages"][-1]["content"]
+    assert "Do not call tools" in adapter.requests[2]["messages"][-1]["content"]
 
 
 def test_agent_prefixes_step_limit_activity(
@@ -1414,9 +1415,11 @@ def test_sub_agent_runs_with_isolated_read_only_context(
         "search_text",
     }
     assert "Do not modify files, execute commands" in child_request["system"]
-    assert child_request["messages"] == [
-        {"role": "user", "content": "Find session resume code."}
-    ]
+    assert child_request["messages"][0] == {
+        "role": "user",
+        "content": "Find session resume code.",
+    }
+    assert "penultimate step" in child_request["messages"][-1]["content"]
     assert "Parent-only history" not in str(child_request["messages"])
     assert agent.token_tracker.input_tokens == 35
     assert agent.token_tracker.output_tokens == 14
@@ -1875,7 +1878,7 @@ def test_agent_recovers_from_invalid_tool_arguments() -> None:
     assert agent_run.termination == "completed"
 
     second_request_messages = messages.requests[1]["messages"]
-    error_observation = second_request_messages[-1]["content"][0]
+    error_observation = second_request_messages[-2]["content"][0]
     assert error_observation["tool_use_id"] == "toolu_invalid"
     assert error_observation["is_error"] is True
 
@@ -1952,6 +1955,6 @@ def test_agent_recovers_from_missing_file_with_different_action() -> None:
     assert agent_run.termination == "completed"
 
     second_request_messages = messages.requests[1]["messages"]
-    error_observation = second_request_messages[-1]["content"][0]
+    error_observation = second_request_messages[-2]["content"][0]
     assert error_observation["tool_use_id"] == "toolu_missing"
     assert error_observation["is_error"] is True
