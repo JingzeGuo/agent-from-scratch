@@ -5,10 +5,11 @@ Completions. The controller keeps the agent loop explicit: the model chooses
 from structured tools, tool observations return to the model, and the loop ends
 on completion, protocol failure, or a bounded step limit.
 
-The agent is designed for practical repository work. It confines file and
-command operations to the current workspace, validates every tool input,
-records resumable sessions and JSONL traces, compacts long conversations into
-structured checkpoints, and tracks token use and estimated cost.
+The agent is designed for practical repository work. It confines file
+operations and command working directories to the current workspace, validates
+every tool input, records resumable sessions and JSONL traces, compacts long
+conversations into structured checkpoints, and tracks token use and estimated
+cost.
 
 In an audited run on a fixed random 50-instance subset of SWE-bench Lite, the
 agent resolved **29/50 instances (58%)** with DeepSeek V4 Flash. Patches were
@@ -154,13 +155,15 @@ By default, runtime state is stored under `.agents/`:
 .agents/
   sessions/                 resumable JSON snapshots
     events/                 append-only JSONL traces
-    pending/                in-flight tool markers
+    pending/                uncheckpointed tool-action markers
   evals/                    generated evaluation output
 ```
 
 Snapshots preserve messages, steps, completed runs, file tracking, and token
-totals. Pending-action markers let resume report a tool call that started before
-the last completed checkpoint.
+totals. A pending-action marker records the most recent tool call that started
+after the last completed checkpoint. It remains until the interactive turn is
+checkpointed, even if the tool has already finished, so resume reports that the
+workspace may be ahead of the saved conversation state.
 
 Trace events cover model requests and responses, scheduling, approvals, tool
 execution, child runs, compaction, checkpoints, and run outcomes. Common
@@ -263,12 +266,13 @@ Use `--swe-bench-limit N` for a prefix of the selected instances and repeat
 `--instance-id` to select several IDs. This mode generates patches only. Use the
 official SWE-bench harness for environment construction and scoring.
 
-SWE-bench runs use a dedicated patch-generation profile. Environment or missing
-dependency failures stop best-effort verification instead of triggering changes
-to the repository, and the last two model steps are reserved for diff review and
-the final answer. Each completed instance is immediately appended to a metrics
-JSONL file with termination, step, tool-call, token, and changed-file details.
-When `--swe-bench-metrics` is omitted, the path defaults to
+SWE-bench runs use a dedicated patch-generation profile. The profile instructs
+the model to treat missing-dependency or environment failures as terminal
+verification blocks instead of triggering changes to the repository. It also
+instructs the agent to reserve the last two model steps for diff review and the
+final answer. Each completed instance is immediately appended to a metrics JSONL
+file with termination, step, tool-call, token, and changed-file details. When
+`--swe-bench-metrics` is omitted, the path defaults to
 `<predictions-stem>.metrics.jsonl`. Evaluation activity is prefixed with the
 instance ID and `main` or `sub` agent role.
 

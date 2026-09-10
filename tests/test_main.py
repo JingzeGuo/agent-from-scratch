@@ -719,7 +719,8 @@ def test_report_interrupted_action_warns_and_clears_marker(
     assert events[0].event_type == "interrupted_action_detected"
     assert events[0].tool_name == "edit_file"
     assert capsys.readouterr().out == (
-        "Interrupted action detected: edit_file (toolu_edit)\n"
+        "Uncheckpointed tool activity detected; the action may already have "
+        "completed: edit_file (toolu_edit)\n"
     )
 
 

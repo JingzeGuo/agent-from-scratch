@@ -63,8 +63,8 @@ def report_interrupted_action(
         return
 
     message = (
-        "Interrupted action detected: "
-        f"{pending_action.tool_name} ({pending_action.tool_use_id})"
+        "Uncheckpointed tool activity detected; the action may already have "
+        f"completed: {pending_action.tool_name} ({pending_action.tool_use_id})"
     )
     session_store.append_event(
         SessionEvent(
