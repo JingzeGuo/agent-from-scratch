@@ -126,7 +126,7 @@ def test_context_builder_does_not_mutate_original_messages() -> None:
     assert first_content_block(messages[0])["content"] == large_output
 
 
-def test_context_builder_extracts_structured_checkpoint() -> None:
+def test_context_builder_extracts_structured_summary() -> None:
     steps = [
         AgentStep(
             step_number=1,
@@ -185,34 +185,34 @@ def test_context_builder_extracts_structured_checkpoint() -> None:
         tool_name="run_command",
         tool_use_id="toolu_pending",
     )
-    checkpoint = builder.build_checkpoint(
+    summary = builder.build_summary(
         steps,
         objective="Finish Day 11 context compaction",
         pending_action=pending_action,
     )
 
-    assert checkpoint.goal == "Finish Day 11 context compaction"
-    assert checkpoint.files_read == ["agent/context.py"]
-    assert checkpoint.files_changed == ["agent/context.py"]
-    assert len(checkpoint.edits) == 2
-    assert checkpoint.edits[0].tool_name == "edit_file"
-    assert checkpoint.edits[0].status == "applied"
-    assert checkpoint.edits[1].status == "error"
-    assert checkpoint.decisions == [
+    assert summary.goal == "Finish Day 11 context compaction"
+    assert summary.files_read == ["agent/context.py"]
+    assert summary.files_changed == ["agent/context.py"]
+    assert len(summary.edits) == 2
+    assert summary.edits[0].tool_name == "edit_file"
+    assert summary.edits[0].status == "applied"
+    assert summary.edits[1].status == "error"
+    assert summary.decisions == [
         "I will inspect, edit, and verify the context builder."
     ]
-    assert len(checkpoint.commands_run) == 1
-    assert checkpoint.commands_run[0].command == ".venv/bin/python -m pytest"
-    assert checkpoint.commands_run[0].status == "passed"
-    assert checkpoint.commands_run[0].exit_code == 0
-    assert len(checkpoint.tool_errors) == 1
-    assert checkpoint.tool_errors[0].step_number == 2
-    assert checkpoint.tool_errors[0].tool_name == "edit_file"
-    assert "Exact text was not found" in checkpoint.tool_errors[0].message
-    assert checkpoint.pending_action == pending_action
+    assert len(summary.commands_run) == 1
+    assert summary.commands_run[0].command == ".venv/bin/python -m pytest"
+    assert summary.commands_run[0].status == "passed"
+    assert summary.commands_run[0].exit_code == 0
+    assert len(summary.tool_errors) == 1
+    assert summary.tool_errors[0].step_number == 2
+    assert summary.tool_errors[0].tool_name == "edit_file"
+    assert "Exact text was not found" in summary.tool_errors[0].message
+    assert summary.pending_action == pending_action
 
 
-def test_context_builder_prepends_structured_checkpoint_message() -> None:
+def test_context_builder_prepends_structured_summary_message() -> None:
     messages: list[MessageParam] = [
         {
             "role": "user",
@@ -245,15 +245,15 @@ def test_context_builder_prepends_structured_checkpoint_message() -> None:
     context = builder.build(
         messages,
         steps,
-        objective="Add context checkpoint",
+        objective="Add context summary",
         pending_action=pending_action,
     )
 
     assert context[0]["role"] == "user"
     assert isinstance(context[0]["content"], str)
-    assert "[Structured context checkpoint]" in context[0]["content"]
+    assert "[Structured context summary]" in context[0]["content"]
     assert "Goal:" in context[0]["content"]
-    assert "- Add context checkpoint" in context[0]["content"]
+    assert "- Add context summary" in context[0]["content"]
     assert "Files changed:" in context[0]["content"]
     assert "- tests/test_context.py" in context[0]["content"]
     assert "Edits:" in context[0]["content"]
@@ -325,7 +325,7 @@ def test_context_builder_hard_collapses_over_budget() -> None:
     context = builder.build(messages, steps)
 
     assert len(context) == 3
-    assert "[Structured context checkpoint]" in context[0]["content"]
+    assert "[Structured context summary]" in context[0]["content"]
     assert context[1:] == messages[-2:]
 
 
@@ -507,14 +507,14 @@ def test_context_builder_records_reduction_for_synthetic_long_trajectory() -> No
         pending_action=pending_action,
     )
 
-    checkpoint_content = result.messages[0]["content"]
-    assert isinstance(checkpoint_content, str)
+    summary_content = result.messages[0]["content"]
+    assert isinstance(summary_content, str)
     assert result.original_message_count == len(messages)
     assert result.final_message_count < result.original_message_count
     assert result.original_context_chars > result.final_context_chars
     assert result.snipped_tool_results > 0
     assert result.hard_collapsed is True
-    assert result.checkpoint_included is True
-    assert "- agent/context.py" in checkpoint_content
-    assert "Pending action:" in checkpoint_content
-    assert "- step 10 run_command (toolu_pending)" in checkpoint_content
+    assert result.summary_included is True
+    assert "- agent/context.py" in summary_content
+    assert "Pending action:" in summary_content
+    assert "- step 10 run_command (toolu_pending)" in summary_content

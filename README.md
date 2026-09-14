@@ -8,7 +8,7 @@ on completion, protocol failure, or a bounded step limit.
 The agent is designed for practical repository work. It confines file
 operations and command working directories to the current workspace, validates
 every tool input, records resumable sessions and JSONL traces, compacts long
-conversations into structured checkpoints, and tracks token use and estimated
+conversations into structured context summaries, and tracks token use and estimated
 cost.
 
 In an audited run on a fixed random 50-instance subset of SWE-bench Lite, the
@@ -120,7 +120,7 @@ run commands, access the network, or delegate recursively.
 For each user task, `Agent.run`:
 
 1. Adds the user message to conversation state.
-2. Builds bounded model context, adding a structured checkpoint when prior
+2. Builds bounded model context, adding a structured context summary when prior
    steps exist.
 3. Streams a normalized provider response.
 4. Validates and schedules requested tools.
@@ -171,7 +171,7 @@ secret-like values and configured redaction patterns are removed before events
 are written.
 
 Long conversations use deterministic context compaction. Older large tool
-results are shortened, while a structured checkpoint retains the goal, files,
+results are shortened, while a structured context summary retains the goal, files,
 edits, decisions, commands, errors, and pending action.
 
 ## Architecture
@@ -185,7 +185,7 @@ edits, decisions, commands, errors, and pending action.
 | `agent/tool.py` | Tool schemas, validation, execution, and retry boundary |
 | `agent/tool_registry.py` | Dispatch, workspace action tracking, and diffs |
 | `agent/tools.py` | Built-in tool implementations |
-| `agent/context.py` | Bounded context and structured checkpoints |
+| `agent/context.py` | Bounded context and structured context summaries |
 | `agent/session.py` | Snapshots, pending actions, and JSONL events |
 | `agent/schemas.py` | Provider-neutral controller and session models |
 | `agent/security.py` | Command policy and trace redaction |

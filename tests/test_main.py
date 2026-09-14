@@ -934,7 +934,7 @@ def test_compact_command_shows_context_metrics(
         "  original chars: 11\n"
         "  final chars: 11\n"
         "  snipped tool results: 0\n"
-        "  checkpoint included: False\n"
+        "  summary included: False\n"
         "  hard collapsed: False\n"
     )
 
@@ -960,7 +960,7 @@ def test_compact_command_records_compaction_event(tmp_path: Path) -> None:
     assert events[0].original_context_chars == 11
     assert events[0].final_context_chars == 11
     assert events[0].snipped_tool_results == 0
-    assert events[0].checkpoint_included is False
+    assert events[0].summary_included is False
     assert events[0].hard_collapsed is False
 
 

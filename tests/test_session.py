@@ -157,6 +157,21 @@ def test_session_store_appends_and_reads_events(tmp_path: Path) -> None:
     assert store.list_snapshots() == []
 
 
+def test_session_event_reads_legacy_context_summary_field() -> None:
+    event = SessionEvent.model_validate(
+        {
+            "event_type": "compaction_reported",
+            "session_id": "session-one",
+            "created_at": "2026-06-25T00:00:00+00:00",
+            "checkpoint_included": True,
+        }
+    )
+
+    assert event.summary_included is True
+    assert event.model_dump()["summary_included"] is True
+    assert "checkpoint_included" not in event.model_dump()
+
+
 def test_session_store_resets_events_and_pending_action(tmp_path: Path) -> None:
     store = SessionStore(tmp_path / "sessions")
     store.append_event(

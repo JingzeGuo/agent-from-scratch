@@ -1,6 +1,6 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 RunOutcome = Literal[
     "completed",
@@ -262,7 +262,7 @@ class PendingAction(BaseModel):
     tool_use_id: str
 
 
-class ContextCheckpoint(BaseModel):
+class StructuredContextSummary(BaseModel):
     """Structured facts retained when older raw context is compacted."""
 
     goal: str | None = None
@@ -285,7 +285,7 @@ class ContextBuildResult(BaseModel):
     final_context_chars: int = Field(ge=0)
     snipped_tool_results: int = Field(ge=0)
     hard_collapsed: bool
-    checkpoint_included: bool
+    summary_included: bool
 
 
 SessionEventType = Literal[
@@ -337,7 +337,10 @@ class SessionEvent(BaseModel):
     final_context_chars: int | None = Field(default=None, ge=0)
     snipped_tool_results: int | None = Field(default=None, ge=0)
     hard_collapsed: bool | None = None
-    checkpoint_included: bool | None = None
+    summary_included: bool | None = Field(
+        default=None,
+        validation_alias=AliasChoices("summary_included", "checkpoint_included"),
+    )
     tool_name: str | None = None
     tool_use_id: str | None = None
     tool_input: dict[str, Any] | None = None

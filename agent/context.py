@@ -5,15 +5,15 @@ from .schemas import (
     AgentStep,
     CommandSummary,
     ContextBuildResult,
-    ContextCheckpoint,
     EditSummary,
     PendingAction,
+    StructuredContextSummary,
     ToolErrorSummary,
     ToolResult,
 )
 
 OMITTED_TOOL_RESULT_TEMPLATE = "[Older tool result omitted: {char_count} chars]"
-CONTEXT_CHECKPOINT_HEADER = "[Structured context checkpoint]"
+STRUCTURED_CONTEXT_SUMMARY_HEADER = "[Structured context summary]"
 Message = dict[str, Any]
 
 
@@ -69,8 +69,8 @@ class ContextBuilder:
         prefix_messages: list[Message] = []
         if steps:
             prefix_messages.append(
-                self._checkpoint_message(
-                    self.build_checkpoint(
+                self._summary_message(
+                    self.build_summary(
                         steps,
                         objective=objective,
                         pending_action=pending_action,
@@ -95,15 +95,15 @@ class ContextBuilder:
             final_context_chars=self._context_chars(context),
             snipped_tool_results=snipped_tool_results,
             hard_collapsed=hard_collapsed,
-            checkpoint_included=bool(steps),
+            summary_included=bool(steps),
         )
 
-    def build_checkpoint(
+    def build_summary(
         self,
         steps: list[AgentStep],
         objective: str | None = None,
         pending_action: PendingAction | None = None,
-    ) -> ContextCheckpoint:
+    ) -> StructuredContextSummary:
         files_read: set[str] = set()
         files_changed: set[str] = set()
         edits: list[EditSummary] = []
@@ -152,7 +152,7 @@ class ContextBuilder:
                         )
                     )
 
-        return ContextCheckpoint(
+        return StructuredContextSummary(
             goal=objective,
             files_read=sorted(files_read),
             files_changed=sorted(files_changed),
@@ -245,22 +245,22 @@ class ContextBuilder:
     def _context_chars(self, messages: list[Message]) -> int:
         return sum(len(str(message.get("content", ""))) for message in messages)
 
-    def _checkpoint_message(self, checkpoint: ContextCheckpoint) -> Message:
+    def _summary_message(self, summary: StructuredContextSummary) -> Message:
         return {
             "role": "user",
-            "content": self._format_checkpoint(checkpoint),
+            "content": self._format_summary(summary),
         }
 
-    def _format_checkpoint(self, checkpoint: ContextCheckpoint) -> str:
-        lines = [CONTEXT_CHECKPOINT_HEADER]
+    def _format_summary(self, summary: StructuredContextSummary) -> str:
+        lines = [STRUCTURED_CONTEXT_SUMMARY_HEADER]
         lines.append("Goal:")
-        lines.append(f"- {checkpoint.goal}" if checkpoint.goal else "- none")
-        lines.extend(self._format_list("Files read", checkpoint.files_read))
-        lines.extend(self._format_list("Files changed", checkpoint.files_changed))
+        lines.append(f"- {summary.goal}" if summary.goal else "- none")
+        lines.extend(self._format_list("Files read", summary.files_read))
+        lines.extend(self._format_list("Files changed", summary.files_changed))
 
         lines.append("Edits:")
-        if checkpoint.edits:
-            for edit in checkpoint.edits:
+        if summary.edits:
+            for edit in summary.edits:
                 lines.append(
                     f"- step {edit.step_number} {edit.tool_name} "
                     f"{edit.path}: {edit.status}"
@@ -269,14 +269,14 @@ class ContextBuilder:
             lines.append("- none")
 
         lines.append("Decisions:")
-        if checkpoint.decisions:
-            lines.extend(f"- {decision}" for decision in checkpoint.decisions)
+        if summary.decisions:
+            lines.extend(f"- {decision}" for decision in summary.decisions)
         else:
             lines.append("- none")
 
         lines.append("Commands run:")
-        if checkpoint.commands_run:
-            for command in checkpoint.commands_run:
+        if summary.commands_run:
+            for command in summary.commands_run:
                 exit_code = (
                     "" if command.exit_code is None else f" exit_code={command.exit_code}"
                 )
@@ -285,8 +285,8 @@ class ContextBuilder:
             lines.append("- none")
 
         lines.append("Tool errors:")
-        if checkpoint.tool_errors:
-            for error in checkpoint.tool_errors:
+        if summary.tool_errors:
+            for error in summary.tool_errors:
                 lines.append(
                     f"- step {error.step_number} {error.tool_name}: {error.message}"
                 )
@@ -294,10 +294,10 @@ class ContextBuilder:
             lines.append("- none")
 
         lines.append("Pending action:")
-        if checkpoint.pending_action is None:
+        if summary.pending_action is None:
             lines.append("- none")
         else:
-            pending = checkpoint.pending_action
+            pending = summary.pending_action
             lines.append(
                 f"- step {pending.step_number} {pending.tool_name} "
                 f"({pending.tool_use_id})"

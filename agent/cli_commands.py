@@ -230,7 +230,7 @@ def handle_command(
                     original_context_chars=result.original_context_chars,
                     final_context_chars=result.final_context_chars,
                     snipped_tool_results=result.snipped_tool_results,
-                    checkpoint_included=result.checkpoint_included,
+                    summary_included=result.summary_included,
                     hard_collapsed=result.hard_collapsed,
                 )
             )
@@ -240,7 +240,7 @@ def handle_command(
         print(f"  original chars: {result.original_context_chars}")
         print(f"  final chars: {result.final_context_chars}")
         print(f"  snipped tool results: {result.snipped_tool_results}")
-        print(f"  checkpoint included: {result.checkpoint_included}")
+        print(f"  summary included: {result.summary_included}")
         print(f"  hard collapsed: {result.hard_collapsed}")
         return False
     if command == "/trace" or command.startswith("/trace "):
