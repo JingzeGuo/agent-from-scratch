@@ -35,6 +35,8 @@ class Consolidator(Protocol):
         previous_state: ConsolidatedState | None,
         history_prefix: list[dict[str, Any]],
         current_objective: str | None,
+        *,
+        validate_state: Callable[[ConsolidatedState], None] | None = None,
     ) -> ConsolidatedState: ...
 
 
@@ -52,6 +54,8 @@ class LLMConsolidator:
         previous_state: ConsolidatedState | None,
         history_prefix: list[dict[str, Any]],
         current_objective: str | None,
+        *,
+        validate_state: Callable[[ConsolidatedState], None] | None = None,
     ) -> ConsolidatedState:
         payload = {
             "previous_state": previous_state.model_dump() if previous_state else None,
@@ -62,7 +66,7 @@ class LLMConsolidator:
         messages = [
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}
         ]
-        # One repair attempt for invalid output; transport errors bubble to the
+        # One shared repair attempt for invalid/oversized output; errors bubble to the
         # context builder's emergency policy. No tool execution is available.
         for attempt in range(2):
             response = await self.provider.stream_response(
@@ -80,6 +84,8 @@ class LLMConsolidator:
                     )
                 state = ConsolidatedState.model_validate_json(text)
                 state.current_objective = current_objective
+                if validate_state:
+                    validate_state(state)
                 return state
             except (ValidationError, ValueError) as error:
                 if attempt:
@@ -89,7 +95,8 @@ class LLMConsolidator:
                 messages.append(
                     {
                         "role": "user",
-                        "content": "Your response was invalid. Return a complete JSON object "
+                        "content": f"Your response was invalid: {str(error)[:500]}\n"
+                        "Return a complete JSON object "
                         "with all fields and types from the schema; no prose or tool calls.",
                     }
                 )

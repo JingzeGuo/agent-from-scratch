@@ -32,6 +32,8 @@ class ContextConfig:
     usable_context_tokens: int = 32_000
     soft_threshold: float = 0.65
     emergency_threshold: float = 0.90
+    max_consolidated_state_tokens: int = 2_048
+    state_reserve_tokens: int = 1_024
     max_tool_result_tokens: int = 16_000
     retained_tool_result_tokens: int = 2_000
     recent_message_count: int = 8
@@ -43,6 +45,10 @@ class ContextConfig:
             raise ValueError("Require 0 < soft < emergency < 1")
         if self.usable_context_tokens <= 0:
             raise ValueError("usable_context_tokens must be positive")
+        if self.max_consolidated_state_tokens <= 0:
+            raise ValueError("max_consolidated_state_tokens must be positive")
+        if not 0 <= self.state_reserve_tokens <= self.max_consolidated_state_tokens:
+            raise ValueError("State reserve must be between zero and the state limit")
         if not 0 < self.retained_tool_result_tokens < self.max_tool_result_tokens:
             raise ValueError(
                 "Tool result retention must be positive and below its limit"
@@ -121,13 +127,15 @@ class ContextBuilder:
             candidates = self._fold_boundaries(raw, starts)
             if not candidates:
                 break
-            # Skip only prefixes whose raw suffix alone cannot fit. Stop at the
-            # first viable boundary, then remeasure the actual LLM-produced state.
+            # Reserve room for the expected state, then remeasure its actual size.
             end = next(
                 (
                     i
                     for i in candidates
-                    if self.measure_tokens(raw[i:]) + request_overhead_tokens < soft
+                    if self.measure_tokens(raw[i:])
+                    + request_overhead_tokens
+                    + self.config.state_reserve_tokens
+                    < soft
                 ),
                 candidates[-1],
             )
@@ -140,9 +148,11 @@ class ContextBuilder:
                     else None,
                     deepcopy(raw[self.state.folded_message_count : end]),
                     objective,
+                    validate_state=self._validate_state_size,
                 )
                 state = ConsolidatedState.model_validate(state.model_dump())
                 state.current_objective = objective
+                self._validate_state_size(state)
                 if (
                     self.measure_tokens([self._state_message(state)])
                     + request_overhead_tokens
@@ -172,6 +182,15 @@ class ContextBuilder:
         return self._result(
             messages, context, snipped, request_overhead_tokens, hard_collapsed, error
         )
+
+    def _validate_state_size(self, state: ConsolidatedState) -> None:
+        tokens = self.measure_tokens([self._state_message(state)])
+        if tokens > self.config.max_consolidated_state_tokens:
+            raise ValueError(
+                f"Consolidated state uses {tokens} tokens including message framing; "
+                f"limit is {self.config.max_consolidated_state_tokens}. "
+                "Compress the state further while preserving essential facts."
+            )
 
     def inspect(
         self,

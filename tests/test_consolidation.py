@@ -6,8 +6,9 @@ from unittest.mock import AsyncMock
 import pytest
 
 from agent.consolidation import LLMConsolidator
-from agent.schemas import ProviderResponse, TokenUsage
-from tests.test_context import make_state
+from agent.context import ContextBuilder
+from agent.schemas import ProviderResponse, TokenUsage, WorkingContextState
+from tests.test_context import build, make_state, task
 
 
 def response(text: str) -> ProviderResponse:
@@ -65,3 +66,41 @@ def test_cancelled_consolidation_propagates() -> None:
     provider.stream_response.side_effect = asyncio.CancelledError()
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(LLMConsolidator(provider).consolidate(None, [], "Active"))
+
+
+@pytest.mark.parametrize("repair_succeeds", [True, False])
+def test_oversized_state_retries_once_before_commit_or_fallback(
+    repair_succeeds: bool,
+) -> None:
+    provider = AsyncMock()
+    oversized = make_state("Wrong old objective", "detail " * 3000)
+    corrected = make_state("Wrong old objective") if repair_succeeds else oversized
+    provider.stream_response.side_effect = [
+        response(oversized.model_dump_json()),
+        response(corrected.model_dump_json()),
+    ]
+    usage: list[TokenUsage] = []
+    builder = ContextBuilder(LLMConsolidator(provider, on_usage=usage.append))
+    previous = WorkingContextState(
+        consolidated_state=make_state("Old"), folded_message_count=2
+    )
+    builder.state = previous.model_copy(deep=True)
+    messages = task("Old", 200) + task("Aged", 22000) + task("Active", 500)
+    original = deepcopy(messages)
+    result = build(builder, messages, objective="Active")
+    assert provider.stream_response.call_count == 2
+    assert len(usage) == 2
+    assert (
+        "Compress the state further"
+        in provider.stream_response.call_args.kwargs["messages"][-1]["content"]
+    )
+    assert messages == original
+    if repair_succeeds:
+        assert not result.hard_collapsed
+        assert builder.state.folded_message_count == 4
+        assert builder.state.consolidated_state is not None
+        assert builder.state.consolidated_state.current_objective == "Active"
+        assert result.messages[1:] == messages[4:]
+    else:
+        assert result.hard_collapsed
+        assert builder.state == previous

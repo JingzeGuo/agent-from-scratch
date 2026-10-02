@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Callable
 from copy import deepcopy
 from typing import Any
 
@@ -42,11 +43,16 @@ class FakeConsolidator:
         previous_state: ConsolidatedState | None,
         history_prefix: list[Message],
         current_objective: str | None,
+        *,
+        validate_state: Callable[[ConsolidatedState], None] | None = None,
     ) -> ConsolidatedState:
         self.calls.append((previous_state, deepcopy(history_prefix), current_objective))
         if self.error:
             raise self.error
-        return make_state(current_objective, f"Fold {len(self.calls)}")
+        state = make_state(current_objective, f"Fold {len(self.calls)}")
+        if validate_state:
+            validate_state(state)
+        return state
 
 
 def task(name: str, size: int = 200) -> list[Message]:
@@ -139,7 +145,9 @@ def test_huge_recent_tool_result_retains_metadata_head_and_tail_independently() 
 
 def test_soft_pressure_folds_only_oldest_completed_task_and_preserves_active() -> None:
     fake = FakeConsolidator()
-    builder = ContextBuilder(fake, ContextConfig(usable_context_tokens=1000))
+    builder = ContextBuilder(
+        fake, ContextConfig(usable_context_tokens=1000, state_reserve_tokens=100)
+    )
     messages = task("Task1", 300) + task("Task2", 200) + task("Active", 150)
     result = build(builder, messages, task_starts=[0, 2, 4], objective="Active")
     assert len(fake.calls) == 1
@@ -152,7 +160,9 @@ def test_soft_pressure_folds_only_oldest_completed_task_and_preserves_active() -
 
 def test_additional_completed_tasks_fold_only_when_needed() -> None:
     fake = FakeConsolidator()
-    builder = ContextBuilder(fake, ContextConfig(usable_context_tokens=1000))
+    builder = ContextBuilder(
+        fake, ContextConfig(usable_context_tokens=1000, state_reserve_tokens=100)
+    )
     messages = (
         task("Task1", 300)
         + task("Task2", 300)
@@ -168,7 +178,9 @@ def test_additional_completed_tasks_fold_only_when_needed() -> None:
 
 def test_second_pressure_event_recursively_replaces_one_state() -> None:
     fake = FakeConsolidator()
-    builder = ContextBuilder(fake, ContextConfig(usable_context_tokens=1000))
+    builder = ContextBuilder(
+        fake, ContextConfig(usable_context_tokens=1000, state_reserve_tokens=100)
+    )
     messages = task("Task1", 300) + task("Task2", 200) + task("Task3", 150)
     first = build(builder, messages, task_starts=[0, 2, 4])
     first_state = builder.state.consolidated_state
@@ -327,6 +339,55 @@ def test_inspection_does_not_call_llm_even_under_pressure() -> None:
     assert fake.calls == []
 
 
+@pytest.mark.parametrize("reserve, expected_calls", [(0, 2), (1024, 1)])
+def test_state_reserve_avoids_repeated_folding_calls(
+    reserve: int, expected_calls: int
+) -> None:
+    from unittest.mock import AsyncMock
+
+    fake = AsyncMock()
+    fake.consolidate.return_value = make_state("Active", "detail " * 1000)
+    builder = ContextBuilder(fake, ContextConfig(state_reserve_tokens=reserve))
+    messages = (
+        task("Task1", 4000)
+        + task("Task2", 7000)
+        + task("Task3", 6000)
+        + task("Active", 7000)
+    )
+    result = build(builder, messages)
+    assert fake.consolidate.call_count == expected_calls
+    assert result.folded_message_count == 4
+    assert result.messages[1:] == messages[4:]
+    assert result.final_context_tokens < 32000 * 0.65
+    assert not result.hard_collapsed
+
+
+def test_state_limit_counts_objective_and_framing_and_accepts_exact_limit() -> None:
+    from unittest.mock import AsyncMock
+
+    objective = "Active " * 100
+    expected = make_state(objective)
+    probe = ContextBuilder()
+    tokens = probe.measure_tokens([probe._state_message(expected)])
+    assert tokens > count_tokens(expected.model_dump_json())
+    for limit, rejected in [(tokens, False), (tokens - 1, True)]:
+        fake = AsyncMock()
+        fake.consolidate.return_value = make_state("Wrong old objective")
+        builder = ContextBuilder(
+            fake,
+            ContextConfig(
+                usable_context_tokens=1000,
+                max_consolidated_state_tokens=limit,
+                state_reserve_tokens=100,
+            ),
+        )
+        result = build(
+            builder, task("Old", 700) + task(objective, 10), objective=objective
+        )
+        assert result.hard_collapsed is rejected
+        assert (builder.state.consolidated_state is None) is rejected
+
+
 def test_reset_clears_folded_state() -> None:
     builder = ContextBuilder(
         FakeConsolidator(), ContextConfig(usable_context_tokens=1000)
@@ -346,6 +407,9 @@ def test_reset_clears_folded_state() -> None:
         {"usable_context_tokens": 0},
         {"recent_message_count": 0},
         {"retained_tool_result_tokens": 20000},
+        {"max_consolidated_state_tokens": 0},
+        {"state_reserve_tokens": -1},
+        {"state_reserve_tokens": 2049},
     ],
 )
 def test_invalid_configuration_is_rejected(kwargs: dict[str, Any]) -> None:

@@ -178,7 +178,8 @@ merge the previous state with newly aged history into one replacement state.
 
 `agent/consolidation.py` uses the existing model adapter to construct validated
 JSON with findings, decisions, changes, unresolved work, verification, relevant
-context, and the current task's objective. Invalid output gets one retry. Failed
+context, and the current task's objective. Invalid or oversized output shares one
+repair attempt before fallback; state size includes the objective and message framing. Failed
 or insufficient consolidation falls back to hard collapse with an explicit loss
 warning. If even the latest indivisible exchange cannot fit, the request fails
 with `ContextBudgetExceeded` instead of sending an oversized/broken tool sequence.
@@ -190,6 +191,8 @@ Configure `Agent(..., context_config=ContextConfig(...))` in Python. Defaults:
 | --- | --- |
 | Usable input budget (reserve model output separately) | 32,000 tokens |
 | Soft / emergency threshold | 65% / 90% |
+| Consolidated state hard limit | 2,048 tokens |
+| State budget reserved when choosing a fold boundary | 1,024 tokens |
 | Active task's minimum raw suffix | 8 messages, expanded to a tool boundary |
 | Pathological single tool-result limit | 16,000 tokens |
 | Retained head + tail of a pathological result | 2,000 tokens plus truncation marker |

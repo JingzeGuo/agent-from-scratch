@@ -319,7 +319,7 @@ def test_consolidated_snapshot_resumes_without_refolding_old_history(tmp_path: P
 
     agent, _ = create_agent([])
     fake = FakeConsolidator()
-    config = ContextConfig(usable_context_tokens=1000)
+    config = ContextConfig(usable_context_tokens=1000, state_reserve_tokens=100)
     agent.context_builder = ContextBuilder(fake, config)
     agent.messages = task("Task1", 300) + task("Task2", 200) + task("Task3", 150)
     agent.task_starts = [0, 2, 4]
