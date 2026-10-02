@@ -19,6 +19,7 @@ from agent.cli_commands import (
     prompt_tool_approval,
     report_interrupted_action,
 )
+from agent.context import ContextBudgetExceeded
 from agent.provider import (
     DeepSeekProvider,
     ProviderRequestError,
@@ -258,6 +259,9 @@ async def run_cli(
             await agent.run(user_task)
         except ProviderRequestError as error:
             print_provider_request_error(error)
+            continue
+        except ContextBudgetExceeded as error:
+            print(f"Context budget exceeded: {error}. Save the session or use /reset.")
             continue
         checkpoint_session(agent, session_store, session_state)
 

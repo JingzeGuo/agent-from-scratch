@@ -1,45 +1,71 @@
-from typing import Any, cast
+import asyncio
+from copy import deepcopy
+from typing import Any
 
-from agent.context import OMITTED_TOOL_RESULT_TEMPLATE, ContextBuilder, Message
-from agent.schemas import AgentStep, PendingAction, ToolCall, ToolResult
+import pytest
 
-MessageParam = Message
+from agent.context import (
+    CONSOLIDATED_STATE_HEADER,
+    ContextBudgetExceeded,
+    ContextBuilder,
+    ContextConfig,
+    Message,
+    count_tokens,
+)
+from agent.schemas import ConsolidatedState, ContextBuildResult
 
 
-def first_content_block(message: MessageParam) -> dict[str, Any]:
-    content = message["content"]
-    assert isinstance(content, list)
-    block = content[0]
-    assert isinstance(block, dict)
-    return cast(dict[str, Any], block)
+def make_state(
+    objective: str | None = None, status: str = "Work in progress"
+) -> ConsolidatedState:
+    return ConsolidatedState(
+        current_objective=objective,
+        current_status=status,
+        findings=["Root cause confirmed"],
+        decisions=[],
+        files_changed=["app.py"],
+        unresolved=["Verify fix"],
+        verification=["Earlier tests passed"],
+        important_context=[],
+    )
 
 
-def test_context_builder_returns_message_copy() -> None:
-    messages: list[MessageParam] = [
-        {
-            "role": "user",
-            "content": "Fix the bug",
-        }
+class FakeConsolidator:
+    def __init__(self, error: Exception | None = None) -> None:
+        self.calls: list[
+            tuple[ConsolidatedState | None, list[Message], str | None]
+        ] = []
+        self.error = error
+
+    async def consolidate(
+        self,
+        previous_state: ConsolidatedState | None,
+        history_prefix: list[Message],
+        current_objective: str | None,
+    ) -> ConsolidatedState:
+        self.calls.append((previous_state, deepcopy(history_prefix), current_objective))
+        if self.error:
+            raise self.error
+        return make_state(current_objective, f"Fold {len(self.calls)}")
+
+
+def task(name: str, size: int = 200) -> list[Message]:
+    return [
+        {"role": "user", "content": name},
+        {"role": "assistant", "content": "observation " * size},
     ]
-    builder = ContextBuilder()
-
-    context = builder.build(messages)
-
-    assert context == messages
-    assert context is not messages
 
 
-def test_context_builder_snips_old_large_tool_result() -> None:
-    large_output = "x" * 20
-    messages: list[MessageParam] = [
+def exchange(name: str, size: int = 100) -> list[Message]:
+    return [
         {
             "role": "assistant",
             "content": [
                 {
                     "type": "tool_use",
-                    "id": "toolu_read",
-                    "name": "read_file",
-                    "input": {"path": "module.py"},
+                    "id": name,
+                    "name": "run_command",
+                    "input": {"command": "pytest -q"},
                 }
             ],
         },
@@ -48,473 +74,280 @@ def test_context_builder_snips_old_large_tool_result() -> None:
             "content": [
                 {
                     "type": "tool_result",
-                    "tool_use_id": "toolu_read",
-                    "content": large_output,
-                    "is_error": False,
-                }
-            ],
-        },
-        {
-            "role": "user",
-            "content": "Continue",
-        },
-    ]
-    builder = ContextBuilder(max_tool_result_chars=10, recent_message_count=1)
-
-    context = builder.build(messages)
-    tool_result = first_content_block(context[1])
-
-    assert tool_result["type"] == "tool_result"
-    assert tool_result["tool_use_id"] == "toolu_read"
-    assert tool_result["is_error"] is False
-    assert tool_result["content"] == OMITTED_TOOL_RESULT_TEMPLATE.format(
-        char_count=20
-    )
-
-
-def test_context_builder_keeps_recent_large_tool_result() -> None:
-    large_output = "x" * 20
-    messages: list[MessageParam] = [
-        {
-            "role": "user",
-            "content": "Earlier",
-        },
-        {
-            "role": "user",
-            "content": [
-                {
-                    "type": "tool_result",
-                    "tool_use_id": "toolu_recent",
-                    "content": large_output,
-                    "is_error": False,
+                    "tool_use_id": name,
+                    "content": "exit_code: 1\n"
+                    + "output " * size
+                    + "\nAssertionError: expected 2",
+                    "is_error": True,
                 }
             ],
         },
     ]
-    builder = ContextBuilder(max_tool_result_chars=10, recent_message_count=1)
-
-    context = builder.build(messages)
-    tool_result = first_content_block(context[1])
-
-    assert tool_result["content"] == large_output
 
 
-def test_context_builder_does_not_mutate_original_messages() -> None:
-    large_output = "x" * 20
-    messages: list[MessageParam] = [
-        {
-            "role": "user",
-            "content": [
-                {
-                    "type": "tool_result",
-                    "tool_use_id": "toolu_read",
-                    "content": large_output,
-                    "is_error": False,
-                }
-            ],
-        },
-        {
-            "role": "user",
-            "content": "Continue",
-        },
-    ]
-    builder = ContextBuilder(max_tool_result_chars=10, recent_message_count=1)
-
-    context = builder.build(messages)
-
-    assert first_content_block(context[0])["content"] != large_output
-    assert first_content_block(messages[0])["content"] == large_output
+def build(
+    builder: ContextBuilder, messages: list[Message], **kwargs: Any
+) -> ContextBuildResult:
+    return asyncio.run(builder.build_with_metadata(messages, **kwargs))
 
 
-def test_context_builder_extracts_structured_summary() -> None:
-    steps = [
-        AgentStep(
-            step_number=1,
-            stop_reason="tool_use",
-            text=["I will inspect, edit, and verify the context builder."],
-            tool_calls=[
-                ToolCall(
-                    name="read_file",
-                    input={"path": "agent/context.py"},
-                    tool_use_id="toolu_read",
-                ),
-                ToolCall(
-                    name="edit_file",
-                    input={"path": "agent/context.py"},
-                    tool_use_id="toolu_edit",
-                ),
-                ToolCall(
-                    name="run_command",
-                    input={"command": ".venv/bin/python -m pytest"},
-                    tool_use_id="toolu_test",
-                ),
-            ],
-            tool_results=[
-                ToolResult(tool_use_id="toolu_read", content="file contents"),
-                ToolResult(tool_use_id="toolu_edit", content="diff"),
-                ToolResult(
-                    tool_use_id="toolu_test",
-                    content="exit_code: 0\ntimed_out: false\nstdout: passed",
-                ),
-            ],
-        ),
-        AgentStep(
-            step_number=2,
-            stop_reason="tool_use",
-            tool_calls=[
-                ToolCall(
-                    name="edit_file",
-                    input={"path": "agent/context.py"},
-                    tool_use_id="toolu_bad_edit",
-                )
-            ],
-            tool_results=[
-                ToolResult(
-                    tool_use_id="toolu_bad_edit",
-                    content="Tool 'edit_file' raised ValueError: Exact text was not found",
-                    is_error=True,
-                )
-            ],
-        ),
-    ]
-    builder = ContextBuilder()
+def test_short_session_is_raw_and_copied_without_consolidation() -> None:
+    fake = FakeConsolidator()
+    builder = ContextBuilder(fake)
+    messages = task("Fix bug", 30) + exchange("test", 20)
+    original = deepcopy(messages)
+    result = build(builder, messages, objective="Fix bug", task_starts=[0])
+    assert result.messages == original
+    assert result.messages is not messages
+    result.messages[-1]["content"][0]["content"] = "changed copy"
+    assert messages == original
+    assert fake.calls == []
+    assert not result.summary_included
+    assert not result.hard_collapsed
 
-    pending_action = PendingAction(
-        session_id="session-one",
-        step_number=3,
-        tool_name="run_command",
-        tool_use_id="toolu_pending",
+
+def test_multiple_completed_tasks_stay_raw_below_soft_threshold() -> None:
+    fake = FakeConsolidator()
+    builder = ContextBuilder(fake)
+    messages: list[Message] = []
+    for i in range(4):
+        messages.extend(task(f"Task {i}", 40))
+        result = build(builder, messages, task_starts=list(range(0, len(messages), 2)))
+        assert result.messages == messages
+    assert fake.calls == []
+
+
+def test_huge_recent_tool_result_retains_metadata_head_and_tail_independently() -> None:
+    fake = FakeConsolidator()
+    config = ContextConfig(max_tool_result_tokens=500, retained_tool_result_tokens=100)
+    builder = ContextBuilder(fake, config)
+    messages = task("Run tests", 1) + exchange("normal", 50) + exchange("huge", 2000)
+    original = deepcopy(messages)
+    result = build(builder, messages)
+    assert result.messages[:-1] == messages[:-1]
+    block = result.messages[-1]["content"][0]
+    assert block["tool_use_id"] == "huge"
+    assert block["is_error"] is True
+    assert "exit_code: 1" in block["content"]
+    assert "AssertionError: expected 2" in block["content"]
+    assert "middle omitted" in block["content"]
+    assert "pytest -q" in str(result.messages[-2])
+    assert result.snipped_tool_results == 1
+    assert fake.calls == []
+    assert messages == original
+
+
+def test_soft_pressure_folds_only_oldest_completed_task_and_preserves_active() -> None:
+    fake = FakeConsolidator()
+    builder = ContextBuilder(fake, ContextConfig(usable_context_tokens=1000))
+    messages = task("Task1", 300) + task("Task2", 200) + task("Active", 150)
+    result = build(builder, messages, task_starts=[0, 2, 4], objective="Active")
+    assert len(fake.calls) == 1
+    assert fake.calls[0] == (None, messages[:2], "Active")
+    assert result.messages[1:] == messages[2:]
+    assert result.final_context_tokens < 650
+    assert result.folded_message_count == 2
+    assert not result.hard_collapsed
+
+
+def test_additional_completed_tasks_fold_only_when_needed() -> None:
+    fake = FakeConsolidator()
+    builder = ContextBuilder(fake, ContextConfig(usable_context_tokens=1000))
+    messages = (
+        task("Task1", 300)
+        + task("Task2", 300)
+        + task("Task3", 200)
+        + task("Active", 150)
     )
-    summary = builder.build_summary(
-        steps,
-        objective="Finish Day 11 context compaction",
-        pending_action=pending_action,
+    result = build(builder, messages, task_starts=[0, 2, 4, 6])
+    assert result.messages[1:] == messages[4:]
+    assert [m for _, prefix, _ in fake.calls for m in prefix] == messages[:4]
+    assert result.final_context_tokens < 650
+    assert result.folded_message_count == 4
+
+
+def test_second_pressure_event_recursively_replaces_one_state() -> None:
+    fake = FakeConsolidator()
+    builder = ContextBuilder(fake, ContextConfig(usable_context_tokens=1000))
+    messages = task("Task1", 300) + task("Task2", 200) + task("Task3", 150)
+    first = build(builder, messages, task_starts=[0, 2, 4])
+    first_state = builder.state.consolidated_state
+    assert first.folded_message_count == 2
+    # Rebuilding without new pressure neither reconsolidates nor reintroduces history.
+    assert build(builder, messages, task_starts=[0, 2, 4]).messages == first.messages
+    assert len(fake.calls) == 1
+    messages.extend(task("Task4", 200))
+    second = build(builder, messages, task_starts=[0, 2, 4, 6])
+    assert len(fake.calls) == 2
+    assert fake.calls[1] == (first_state, messages[2:4], "Task4")
+    assert second.messages[1:] == messages[4:]
+    assert (
+        sum(CONSOLIDATED_STATE_HEADER in str(m["content"]) for m in second.messages)
+        == 1
     )
-
-    assert summary.goal == "Finish Day 11 context compaction"
-    assert summary.files_read == ["agent/context.py"]
-    assert summary.files_changed == ["agent/context.py"]
-    assert len(summary.edits) == 2
-    assert summary.edits[0].tool_name == "edit_file"
-    assert summary.edits[0].status == "applied"
-    assert summary.edits[1].status == "error"
-    assert summary.decisions == [
-        "I will inspect, edit, and verify the context builder."
-    ]
-    assert len(summary.commands_run) == 1
-    assert summary.commands_run[0].command == ".venv/bin/python -m pytest"
-    assert summary.commands_run[0].status == "passed"
-    assert summary.commands_run[0].exit_code == 0
-    assert len(summary.tool_errors) == 1
-    assert summary.tool_errors[0].step_number == 2
-    assert summary.tool_errors[0].tool_name == "edit_file"
-    assert "Exact text was not found" in summary.tool_errors[0].message
-    assert summary.pending_action == pending_action
+    assert builder.state.consolidated_state != first_state
+    assert len(messages) == 8
 
 
-def test_context_builder_prepends_structured_summary_message() -> None:
-    messages: list[MessageParam] = [
-        {
-            "role": "user",
-            "content": "Continue",
-        }
-    ]
-    steps = [
-        AgentStep(
-            step_number=1,
-            stop_reason="tool_use",
-            tool_calls=[
-                ToolCall(
-                    name="write_file",
-                    input={"path": "tests/test_context.py"},
-                    tool_use_id="toolu_write",
-                )
-            ],
-            tool_results=[ToolResult(tool_use_id="toolu_write", content="diff")],
-        )
-    ]
-    builder = ContextBuilder()
-
-    pending_action = PendingAction(
-        session_id="session-one",
-        step_number=2,
-        tool_name="run_command",
-        tool_use_id="toolu_pending",
-    )
-
-    context = builder.build(
-        messages,
-        steps,
-        objective="Add context summary",
-        pending_action=pending_action,
-    )
-
-    assert context[0]["role"] == "user"
-    assert isinstance(context[0]["content"], str)
-    assert "[Structured context summary]" in context[0]["content"]
-    assert "Goal:" in context[0]["content"]
-    assert "- Add context summary" in context[0]["content"]
-    assert "Files changed:" in context[0]["content"]
-    assert "- tests/test_context.py" in context[0]["content"]
-    assert "Edits:" in context[0]["content"]
-    assert "- step 1 write_file tests/test_context.py: applied" in context[0]["content"]
-    assert "Pending action:" in context[0]["content"]
-    assert "- step 2 run_command (toolu_pending)" in context[0]["content"]
-    assert context[1:] == messages
-
-
-def test_context_builder_does_not_collapse_under_budget() -> None:
-    messages: list[MessageParam] = [
-        {
-            "role": "user",
-            "content": "Earlier context",
-        },
-        {
-            "role": "user",
-            "content": "Continue",
-        },
-    ]
-    steps = [
-        AgentStep(
-            step_number=1,
-            stop_reason="tool_use",
-            tool_calls=[
-                ToolCall(
-                    name="read_file",
-                    input={"path": "agent/context.py"},
-                    tool_use_id="toolu_read",
-                )
-            ],
-            tool_results=[ToolResult(tool_use_id="toolu_read", content="content")],
-        )
-    ]
-    builder = ContextBuilder(max_context_chars=10_000)
-
-    context = builder.build(messages, steps)
-
-    assert context[1:] == messages
-
-
-def test_context_builder_hard_collapses_over_budget() -> None:
-    messages: list[MessageParam] = [
-        {
-            "role": "user",
-            "content": f"old-{index}-" + ("x" * 30),
-        }
-        for index in range(6)
-    ]
-    steps = [
-        AgentStep(
-            step_number=1,
-            stop_reason="tool_use",
-            tool_calls=[
-                ToolCall(
-                    name="edit_file",
-                    input={"path": "agent/context.py"},
-                    tool_use_id="toolu_edit",
-                )
-            ],
-            tool_results=[ToolResult(tool_use_id="toolu_edit", content="diff")],
-        )
-    ]
+def test_long_active_task_folds_old_prefix_at_complete_tool_boundary() -> None:
+    fake = FakeConsolidator()
     builder = ContextBuilder(
-        max_context_chars=120,
-        collapse_recent_message_count=2,
+        fake, ContextConfig(usable_context_tokens=1200, recent_message_count=3)
     )
+    messages = [{"role": "user", "content": "Long task"}]
+    for i in range(8):
+        messages.extend(exchange(str(i), 100))
+    result = build(builder, messages, task_starts=[0], objective="Long task")
+    end = result.folded_message_count
+    assert 0 < end <= len(messages) - 3
+    assert messages[end]["role"] == "assistant"
+    assert result.messages[1:] == messages[end:]
+    assert result.messages[-4:] == messages[-4:]
+    assert result.final_context_tokens < 780
+    assert not result.hard_collapsed
 
-    context = builder.build(messages, steps)
 
-    assert len(context) == 3
-    assert "[Structured context summary]" in context[0]["content"]
-    assert context[1:] == messages[-2:]
-
-
-def test_context_builder_hard_collapse_keeps_recent_complete_turn() -> None:
-    tool_use_message: MessageParam = {
-        "role": "assistant",
-        "content": [
-            {
-                "type": "tool_use",
-                "id": "toolu_read",
-                "name": "read_file",
-                "input": {"path": "agent/context.py"},
-            }
-        ],
-    }
-    tool_result_message: MessageParam = {
-        "role": "user",
-        "content": [
-            {
-                "type": "tool_result",
-                "tool_use_id": "toolu_read",
-                "content": "x" * 30,
-                "is_error": False,
-            }
-        ],
-    }
-    final_message: MessageParam = {
-        "role": "assistant",
-        "content": "Read the file.",
-    }
-    messages: list[MessageParam] = [
-        {
-            "role": "user",
-            "content": "Old turn",
-        },
-        {
-            "role": "assistant",
-            "content": "Old answer",
-        },
-        {
-            "role": "user",
-            "content": "Recent turn",
-        },
-        tool_use_message,
-        tool_result_message,
-        final_message,
-    ]
-    steps = [
-        AgentStep(
-            step_number=1,
-            stop_reason="tool_use",
-            tool_calls=[
-                ToolCall(
-                    name="read_file",
-                    input={"path": "agent/context.py"},
-                    tool_use_id="toolu_read",
-                )
-            ],
-            tool_results=[ToolResult(tool_use_id="toolu_read", content="content")],
-        )
-    ]
+def test_completed_tasks_are_exhausted_before_active_prefix() -> None:
+    fake = FakeConsolidator()
     builder = ContextBuilder(
-        max_context_chars=120,
-        collapse_recent_turn_count=1,
+        fake, ContextConfig(usable_context_tokens=1200, recent_message_count=2)
     )
-
-    context = builder.build(messages, steps)
-
-    assert context[1:] == [
-        {
-            "role": "user",
-            "content": "Recent turn",
-        },
-        tool_use_message,
-        tool_result_message,
-        final_message,
-    ]
+    messages = task("Done", 250) + [{"role": "user", "content": "Active"}]
+    for i in range(7):
+        messages.extend(exchange(str(i), 100))
+    result = build(builder, messages, task_starts=[0, 2])
+    assert result.folded_message_count > 2
+    assert fake.calls[0][1][:2] == messages[:2]
+    assert result.messages[-2:] == messages[-2:]
+    assert result.final_context_tokens < 780
 
 
-def test_context_builder_records_reduction_for_synthetic_long_trajectory() -> None:
-    messages: list[MessageParam] = []
-    steps: list[AgentStep] = []
-    for index in range(8):
-        path = f"agent/module_{index}.py"
-        tool_use_id = f"toolu_read_{index}"
-        messages.extend(
-            [
-                {
-                    "role": "user",
-                    "content": f"Inspect {path}",
-                },
-                {
-                    "role": "assistant",
-                    "content": [
-                        {
-                            "type": "tool_use",
-                            "id": tool_use_id,
-                            "name": "read_file",
-                            "input": {"path": path},
-                        }
-                    ],
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": tool_use_id,
-                            "content": "x" * 500,
-                            "is_error": False,
-                        }
-                    ],
-                },
-            ]
-        )
-        steps.append(
-            AgentStep(
-                step_number=index + 1,
-                stop_reason="tool_use",
-                tool_calls=[
-                    ToolCall(
-                        name="read_file",
-                        input={"path": path},
-                        tool_use_id=tool_use_id,
-                    )
-                ],
-                tool_results=[
-                    ToolResult(
-                        tool_use_id=tool_use_id,
-                        content="x" * 500,
-                    )
-                ],
-            )
-        )
+def test_failure_hard_collapses_without_committing_or_mutating_history() -> None:
+    fake = FakeConsolidator(RuntimeError("provider unavailable"))
+    builder = ContextBuilder(fake, ContextConfig(usable_context_tokens=1000))
+    messages = task("Old", 700) + task("Active", 100) + exchange("latest", 40)
+    original = deepcopy(messages)
+    result = build(builder, messages, task_starts=[0, 2])
+    assert result.hard_collapsed
+    assert result.consolidation_error == "Consolidation failed (RuntimeError)"
+    assert result.final_context_tokens < 900
+    assert result.messages[-2:] == messages[-2:]
+    assert "Current objective: Active" in str(result.messages[0])
+    assert builder.state.folded_message_count == 0
+    assert builder.state.consolidated_state is None
+    assert messages == original
 
-    steps.append(
-        AgentStep(
-            step_number=9,
-            stop_reason="tool_use",
-            text=["I will update the context builder and run focused tests."],
-            tool_calls=[
-                ToolCall(
-                    name="edit_file",
-                    input={"path": "agent/context.py"},
-                    tool_use_id="toolu_edit",
-                ),
-                ToolCall(
-                    name="run_command",
-                    input={"command": ".venv/bin/python -m pytest tests/test_context.py"},
-                    tool_use_id="toolu_test",
-                ),
-            ],
-            tool_results=[
-                ToolResult(tool_use_id="toolu_edit", content="diff"),
-                ToolResult(
-                    tool_use_id="toolu_test",
-                    content="exit_code: 0\ntimed_out: false\nstdout: 9 passed",
-                ),
-            ],
-        )
-    )
-    pending_action = PendingAction(
-        session_id="session-one",
-        step_number=10,
-        tool_name="run_command",
-        tool_use_id="toolu_pending",
-    )
+
+def test_emergency_after_success_keeps_latest_complete_exchange() -> None:
+    fake = FakeConsolidator()
     builder = ContextBuilder(
-        max_tool_result_chars=100,
-        recent_message_count=3,
-        max_context_chars=1_200,
-        collapse_recent_turn_count=2,
+        fake, ContextConfig(usable_context_tokens=1000, recent_message_count=6)
     )
+    messages = task("Old", 500) + [{"role": "user", "content": "Active"}]
+    for i in range(4):
+        messages.extend(exchange(str(i), 250))
+    result = build(builder, messages, task_starts=[0, 2])
+    assert fake.calls
+    assert result.summary_included
+    assert result.hard_collapsed
+    assert result.final_context_tokens < 900
+    assert result.messages[-2:] == messages[-2:]
 
-    result = builder.build_with_metadata(
-        messages,
-        steps,
-        objective="Complete Day 11 context compaction",
-        pending_action=pending_action,
+
+def test_emergency_refuses_indivisible_over_budget_exchange() -> None:
+    builder = ContextBuilder(config=ContextConfig(usable_context_tokens=1000))
+    with pytest.raises(ContextBudgetExceeded):
+        build(builder, [{"role": "user", "content": "Active"}, *exchange("huge", 1200)])
+
+
+def test_token_pressure_includes_request_overhead() -> None:
+    fake = FakeConsolidator()
+    builder = ContextBuilder(fake, ContextConfig(usable_context_tokens=1000))
+    messages = task("Old", 300) + task("Active", 100)
+    assert build(builder, messages).messages == messages
+    result = build(builder, messages, request_overhead_tokens=250)
+    assert len(fake.calls) == 1
+    assert result.final_context_tokens < 650
+
+
+def test_token_count_is_not_character_count_and_handles_special_text() -> None:
+    assert count_tokens("hello world") == 2
+    assert count_tokens("<|endoftext|> 中文") > 0
+
+
+def test_exact_soft_threshold_triggers_consolidation() -> None:
+    fake = FakeConsolidator()
+    messages = task("Old", 300) + task("Active", 100)
+    tokens = ContextBuilder().measure_tokens(messages)
+    builder = ContextBuilder(
+        fake, ContextConfig(usable_context_tokens=tokens * 2, soft_threshold=0.5)
     )
+    result = build(builder, messages)
+    assert len(fake.calls) == 1
+    assert result.final_context_tokens < tokens
 
-    summary_content = result.messages[0]["content"]
-    assert isinstance(summary_content, str)
-    assert result.original_message_count == len(messages)
-    assert result.final_message_count < result.original_message_count
-    assert result.original_context_chars > result.final_context_chars
-    assert result.snipped_tool_results > 0
-    assert result.hard_collapsed is True
-    assert result.summary_included is True
-    assert "- agent/context.py" in summary_content
-    assert "Pending action:" in summary_content
-    assert "- step 10 run_command (toolu_pending)" in summary_content
+
+def test_oversized_generated_state_is_rejected_before_commit() -> None:
+    from unittest.mock import AsyncMock
+
+    fake = AsyncMock()
+    fake.consolidate.return_value = make_state("Active", "verbose " * 1000)
+    builder = ContextBuilder(fake, ContextConfig(usable_context_tokens=1000))
+    messages = task("Old", 2000) + task("Active", 100)
+    result = build(builder, messages)
+    assert result.hard_collapsed
+    assert builder.state.consolidated_state is None
+    assert result.messages[-2:] == messages[-2:]
+
+
+def test_folding_preserves_all_results_of_multi_tool_request() -> None:
+    fake = FakeConsolidator()
+    builder = ContextBuilder(
+        fake, ContextConfig(usable_context_tokens=1000, recent_message_count=2)
+    )
+    messages = task("Active", 700)
+    a, b = exchange("a", 20), exchange("b", 20)
+    messages.extend(
+        [
+            {"role": "assistant", "content": [*a[0]["content"], *b[0]["content"]]},
+            a[1],
+            b[1],
+        ]
+    )
+    result = build(builder, messages, task_starts=[0])
+    assert result.messages[-3:] == messages[-3:]
+    assert result.folded_message_count == 2
+
+
+def test_inspection_does_not_call_llm_even_under_pressure() -> None:
+    fake = FakeConsolidator()
+    builder = ContextBuilder(fake, ContextConfig(usable_context_tokens=1000))
+    messages = task("Old", 700) + task("Active", 100)
+    assert builder.inspect(messages).messages == messages
+    assert fake.calls == []
+
+
+def test_reset_clears_folded_state() -> None:
+    builder = ContextBuilder(
+        FakeConsolidator(), ContextConfig(usable_context_tokens=1000)
+    )
+    build(builder, task("Old", 700) + task("Active", 100))
+    assert builder.state.consolidated_state is not None
+    builder.reset()
+    messages = task("New", 10)
+    assert build(builder, messages).messages == messages
+    assert builder.state.folded_message_count == 0
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"soft_threshold": 0.95},
+        {"usable_context_tokens": 0},
+        {"recent_message_count": 0},
+        {"retained_tool_result_tokens": 20000},
+    ],
+)
+def test_invalid_configuration_is_rejected(kwargs: dict[str, Any]) -> None:
+    with pytest.raises(ValueError):
+        ContextConfig(**kwargs)

@@ -1,353 +1,378 @@
+"""Token-pressure policy over full, append-only session history."""
+
+import json
+from collections.abc import Callable
 from copy import deepcopy
-from typing import Any, Literal, cast
+from dataclasses import dataclass
+from functools import lru_cache
+from typing import Any
 
-from .schemas import (
-    AgentStep,
-    CommandSummary,
-    ContextBuildResult,
-    EditSummary,
-    PendingAction,
-    StructuredContextSummary,
-    ToolErrorSummary,
-    ToolResult,
-)
+import tiktoken
 
-OMITTED_TOOL_RESULT_TEMPLATE = "[Older tool result omitted: {char_count} chars]"
-STRUCTURED_CONTEXT_SUMMARY_HEADER = "[Structured context summary]"
+from .consolidation import Consolidator
+from .schemas import ConsolidatedState, ContextBuildResult, WorkingContextState
+
 Message = dict[str, Any]
+CONSOLIDATED_STATE_HEADER = "[Consolidated state]"
+
+
+@lru_cache(maxsize=1)
+def _encoding() -> tiktoken.Encoding:
+    return tiktoken.get_encoding("cl100k_base")
+
+
+def count_tokens(text: str) -> int:
+    """BPE estimate, not a provider-exact count; callers may inject a tokenizer."""
+    return len(_encoding().encode(text, disallowed_special=()))
+
+
+@dataclass(frozen=True)
+class ContextConfig:
+    # Input budget after reserving model output. System/tools count against it.
+    usable_context_tokens: int = 32_000
+    soft_threshold: float = 0.65
+    emergency_threshold: float = 0.90
+    max_tool_result_tokens: int = 16_000
+    retained_tool_result_tokens: int = 2_000
+    recent_message_count: int = 8
+    collapse_recent_message_count: int = 12
+    collapse_recent_turn_count: int = 2
+
+    def __post_init__(self) -> None:
+        if not 0 < self.soft_threshold < self.emergency_threshold < 1:
+            raise ValueError("Require 0 < soft < emergency < 1")
+        if self.usable_context_tokens <= 0:
+            raise ValueError("usable_context_tokens must be positive")
+        if not 0 < self.retained_tool_result_tokens < self.max_tool_result_tokens:
+            raise ValueError(
+                "Tool result retention must be positive and below its limit"
+            )
+        if (
+            min(
+                self.recent_message_count,
+                self.collapse_recent_message_count,
+                self.collapse_recent_turn_count,
+            )
+            < 1
+        ):
+            raise ValueError("Recent history counts must be positive")
+
+
+class ContextBudgetExceeded(ValueError):
+    """Even the latest indivisible message/tool exchange cannot fit safely."""
 
 
 class ContextBuilder:
-    """Build the working context sent to the model."""
-
     def __init__(
         self,
-        max_tool_result_chars: int = 8_000,
-        recent_message_count: int = 8,
-        max_context_chars: int = 40_000,
-        collapse_recent_message_count: int = 12,
-        collapse_recent_turn_count: int = 2,
+        consolidator: Consolidator | None = None,
+        config: ContextConfig | None = None,
+        token_counter: Callable[[str], int] = count_tokens,
     ) -> None:
-        self.max_tool_result_chars = max_tool_result_chars
-        self.recent_message_count = recent_message_count
-        self.max_context_chars = max_context_chars
-        self.collapse_recent_message_count = collapse_recent_message_count
-        self.collapse_recent_turn_count = collapse_recent_turn_count
+        self.consolidator = consolidator
+        self.config = config or ContextConfig()
+        self.token_counter = token_counter
+        self.state = WorkingContextState()
 
-    def build(
-        self,
-        messages: list[Message],
-        steps: list[AgentStep] | None = None,
-        objective: str | None = None,
-        pending_action: PendingAction | None = None,
-    ) -> list[Message]:
-        return cast(
-            list[Message],
-            self.build_with_metadata(
-                messages,
-                steps=steps,
-                objective=objective,
-                pending_action=pending_action,
-            ).messages,
+    def reset(self) -> None:
+        self.state = WorkingContextState()
+
+    def measure_tokens(self, messages: list[Message]) -> int:
+        # Include roles, block types, tool IDs/arguments and message framing.
+        return sum(
+            4 + self.token_counter(json.dumps(m, ensure_ascii=False)) for m in messages
         )
 
-    def build_with_metadata(
+    async def build(
         self,
         messages: list[Message],
-        steps: list[AgentStep] | None = None,
+        *,
         objective: str | None = None,
-        pending_action: PendingAction | None = None,
-    ) -> ContextBuildResult:
-        original_context_chars = self._context_chars(messages)
-        context = cast(list[Message], deepcopy(messages))
-        older_message_count = max(0, len(context) - self.recent_message_count)
-
-        snipped_tool_results = 0
-        for message in context[:older_message_count]:
-            snipped_tool_results += self._snip_large_tool_results(message)
-
-        prefix_messages: list[Message] = []
-        if steps:
-            prefix_messages.append(
-                self._summary_message(
-                    self.build_summary(
-                        steps,
-                        objective=objective,
-                        pending_action=pending_action,
-                    )
-                )
+        task_starts: list[int] | None = None,
+        request_overhead_tokens: int = 0,
+    ) -> list[Message]:
+        return (
+            await self.build_with_metadata(
+                messages,
+                objective=objective,
+                task_starts=task_starts,
+                request_overhead_tokens=request_overhead_tokens,
             )
-        context = [*prefix_messages, *context]
+        ).messages
 
+    async def build_with_metadata(
+        self,
+        messages: list[Message],
+        *,
+        objective: str | None = None,
+        task_starts: list[int] | None = None,
+        request_overhead_tokens: int = 0,
+    ) -> ContextBuildResult:
+        raw, snipped = self._protected_history(messages)
+        starts = self._task_starts(raw, task_starts)
+        objective = self._objective(raw, starts, objective)
+        context = self._assemble(raw, objective)
+        soft = self.config.usable_context_tokens * self.config.soft_threshold
+        emergency = self.config.usable_context_tokens * self.config.emergency_threshold
+        error: str | None = None
         hard_collapsed = False
-        if prefix_messages and self._context_chars(context) > self.max_context_chars:
+
+        while self.measure_tokens(context) + request_overhead_tokens >= soft:
+            candidates = self._fold_boundaries(raw, starts)
+            if not candidates:
+                break
+            # Skip only prefixes whose raw suffix alone cannot fit. Stop at the
+            # first viable boundary, then remeasure the actual LLM-produced state.
+            end = next(
+                (
+                    i
+                    for i in candidates
+                    if self.measure_tokens(raw[i:]) + request_overhead_tokens < soft
+                ),
+                candidates[-1],
+            )
+            try:
+                if self.consolidator is None:
+                    raise ValueError("No consolidator configured")
+                state = await self.consolidator.consolidate(
+                    self.state.consolidated_state.model_copy(deep=True)
+                    if self.state.consolidated_state
+                    else None,
+                    deepcopy(raw[self.state.folded_message_count : end]),
+                    objective,
+                )
+                state = ConsolidatedState.model_validate(state.model_dump())
+                state.current_objective = objective
+                if (
+                    self.measure_tokens([self._state_message(state)])
+                    + request_overhead_tokens
+                    >= emergency
+                ):
+                    raise ValueError(
+                        "Consolidated state exceeds emergency token budget"
+                    )
+                candidate = [self._state_message(state), *raw[end:]]
+                if self.measure_tokens(candidate) >= self.measure_tokens(context):
+                    raise ValueError("Consolidation did not reduce context tokens")
+                self.state = WorkingContextState(
+                    consolidated_state=state,
+                    folded_message_count=end,
+                )
+                context = candidate
+            except Exception as exc:
+                # Do not swallow cancellation/interrupts (BaseException).
+                error = f"Consolidation failed ({type(exc).__name__})"
+                break
+
+        if error or self.measure_tokens(context) + request_overhead_tokens >= emergency:
             context = self._collapse_context(
-                prefix_messages=prefix_messages,
-                messages=context[len(prefix_messages) :],
+                raw, starts, objective, request_overhead_tokens
             )
             hard_collapsed = True
-
-        return ContextBuildResult(
-            messages=cast(list[dict[str, object]], context),
-            original_message_count=len(messages),
-            final_message_count=len(context),
-            original_context_chars=original_context_chars,
-            final_context_chars=self._context_chars(context),
-            snipped_tool_results=snipped_tool_results,
-            hard_collapsed=hard_collapsed,
-            summary_included=bool(steps),
+        return self._result(
+            messages, context, snipped, request_overhead_tokens, hard_collapsed, error
         )
 
-    def build_summary(
+    def inspect(
         self,
-        steps: list[AgentStep],
+        messages: list[Message],
+        *,
         objective: str | None = None,
-        pending_action: PendingAction | None = None,
-    ) -> StructuredContextSummary:
-        files_read: set[str] = set()
-        files_changed: set[str] = set()
-        edits: list[EditSummary] = []
-        decisions: list[str] = []
-        commands_run: list[CommandSummary] = []
-        tool_errors: list[ToolErrorSummary] = []
-
-        for step in steps:
-            decisions.extend(self._decision_texts(step.text))
-            for tool_call, tool_result in zip(step.tool_calls, step.tool_results):
-                path = tool_call.input.get("path")
-                if tool_call.name == "read_file" and isinstance(path, str):
-                    files_read.add(path)
-                if tool_call.name in {"edit_file", "write_file"} and isinstance(
-                    path, str
-                ):
-                    files_changed.add(path)
-                    edit_tool_name: Literal["edit_file", "write_file"] = cast(
-                        Literal["edit_file", "write_file"],
-                        tool_call.name,
-                    )
-                    edits.append(
-                        EditSummary(
-                            step_number=step.step_number,
-                            tool_name=edit_tool_name,
-                            path=path,
-                            status="error" if tool_result.is_error else "applied",
-                        )
-                    )
-                if tool_call.name == "run_command":
-                    command = tool_call.input.get("command")
-                    if isinstance(command, str):
-                        commands_run.append(
-                            CommandSummary(
-                                command=command,
-                                status=self._command_status(tool_result),
-                                exit_code=self._extract_exit_code(tool_result.content),
-                            )
-                        )
-                if tool_result.is_error:
-                    tool_errors.append(
-                        ToolErrorSummary(
-                            step_number=step.step_number,
-                            tool_name=tool_call.name,
-                            message=self._first_line(tool_result.content),
-                        )
-                    )
-
-        return StructuredContextSummary(
-            goal=objective,
-            files_read=sorted(files_read),
-            files_changed=sorted(files_changed),
-            edits=edits,
-            decisions=decisions,
-            commands_run=commands_run,
-            tool_errors=tool_errors,
-            pending_action=pending_action,
+        task_starts: list[int] | None = None,
+        request_overhead_tokens: int = 0,
+    ) -> ContextBuildResult:
+        """Inspect the working view without invoking an LLM or folding history."""
+        raw, snipped = self._protected_history(messages)
+        objective = self._objective(raw, self._task_starts(raw, task_starts), objective)
+        return self._result(
+            messages,
+            self._assemble(raw, objective),
+            snipped,
+            request_overhead_tokens,
+            False,
+            None,
         )
 
-    def _snip_large_tool_results(self, message: Message) -> int:
-        content = message.get("content")
-        if not isinstance(content, list):
-            return 0
-
-        snipped_count = 0
-        for block in content:
-            if not isinstance(block, dict):
-                continue
-            if block.get("type") != "tool_result":
-                continue
-
-            tool_result_content = block.get("content")
-            if not isinstance(tool_result_content, str):
-                continue
-            if len(tool_result_content) <= self.max_tool_result_chars:
-                continue
-
-            block["content"] = OMITTED_TOOL_RESULT_TEMPLATE.format(
-                char_count=len(tool_result_content)
+    def _assemble(self, raw: list[Message], objective: str | None) -> list[Message]:
+        if self.state.folded_message_count > len(raw):
+            raise ValueError(
+                "Working context offset exceeds raw history; reset context first"
             )
-            snipped_count += 1
-        return snipped_count
+        state = self.state.consolidated_state
+        prefix = (
+            []
+            if state is None
+            else [
+                self._state_message(
+                    state.model_copy(update={"current_objective": objective})
+                )
+            ]
+        )
+        return [*prefix, *raw[self.state.folded_message_count :]]
+
+    @staticmethod
+    def _state_message(state: ConsolidatedState) -> Message:
+        return {
+            "role": "user",
+            "content": f"{CONSOLIDATED_STATE_HEADER}\n{state.model_dump_json()}",
+        }
+
+    @staticmethod
+    def _task_starts(raw: list[Message], starts: list[int] | None) -> list[int]:
+        if starts is None:
+            starts = [
+                i
+                for i, m in enumerate(raw)
+                if m.get("role") == "user" and isinstance(m.get("content"), str)
+            ]
+        return sorted({i for i in starts if 0 <= i < len(raw)})
+
+    @staticmethod
+    def _objective(
+        raw: list[Message], starts: list[int], objective: str | None
+    ) -> str | None:
+        if objective is None and starts:
+            content = raw[starts[-1]].get("content")
+            if isinstance(content, str):
+                return content
+        return objective
+
+    @staticmethod
+    def _safe_boundaries(raw: list[Message]) -> list[int]:
+        """Never split an assistant's tool requests from any of their results."""
+        pending: set[str] = set()
+        boundaries = [0]
+        for i, message in enumerate(raw):
+            content = message.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    if block.get("type") == "tool_use":
+                        pending.add(block["id"])
+                    elif block.get("type") == "tool_result":
+                        pending.discard(block["tool_use_id"])
+            if not pending:
+                boundaries.append(i + 1)
+        return boundaries
+
+    def _fold_boundaries(self, raw: list[Message], starts: list[int]) -> list[int]:
+        safe = self._safe_boundaries(raw)
+        offset = self.state.folded_message_count
+        active_start = starts[-1] if starts else 0
+        # A new task start is the exclusive end of the preceding task.
+        completed = [i for i in starts if offset < i <= active_start and i in safe]
+        recent_limit = len(raw) - self.config.recent_message_count
+        active = [i for i in safe if max(offset, active_start) < i <= recent_limit]
+        return [*completed, *active]
 
     def _collapse_context(
         self,
-        prefix_messages: list[Message],
-        messages: list[Message],
+        raw: list[Message],
+        starts: list[int],
+        objective: str | None,
+        overhead: int,
     ) -> list[Message]:
-        recent_start = self._recent_complete_turn_start(messages)
-        recent_start = self._expand_to_tool_boundary(messages, recent_start)
-        return [*prefix_messages, *messages[recent_start:]]
-
-    def _recent_complete_turn_start(self, messages: list[Message]) -> int:
-        turn_starts = [
-            index
-            for index, message in enumerate(messages)
-            if self._message_is_user_text_turn(message)
-        ]
-        if not turn_starts:
-            return max(0, len(messages) - self.collapse_recent_message_count)
-        if len(turn_starts) <= self.collapse_recent_turn_count:
-            return turn_starts[0]
-        return turn_starts[-self.collapse_recent_turn_count]
-
-    def _message_is_user_text_turn(self, message: Message) -> bool:
-        return message.get("role") == "user" and isinstance(message.get("content"), str)
-
-    def _expand_to_tool_boundary(
-        self,
-        messages: list[Message],
-        recent_start: int,
-    ) -> int:
-        if recent_start <= 0 or recent_start >= len(messages):
-            return recent_start
-        if not self._message_has_tool_result(messages[recent_start]):
-            return recent_start
-        if self._message_has_tool_use(messages[recent_start - 1]):
-            return recent_start - 1
-        return recent_start
-
-    def _message_has_tool_result(self, message: Message) -> bool:
-        content = message.get("content")
-        if not isinstance(content, list):
-            return False
-        return any(
-            isinstance(block, dict) and block.get("type") == "tool_result"
-            for block in content
-        )
-
-    def _message_has_tool_use(self, message: Message) -> bool:
-        content = message.get("content")
-        if not isinstance(content, list):
-            return False
-        return any(
-            isinstance(block, dict) and block.get("type") == "tool_use"
-            for block in content
-        )
-
-    def _context_chars(self, messages: list[Message]) -> int:
-        return sum(len(str(message.get("content", ""))) for message in messages)
-
-    def _summary_message(self, summary: StructuredContextSummary) -> Message:
-        return {
+        # Loss is explicit. Raw storage and the last validated state stay intact,
+        # so a later request can retry consolidation.
+        warning = {
             "role": "user",
-            "content": self._format_summary(summary),
+            "content": "[Emergency context fallback: consolidation unavailable or insufficient; "
+            "older raw history may be omitted.]\nCurrent objective: "
+            + (objective or "unknown"),
         }
+        state = self.state.consolidated_state
+        prefix = (
+            [warning]
+            if state is None
+            else [
+                self._state_message(
+                    state.model_copy(update={"current_objective": objective})
+                ),
+                warning,
+            ]
+        )
+        desired = (
+            starts[-self.config.collapse_recent_turn_count]
+            if len(starts) >= self.config.collapse_recent_turn_count
+            else starts[0]
+            if starts
+            else max(0, len(raw) - self.config.collapse_recent_message_count)
+        )
+        safe = [
+            i
+            for i in self._safe_boundaries(raw)
+            if self.state.folded_message_count <= i < len(raw)
+        ]
+        before = [i for i in safe if i <= desired]
+        start = before[-1] if before else self.state.folded_message_count
+        limit = self.config.usable_context_tokens * self.config.emergency_threshold
+        for i in [start, *(j for j in safe if j > start)]:
+            candidate = [*prefix, *raw[i:]]
+            if self.measure_tokens(candidate) + overhead < limit:
+                return candidate
+        raise ContextBudgetExceeded("Latest context cannot fit emergency token budget")
 
-    def _format_summary(self, summary: StructuredContextSummary) -> str:
-        lines = [STRUCTURED_CONTEXT_SUMMARY_HEADER]
-        lines.append("Goal:")
-        lines.append(f"- {summary.goal}" if summary.goal else "- none")
-        lines.extend(self._format_list("Files read", summary.files_read))
-        lines.extend(self._format_list("Files changed", summary.files_changed))
-
-        lines.append("Edits:")
-        if summary.edits:
-            for edit in summary.edits:
-                lines.append(
-                    f"- step {edit.step_number} {edit.tool_name} "
-                    f"{edit.path}: {edit.status}"
-                )
-        else:
-            lines.append("- none")
-
-        lines.append("Decisions:")
-        if summary.decisions:
-            lines.extend(f"- {decision}" for decision in summary.decisions)
-        else:
-            lines.append("- none")
-
-        lines.append("Commands run:")
-        if summary.commands_run:
-            for command in summary.commands_run:
-                exit_code = (
-                    "" if command.exit_code is None else f" exit_code={command.exit_code}"
-                )
-                lines.append(f"- {command.status}:{exit_code} {command.command}")
-        else:
-            lines.append("- none")
-
-        lines.append("Tool errors:")
-        if summary.tool_errors:
-            for error in summary.tool_errors:
-                lines.append(
-                    f"- step {error.step_number} {error.tool_name}: {error.message}"
-                )
-        else:
-            lines.append("- none")
-
-        lines.append("Pending action:")
-        if summary.pending_action is None:
-            lines.append("- none")
-        else:
-            pending = summary.pending_action
-            lines.append(
-                f"- step {pending.step_number} {pending.tool_name} "
-                f"({pending.tool_use_id})"
-            )
-
-        return "\n".join(lines)
-
-    def _format_list(self, heading: str, values: list[str]) -> list[str]:
-        lines = [f"{heading}:"]
-        if values:
-            lines.extend(f"- {value}" for value in values)
-        else:
-            lines.append("- none")
-        return lines
-
-    def _command_status(
-        self,
-        tool_result: ToolResult,
-    ) -> Literal["passed", "failed", "error", "unknown"]:
-        if tool_result.is_error:
-            return "error"
-        exit_code = self._extract_exit_code(tool_result.content)
-        if exit_code == 0:
-            return "passed"
-        if exit_code is None:
-            return "unknown"
-        return "failed"
-
-    def _extract_exit_code(self, output: str) -> int | None:
-        prefix = "exit_code:"
-        for line in output.splitlines():
-            if not line.startswith(prefix):
+    def _protected_history(self, messages: list[Message]) -> tuple[list[Message], int]:
+        raw = deepcopy(messages)
+        snipped = 0
+        for message in raw:
+            content = message.get("content")
+            if not isinstance(content, list):
                 continue
-            value = line.removeprefix(prefix).strip()
-            try:
-                return int(value)
-            except ValueError:
-                return None
-        return None
+            for block in content:
+                if not isinstance(block, dict) or block.get("type") != "tool_result":
+                    continue
+                output = block.get("content")
+                if not isinstance(output, str):
+                    continue
+                tokens = self.token_counter(output)
+                if tokens <= self.config.max_tool_result_tokens:
+                    continue
+                half = self.config.retained_tool_result_tokens // 2
+                head = self._clip(output, half)
+                tail = self._clip(output, half, tail=True)
+                block["content"] = (
+                    f"{head}\n[Oversized tool result truncated: "
+                    f"approximately {tokens} tokens; middle omitted]\n{tail}"
+                )
+                snipped += 1
+        return raw, snipped
 
-    def _first_line(self, value: str) -> str:
-        first_line = value.splitlines()[0] if value.splitlines() else value
-        if len(first_line) <= 160:
-            return first_line
-        return first_line[:157] + "..."
+    def _clip(self, text: str, tokens: int, *, tail: bool = False) -> str:
+        low, high = 0, len(text)
+        while low < high:
+            mid = (low + high + 1) // 2
+            part = text[-mid:] if tail else text[:mid]
+            if self.token_counter(part) <= tokens:
+                low = mid
+            else:
+                high = mid - 1
+        return (text[-low:] if tail else text[:low]) if low else ""
 
-    def _decision_texts(self, texts: list[str]) -> list[str]:
-        decisions: list[str] = []
-        for text in texts:
-            first_line = self._first_line(text.strip())
-            if first_line:
-                decisions.append(first_line)
-        return decisions
+    def _result(
+        self,
+        original: list[Message],
+        context: list[Message],
+        snipped: int,
+        overhead: int,
+        hard_collapsed: bool,
+        error: str | None,
+    ) -> ContextBuildResult:
+        return ContextBuildResult(
+            messages=context,
+            original_message_count=len(original),
+            final_message_count=len(context),
+            original_context_chars=sum(
+                len(str(m.get("content", ""))) for m in original
+            ),
+            final_context_chars=sum(len(str(m.get("content", ""))) for m in context),
+            original_context_tokens=self.measure_tokens(original) + overhead,
+            final_context_tokens=self.measure_tokens(context) + overhead,
+            snipped_tool_results=snipped,
+            hard_collapsed=hard_collapsed,
+            # Retained field name for existing CLI/session trace consumers.
+            summary_included=self.state.consolidated_state is not None,
+            folded_message_count=self.state.folded_message_count,
+            consolidation_error=error,
+        )

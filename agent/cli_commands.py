@@ -15,7 +15,6 @@ COMMANDS = {
     "/reset": "Clear the current conversation context.",
     "/save": "Save the current session checkpoint.",
     "/diff": "Show file changes from this session.",
-    "/compact": "Show compacted context metrics.",
     "/trace": "Show or export structured trace events.",
     "/rename": "Rename the current session.",
     "/sessions": "List saved sessions.",
@@ -191,6 +190,8 @@ def handle_command(
 
         agent.messages.clear()
         agent.steps.clear()
+        agent.task_starts.clear()
+        agent.context_builder.reset()
         agent.clear_approval_cache()
         print("Conversation context reset.")
         return False
@@ -212,36 +213,6 @@ def handle_command(
             print(agent.registry.get_diff(path))
         except ValueError as error:
             print(f"Cannot show diff: {error}")
-        return False
-    if command == "/compact":
-        if agent is None:
-            print("Compact command is unavailable.")
-            return False
-
-        result = agent.build_context_result()
-        if session_store is not None and session_state is not None:
-            session_store.append_event(
-                SessionEvent(
-                    event_type="compaction_reported",
-                    session_id=session_state.session_id,
-                    created_at=utc_timestamp(),
-                    original_message_count=result.original_message_count,
-                    final_message_count=result.final_message_count,
-                    original_context_chars=result.original_context_chars,
-                    final_context_chars=result.final_context_chars,
-                    snipped_tool_results=result.snipped_tool_results,
-                    summary_included=result.summary_included,
-                    hard_collapsed=result.hard_collapsed,
-                )
-            )
-        print("Context compaction:")
-        print(f"  original messages: {result.original_message_count}")
-        print(f"  final messages: {result.final_message_count}")
-        print(f"  original chars: {result.original_context_chars}")
-        print(f"  final chars: {result.final_context_chars}")
-        print(f"  snipped tool results: {result.snipped_tool_results}")
-        print(f"  summary included: {result.summary_included}")
-        print(f"  hard collapsed: {result.hard_collapsed}")
         return False
     if command == "/trace" or command.startswith("/trace "):
         if session_store is None or session_state is None:

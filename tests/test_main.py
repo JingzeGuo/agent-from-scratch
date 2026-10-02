@@ -8,6 +8,7 @@ import pytest
 
 from agent.agent import Agent
 from agent.cli_commands import handle_command
+from agent.context import ContextBudgetExceeded
 from agent.provider import DeepSeekProvider, ProviderRequestError
 from agent.schemas import (
     AgentRun,
@@ -111,7 +112,6 @@ def test_help_lists_available_commands(
         "  /reset    Clear the current conversation context.\n"
         "  /save     Save the current session checkpoint.\n"
         "  /diff     Show file changes from this session.\n"
-        "  /compact  Show compacted context metrics.\n"
         "  /trace    Show or export structured trace events.\n"
         "  /rename   Rename the current session.\n"
         "  /sessions List saved sessions.\n"
@@ -608,6 +608,25 @@ def test_run_cli_reports_provider_failure_without_traceback(
     assert "Traceback" not in output
 
 
+def test_run_cli_reports_unrecoverable_context_pressure_without_exiting(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class TooLargeAgent(FakeRunAgent):
+        async def run(self, user_task: str) -> AgentRun:
+            self.tasks.append(user_task)
+            raise ContextBudgetExceeded("Latest exchange cannot fit")
+
+    fake_agent = TooLargeAgent()
+    inputs = iter(["Continue", "/exit"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
+    asyncio.run(run_cli(cast(Agent, fake_agent)))
+    output = capsys.readouterr().out
+    assert "Context budget exceeded" in output
+    assert "Goodbye." in output
+    assert "Traceback" not in output
+
+
 def test_run_cli_checkpoints_interactive_task(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -826,6 +845,13 @@ def test_reset_command_clears_conversation_context_only(
     changed_file = tmp_path / "tests.py"
     agent.messages.append({"role": "user", "content": "Previous task"})
     agent.steps.append(AgentStep(step_number=1, stop_reason="end_turn"))
+    from agent.schemas import WorkingContextState
+    from tests.test_context import make_state
+
+    agent.task_starts = [0]
+    agent.context_builder.state = WorkingContextState(
+        consolidated_state=make_state("Previous task"), folded_message_count=1,
+    )
     agent._approved_commands.add("approved-command")
     completed_run = AgentRun(
         objective="Previous task",
@@ -843,6 +869,8 @@ def test_reset_command_clears_conversation_context_only(
     assert should_exit is False
     assert agent.messages == []
     assert agent.steps == []
+    assert agent.task_starts == []
+    assert agent.context_builder.state == WorkingContextState()
     assert agent._approved_commands == set()
     assert agent.completed_runs == [completed_run]
     assert agent.registry.read_files == {read_file}
@@ -916,61 +944,6 @@ def test_diff_command_requires_agent(
 
     assert should_exit is False
     assert capsys.readouterr().out == "Diff command is unavailable.\n"
-
-
-def test_compact_command_shows_context_metrics(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    agent = create_agent()
-    agent.messages.append({"role": "user", "content": "Fix the bug"})
-
-    should_exit = handle_command("/compact", agent)
-
-    assert should_exit is False
-    assert capsys.readouterr().out == (
-        "Context compaction:\n"
-        "  original messages: 1\n"
-        "  final messages: 1\n"
-        "  original chars: 11\n"
-        "  final chars: 11\n"
-        "  snipped tool results: 0\n"
-        "  summary included: False\n"
-        "  hard collapsed: False\n"
-    )
-
-
-def test_compact_command_records_compaction_event(tmp_path: Path) -> None:
-    agent = create_agent()
-    agent.messages.append({"role": "user", "content": "Fix the bug"})
-    session_store = SessionStore(tmp_path / "sessions")
-    session_state = CliSessionState(session_id="session-one")
-
-    should_exit = handle_command(
-        "/compact",
-        agent,
-        session_store,
-        session_state,
-    )
-
-    events = session_store.read_events("session-one")
-    assert should_exit is False
-    assert events[0].event_type == "compaction_reported"
-    assert events[0].original_message_count == 1
-    assert events[0].final_message_count == 1
-    assert events[0].original_context_chars == 11
-    assert events[0].final_context_chars == 11
-    assert events[0].snipped_tool_results == 0
-    assert events[0].summary_included is False
-    assert events[0].hard_collapsed is False
-
-
-def test_compact_command_requires_agent(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    should_exit = handle_command("/compact")
-
-    assert should_exit is False
-    assert capsys.readouterr().out == "Compact command is unavailable.\n"
 
 
 def test_rename_command_updates_current_session_name(

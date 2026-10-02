@@ -8,7 +8,7 @@ on completion, protocol failure, or a bounded step limit.
 The agent is designed for practical repository work. It confines file
 operations and command working directories to the current workspace, validates
 every tool input, records resumable sessions and JSONL traces, compacts long
-conversations into structured context summaries, and tracks token use and estimated
+conversations into a single continuation state under context pressure, and tracks token use and estimated
 cost.
 
 In an audited run on a fixed random 50-instance subset of SWE-bench Lite, the
@@ -79,7 +79,6 @@ Interactive commands:
 | `/reset` | Clear conversation messages, steps, and approval cache |
 | `/save` | Save a session checkpoint |
 | `/diff [path]` | Show session changes, optionally for one file |
-| `/compact` | Report current context-compaction metrics |
 | `/trace [path]` | Print trace events or export them inside the workspace |
 | `/rename <name>` | Rename and save the current session |
 | `/sessions` | List saved sessions |
@@ -120,8 +119,7 @@ run commands, access the network, or delegate recursively.
 For each user task, `Agent.run`:
 
 1. Adds the user message to conversation state.
-2. Builds bounded model context, adding a structured context summary when prior
-   steps exist.
+2. Preserves raw context until token pressure requires consolidating an old prefix.
 3. Streams a normalized provider response.
 4. Validates and schedules requested tools.
 5. Returns tool results as observations and continues the loop.
@@ -170,9 +168,45 @@ execution, child runs, compaction, checkpoints, and run outcomes. Common
 secret-like values and configured redaction patterns are removed before events
 are written.
 
-Long conversations use deterministic context compaction. Older large tool
-results are shortened, while a structured context summary retains the goal, files,
-edits, decisions, commands, errors, and pending action.
+Working context is an optional `ConsolidatedState` followed by the raw recent
+history. Task completion does not summarize anything. Below the soft threshold,
+even multi-task sessions remain raw. At the threshold, the context builder folds
+the oldest completed tasks first, stopping as soon as the state plus remaining raw
+history fits below it. Only when necessary does it fold an active task's old
+prefix, preserving the latest messages and complete tool exchanges. Later folds
+merge the previous state with newly aged history into one replacement state.
+
+`agent/consolidation.py` uses the existing model adapter to construct validated
+JSON with findings, decisions, changes, unresolved work, verification, relevant
+context, and the current task's objective. Invalid output gets one retry. Failed
+or insufficient consolidation falls back to hard collapse with an explicit loss
+warning. If even the latest indivisible exchange cannot fit, the request fails
+with `ContextBudgetExceeded` instead of sending an oversized/broken tool sequence.
+Consolidation calls contribute to session token/cost totals.
+
+Configure `Agent(..., context_config=ContextConfig(...))` in Python. Defaults:
+
+| Setting | Default |
+| --- | --- |
+| Usable input budget (reserve model output separately) | 32,000 tokens |
+| Soft / emergency threshold | 65% / 90% |
+| Active task's minimum raw suffix | 8 messages, expanded to a tool boundary |
+| Pathological single tool-result limit | 16,000 tokens |
+| Retained head + tail of a pathological result | 2,000 tokens plus truncation marker |
+
+Token pressure includes system instructions, tool definitions, and runtime step
+instructions. Counting uses `tiktoken`'s `cl100k_base` BPE as an estimate, not
+DeepSeek's exact tokenizer; `ContextBuilder` accepts an alternative token counter.
+The tokenizer downloads and caches its vocabulary on first use (offline hosts
+must prepopulate the cache, optionally via `TIKTOKEN_CACHE_DIR`). Normal-sized
+tool results remain intact; pathological results retain their head/tail and tool
+metadata regardless of age.
+
+Snapshots still contain full raw messages and run history, plus the single
+consolidated state, folded-prefix offset, and task boundaries. Old snapshots load
+with an empty working state. `/reset` clears this state with the conversation.
+Legacy character metrics and the `summary_included` trace field remain compatible
+(the latter now means that a consolidated state is present).
 
 ## Architecture
 
@@ -185,7 +219,8 @@ edits, decisions, commands, errors, and pending action.
 | `agent/tool.py` | Tool schemas, validation, execution, and retry boundary |
 | `agent/tool_registry.py` | Dispatch, workspace action tracking, and diffs |
 | `agent/tools.py` | Built-in tool implementations |
-| `agent/context.py` | Bounded context and structured context summaries |
+| `agent/context.py` | Token pressure, prefix selection, working context, emergency fallback |
+| `agent/consolidation.py` | LLM-generated, schema-validated continuation state |
 | `agent/session.py` | Snapshots, pending actions, and JSONL events |
 | `agent/schemas.py` | Provider-neutral controller and session models |
 | `agent/security.py` | Command policy and trace redaction |

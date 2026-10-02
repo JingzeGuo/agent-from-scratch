@@ -16,7 +16,6 @@ from agent.prompts import build_system_prompt
 from agent.schemas import (
     AgentRun,
     AgentStep,
-    PendingAction,
     ProviderCapabilities,
     ProviderResponse,
     ReadFileInput,
@@ -63,23 +62,25 @@ def sample_tool(value: str) -> str:
 
 class FakeContextBuilder(ContextBuilder):
     def __init__(self, context: list[MessageParam]) -> None:
+        super().__init__()
         self.context = context
         self.calls: list[list[MessageParam]] = []
-        self.step_calls: list[list[AgentStep]] = []
+        self.task_start_calls: list[list[int]] = []
         self.objective_calls: list[str | None] = []
-        self.pending_action_calls: list[PendingAction | None] = []
+        self.overhead_calls: list[int] = []
 
-    def build(
+    async def build(
         self,
         messages: list[MessageParam],
-        steps: list[AgentStep] | None = None,
+        *,
         objective: str | None = None,
-        pending_action: PendingAction | None = None,
+        task_starts: list[int] | None = None,
+        request_overhead_tokens: int = 0,
     ) -> list[MessageParam]:
         self.calls.append(list(messages))
-        self.step_calls.append(list(steps or []))
+        self.task_start_calls.append(list(task_starts or []))
         self.objective_calls.append(objective)
-        self.pending_action_calls.append(pending_action)
+        self.overhead_calls.append(request_overhead_tokens)
         return self.context
 
 
@@ -280,10 +281,83 @@ def test_agent_uses_context_builder_for_model_messages() -> None:
             }
         ]
     ]
-    assert context_builder.step_calls == [[]]
+    assert context_builder.task_start_calls == [[0]]
     assert context_builder.objective_calls == ["Original task"]
-    assert context_builder.pending_action_calls == [None]
+    assert context_builder.overhead_calls[0] > 0
     assert messages.requests[0]["messages"] == built_context
+
+
+def test_agent_consolidates_with_provider_and_counts_usage() -> None:
+    from agent.context import ContextConfig
+    from tests.test_context import make_state, task
+
+    state = make_state("Wrong old objective")
+    agent, provider = create_agent([
+        make_message([TextBlock(text=state.model_dump_json())], "end_turn"),
+        make_message([TextBlock(text="Done")], "end_turn"),
+    ])
+    agent.context_builder.config = ContextConfig(usable_context_tokens=4000)
+    raw = task("Earlier task", 2600)
+    agent.messages = list(raw)
+    agent.task_starts = [0]
+    asyncio.run(agent.run("Current task"))
+    assert provider.call_count == 2
+    assert provider.requests[0]["tools"] == []
+    assert provider.requests[1]["messages"][1] == {"role": "user", "content": "Current task"}
+    assert "Runtime step budget" in provider.requests[1]["messages"][-1]["content"]
+    assert agent.context_builder.state.consolidated_state is not None
+    assert agent.context_builder.state.consolidated_state.current_objective == "Current task"
+    assert agent.messages[:2] == raw
+    assert agent.token_tracker.input_tokens == 20
+    assert agent.token_tracker.output_tokens == 10
+    assert len(agent.steps) == 1
+
+
+def test_consolidated_snapshot_resumes_without_refolding_old_history(tmp_path: Path) -> None:
+    from agent.context import ContextConfig
+    from tests.test_context import FakeConsolidator, build, task
+
+    agent, _ = create_agent([])
+    fake = FakeConsolidator()
+    config = ContextConfig(usable_context_tokens=1000)
+    agent.context_builder = ContextBuilder(fake, config)
+    agent.messages = task("Task1", 300) + task("Task2", 200) + task("Task3", 150)
+    agent.task_starts = [0, 2, 4]
+    first = build(agent.context_builder, agent.messages, task_starts=agent.task_starts)
+    store = SessionStore(tmp_path / "sessions")
+    store.save(agent.create_snapshot("rolling"))
+    snapshot = store.load("rolling")
+    assert snapshot.messages == agent.messages
+    assert snapshot.working_context.folded_message_count == 2
+
+    restored, _ = create_agent([])
+    restored_fake = FakeConsolidator()
+    restored.context_builder = ContextBuilder(restored_fake, config)
+    restored.restore_snapshot(snapshot)
+    assert restored.task_starts == [0, 2, 4]
+    assert build(restored.context_builder, restored.messages, task_starts=restored.task_starts).messages == first.messages
+    assert restored_fake.calls == []
+    restored.messages.extend(task("Task4", 200))
+    restored.task_starts.append(6)
+    result = build(restored.context_builder, restored.messages, task_starts=restored.task_starts)
+    assert restored_fake.calls[0][0] == snapshot.working_context.consolidated_state
+    assert restored_fake.calls[0][1] == restored.messages[2:4]
+    assert result.messages[1:] == restored.messages[4:]
+
+
+def test_legacy_snapshot_restores_raw_context_and_task_boundaries() -> None:
+    from agent.schemas import SessionSnapshot
+    from tests.test_context import task
+
+    agent, _ = create_agent([])
+    agent.messages = task("Task1", 10) + task("Task2", 10)
+    data = agent.create_snapshot("legacy").model_dump()
+    data.pop("working_context")
+    data.pop("task_starts")
+    restored, _ = create_agent([])
+    restored.restore_snapshot(SessionSnapshot.model_validate(data))
+    assert restored.task_starts == [0, 2]
+    assert restored.build_context_result().messages == agent.messages
 
 
 def test_build_system_prompt_uses_workspace_and_registered_tools(

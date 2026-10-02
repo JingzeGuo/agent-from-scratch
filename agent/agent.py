@@ -6,7 +6,8 @@ from time import perf_counter
 from typing import Any, cast
 from uuid import uuid4
 
-from .context import ContextBuilder
+from .consolidation import LLMConsolidator
+from .context import ContextBuilder, ContextConfig
 from .prompts import build_system_prompt
 from .provider import ProviderAdapter
 from .schemas import (
@@ -72,6 +73,7 @@ class Agent:
         reserve_finalization_steps: int | None = None,
         activity_prefix: str = "",
         activity_label: str | None = None,
+        context_config: ContextConfig | None = None,
     ) -> None:
         if reserve_finalization_steps is None:
             reserve_finalization_steps = min(2, max_steps)
@@ -94,11 +96,17 @@ class Agent:
         self.messages: list[dict[str, Any]] = []
         self.steps: list[AgentStep] = []
         self.completed_runs: list[AgentRun] = []
+        self.task_starts: list[int] = []
         self.session_store: SessionStore | None = None
         self.session_id: str | None = None
         self.record_pending_actions = True
-        self.context_builder = ContextBuilder()
         self.token_tracker = TokenTracker(model=self.model)
+        self.context_builder = ContextBuilder(
+            LLMConsolidator(
+                provider_adapter, on_usage=lambda usage: self.token_tracker.add(usage)
+            ),
+            config=context_config,
+        )
         self.system_prompt = build_system_prompt(
             workspace_root=registry.workspace_root,
             registry=registry,
@@ -127,11 +135,27 @@ class Agent:
         self._approved_commands.clear()
 
     def build_context_result(self, objective: str | None = None) -> ContextBuildResult:
-        return self.context_builder.build_with_metadata(
+        return self.context_builder.inspect(
             cast(Any, self.messages),
-            steps=self.steps,
             objective=objective,
-            pending_action=self._current_pending_action(),
+            task_starts=self.task_starts or None,
+            request_overhead_tokens=self._context_overhead_tokens(),
+        )
+
+    def _context_overhead_tokens(
+        self, extra_messages: list[dict[str, Any]] | None = None
+    ) -> int:
+        return self.context_builder.measure_tokens(
+            [
+                {"role": "system", "content": self.system_prompt},
+                {
+                    "tools": [
+                        tool.model_dump()
+                        for tool in self.registry.to_tool_definitions()
+                    ]
+                },
+                *(extra_messages or []),
+            ]
         )
 
     def create_snapshot(
@@ -150,6 +174,8 @@ class Agent:
             messages=cast(list[dict[str, Any]], self.messages),
             steps=self.steps,
             completed_runs=self.completed_runs,
+            working_context=self.context_builder.state.model_copy(deep=True),
+            task_starts=list(self.task_starts),
             read_files=self._snapshot_paths(self.registry.read_files),
             changed_files=self._snapshot_paths(self.registry.changed_files),
             original_file_contents=self._snapshot_original_file_contents(),
@@ -164,6 +190,12 @@ class Agent:
         self.messages = list(snapshot.messages)
         self.steps = list(snapshot.steps)
         self.completed_runs = list(snapshot.completed_runs)
+        self.context_builder.state = snapshot.working_context.model_copy(deep=True)
+        self.task_starts = list(snapshot.task_starts) or [
+            i
+            for i, message in enumerate(self.messages)
+            if message.get("role") == "user" and isinstance(message.get("content"), str)
+        ]
         self.registry.read_files = {
             self._restore_snapshot_path(path) for path in snapshot.read_files
         }
@@ -189,6 +221,7 @@ class Agent:
         run_steps: list[AgentStep] = []
         run_id = self._new_run_id()
         self._record_run_started(run_id, user_task)
+        self.task_starts.append(len(self.messages))
         self.messages.append(
             {
                 "role": "user",
@@ -210,17 +243,9 @@ class Agent:
                 print(text, end="", flush=True)
                 streamed_text = True
 
-            model_messages = cast(
-                list[dict[str, Any]],
-                self.context_builder.build(
-                    cast(Any, self.messages),
-                    self.steps,
-                    objective=user_task,
-                    pending_action=self._current_pending_action(),
-                ),
-            )
+            extra_messages: list[dict[str, Any]] = []
             if self.reserve_finalization_steps:
-                model_messages.append(
+                extra_messages.append(
                     {
                         "role": "user",
                         "content": self._step_budget_message(
@@ -229,6 +254,13 @@ class Agent:
                         ),
                     }
                 )
+            model_messages = await self.context_builder.build(
+                self.messages,
+                objective=user_task,
+                task_starts=self.task_starts,
+                request_overhead_tokens=self._context_overhead_tokens(extra_messages),
+            )
+            model_messages.extend(extra_messages)
             model_request_started = perf_counter()
             self._record_model_request_started(
                 run_id=run_id,
@@ -870,15 +902,6 @@ class Agent:
                 }
             )
         )
-
-    def _current_pending_action(self) -> PendingAction | None:
-        if (
-            self.session_store is None
-            or self.session_id is None
-            or not self.record_pending_actions
-        ):
-            return None
-        return self.session_store.read_pending_action(self.session_id)
 
     def _preview_text(self, text: str) -> str:
         redacted = redact_text(text)

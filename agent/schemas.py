@@ -234,25 +234,6 @@ class AgentRun(BaseModel):
     final_stop_reason: str | None
 
 
-class CommandSummary(BaseModel):
-    command: str
-    status: Literal["passed", "failed", "error", "unknown"]
-    exit_code: int | None = None
-
-
-class EditSummary(BaseModel):
-    step_number: int
-    tool_name: Literal["edit_file", "write_file"]
-    path: str
-    status: Literal["applied", "error"]
-
-
-class ToolErrorSummary(BaseModel):
-    step_number: int
-    tool_name: str
-    message: str
-
-
 class PendingAction(BaseModel):
     """Tool action that started before the latest durable checkpoint."""
 
@@ -262,21 +243,30 @@ class PendingAction(BaseModel):
     tool_use_id: str
 
 
-class StructuredContextSummary(BaseModel):
-    """Structured facts retained when older raw context is compacted."""
+class ConsolidatedState(BaseModel):
+    """Minimum sufficient state to continue without the folded raw prefix."""
 
-    goal: str | None = None
-    files_read: list[str] = Field(default_factory=list)
-    files_changed: list[str] = Field(default_factory=list)
-    edits: list[EditSummary] = Field(default_factory=list)
-    decisions: list[str] = Field(default_factory=list)
-    commands_run: list[CommandSummary] = Field(default_factory=list)
-    tool_errors: list[ToolErrorSummary] = Field(default_factory=list)
-    pending_action: PendingAction | None = None
+    model_config = {"extra": "forbid", "strict": True}
+
+    current_objective: str | None
+    current_status: str
+    findings: list[str]
+    decisions: list[str]
+    files_changed: list[str]
+    unresolved: list[str]
+    verification: list[str]
+    important_context: list[str]
+
+
+class WorkingContextState(BaseModel):
+    """A single rolling state and its exclusive offset into full raw history."""
+
+    consolidated_state: ConsolidatedState | None = None
+    folded_message_count: int = Field(default=0, ge=0)
 
 
 class ContextBuildResult(BaseModel):
-    """Working context plus deterministic compaction measurements."""
+    """Working context and compaction measurements (chars kept for tracing)."""
 
     messages: list[dict[str, Any]]
     original_message_count: int = Field(ge=0)
@@ -286,6 +276,10 @@ class ContextBuildResult(BaseModel):
     snipped_tool_results: int = Field(ge=0)
     hard_collapsed: bool
     summary_included: bool
+    original_context_tokens: int = Field(default=0, ge=0)
+    final_context_tokens: int = Field(default=0, ge=0)
+    folded_message_count: int = Field(default=0, ge=0)
+    consolidation_error: str | None = None
 
 
 SessionEventType = Literal[
@@ -335,6 +329,8 @@ class SessionEvent(BaseModel):
     final_message_count: int | None = Field(default=None, ge=0)
     original_context_chars: int | None = Field(default=None, ge=0)
     final_context_chars: int | None = Field(default=None, ge=0)
+    original_context_tokens: int | None = Field(default=None, ge=0)
+    final_context_tokens: int | None = Field(default=None, ge=0)
     snipped_tool_results: int | None = Field(default=None, ge=0)
     hard_collapsed: bool | None = None
     summary_included: bool | None = Field(
@@ -365,6 +361,8 @@ class SessionSnapshot(BaseModel):
     messages: list[dict[str, Any]] = Field(default_factory=list)
     steps: list[AgentStep] = Field(default_factory=list)
     completed_runs: list[AgentRun] = Field(default_factory=list)
+    working_context: WorkingContextState = Field(default_factory=WorkingContextState)
+    task_starts: list[int] = Field(default_factory=list)
     read_files: list[str] = Field(default_factory=list)
     changed_files: list[str] = Field(default_factory=list)
     original_file_contents: dict[str, str | None] = Field(default_factory=dict)
