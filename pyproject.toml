@@ -39,7 +39,7 @@ warn_return_any = true
 warn_unused_ignores = true
 
 [tool.setuptools]
-packages = ["agent", "scripts"]
+packages = ["agent", "agent.state", "agent.tooling", "scripts"]
 py-modules = ["main"]
 
 [build-system]

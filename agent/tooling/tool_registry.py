@@ -2,10 +2,10 @@ import shlex
 from pathlib import Path
 from typing import Any
 
-from .schemas import ToolDefinition
+from ..schemas import ToolDefinition
+from ..workspace import resolve_workspace_path
 from .tool import Tool
 from .tools import _build_unified_diff
-from .workspace import resolve_workspace_path
 
 
 class ToolRegistry:

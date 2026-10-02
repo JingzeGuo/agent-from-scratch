@@ -6,8 +6,8 @@ from typing import Any, Protocol
 
 from pydantic import ValidationError
 
-from .provider import ProviderAdapter
-from .schemas import ConsolidatedState, TokenUsage
+from ..provider import ProviderAdapter
+from ..schemas import ConsolidatedState, TokenUsage
 
 CONSOLIDATION_PROMPT = """Construct the minimum sufficient state required for a
 coding agent to continue without access to the discarded raw history. This is

@@ -1,7 +1,7 @@
 import pytest
 
 from agent.schemas import TokenUsage
-from agent.token_tracker import TokenTracker
+from agent.state.token_tracker import TokenTracker
 
 
 def test_token_tracker_accumulates_usage(

@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from types import TracebackType
 
-from .schemas import TokenUsage
+from ..schemas import TokenUsage
 
 
 @dataclass(frozen=True)

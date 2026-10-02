@@ -19,7 +19,6 @@ from agent.cli_commands import (
     prompt_tool_approval,
     report_interrupted_action,
 )
-from agent.context import ContextBudgetExceeded
 from agent.provider import (
     DeepSeekProvider,
     ProviderRequestError,
@@ -27,8 +26,9 @@ from agent.provider import (
     load_deepseek_config,
 )
 from agent.schemas import SessionEvent
-from agent.session import SessionStore, utc_timestamp
-from agent.setup import create_registry
+from agent.state.context import ContextBudgetExceeded
+from agent.state.session import SessionStore, utc_timestamp
+from agent.tooling.setup import create_registry
 
 PACKAGE_NAME = "agent-from-scratch"
 FALLBACK_VERSION = "0.1.0"

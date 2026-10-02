@@ -5,9 +5,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from agent.consolidation import LLMConsolidator
-from agent.context import ContextBuilder
 from agent.schemas import ProviderResponse, TokenUsage, WorkingContextState
+from agent.state.consolidation import LLMConsolidator
+from agent.state.context import ContextBuilder
 from tests.test_context import build, make_state, task
 
 

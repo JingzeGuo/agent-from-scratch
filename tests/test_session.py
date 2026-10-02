@@ -11,7 +11,7 @@ from agent.schemas import (
     ToolCall,
     ToolResult,
 )
-from agent.session import SessionStore
+from agent.state.session import SessionStore
 
 
 def make_snapshot(

@@ -5,7 +5,8 @@ from typing import Any
 
 import pytest
 
-from agent.context import (
+from agent.schemas import ConsolidatedState, ContextBuildResult
+from agent.state.context import (
     CONSOLIDATED_STATE_HEADER,
     ContextBudgetExceeded,
     ContextBuilder,
@@ -13,7 +14,6 @@ from agent.context import (
     Message,
     count_tokens,
 )
-from agent.schemas import ConsolidatedState, ContextBuildResult
 
 
 def make_state(

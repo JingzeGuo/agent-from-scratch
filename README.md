@@ -55,7 +55,7 @@ The current directory becomes the workspace root.
 Relative `AGENT_STATE_DIR` values are resolved from the workspace root.
 
 Estimated cost is available for the models listed in
-`agent/token_tracker.py`. The estimate covers configured input and output token
+`agent/state/token_tracker.py`. The estimate covers configured input and output token
 prices only.
 
 ## CLI
@@ -176,7 +176,7 @@ history fits below it. Only when necessary does it fold an active task's old
 prefix, preserving the latest messages and complete tool exchanges. Later folds
 merge the previous state with newly aged history into one replacement state.
 
-`agent/consolidation.py` uses the existing model adapter to construct validated
+`agent/state/consolidation.py` uses the existing model adapter to construct validated
 JSON with findings, decisions, changes, unresolved work, verification, relevant
 context, and the current task's objective. Invalid or oversized output shares one
 repair attempt before fallback; state size includes the objective and message framing. Failed
@@ -213,21 +213,29 @@ Legacy character metrics and the `summary_included` trace field remain compatibl
 
 ## Architecture
 
+`agent/` keeps the controller, provider adapter, shared schemas, and policies at
+the top level. `agent/state/` owns context, sessions, and token accounting;
+`agent/tooling/` owns tool implementations, registration, and retries.
+
 | File | Responsibility |
 | --- | --- |
 | `main.py` | CLI parsing, provider setup, sessions, and startup wiring |
 | `agent/agent.py` | Explicit controller loop, scheduling, approvals, traces, and termination |
+| `agent/cli_commands.py` | Interactive slash commands and session controls |
 | `agent/provider.py` | DeepSeek transport and provider-neutral response normalization |
-| `agent/setup.py` | Default tool registry and read-only child profile |
-| `agent/tool.py` | Tool schemas, validation, execution, and retry boundary |
-| `agent/tool_registry.py` | Dispatch, workspace action tracking, and diffs |
-| `agent/tools.py` | Built-in tool implementations |
-| `agent/context.py` | Token pressure, prefix selection, working context, emergency fallback |
-| `agent/consolidation.py` | LLM-generated, schema-validated continuation state |
-| `agent/session.py` | Snapshots, pending actions, and JSONL events |
+| `agent/prompts.py` | System prompt and tool guidance |
+| `agent/tooling/setup.py` | Default tool registry and read-only child profile |
+| `agent/tooling/tool.py` | Tool schemas, validation, execution, and retry boundary |
+| `agent/tooling/tool_registry.py` | Dispatch, workspace action tracking, and diffs |
+| `agent/tooling/tools.py` | Built-in tool implementations |
+| `agent/tooling/retry.py` | Retry policy for transient tool errors |
+| `agent/state/context.py` | Token pressure, prefix selection, working context, emergency fallback |
+| `agent/state/consolidation.py` | LLM-generated, schema-validated continuation state |
+| `agent/state/session.py` | Snapshots, pending actions, and JSONL events |
 | `agent/schemas.py` | Provider-neutral controller and session models |
 | `agent/security.py` | Command policy and trace redaction |
-| `agent/token_tracker.py` | Token totals and estimated cost |
+| `agent/workspace.py` | Workspace-relative path resolution |
+| `agent/state/token_tracker.py` | Token totals and estimated cost |
 | `scripts/evaluate_coding_tasks.py` | Deterministic, live-model, and patch-generation evaluation |
 
 ## Evaluation

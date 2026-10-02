@@ -7,9 +7,9 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
+from ..schemas import ToolDefinition
+from ..security import ToolApprovalPolicy
 from .retry import retry
-from .schemas import ToolDefinition
-from .security import ToolApprovalPolicy
 
 
 @dataclass

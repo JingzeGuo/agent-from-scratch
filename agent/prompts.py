@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from .tool_registry import ToolRegistry
+from .tooling.tool_registry import ToolRegistry
 
 _TOOL_GUIDANCE: dict[str, str] = {
     "glob_files": "Find files matching a workspace-relative glob.",

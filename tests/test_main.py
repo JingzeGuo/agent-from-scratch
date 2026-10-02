@@ -8,7 +8,6 @@ import pytest
 
 from agent.agent import Agent
 from agent.cli_commands import handle_command
-from agent.context import ContextBudgetExceeded
 from agent.provider import DeepSeekProvider, ProviderRequestError
 from agent.schemas import (
     AgentRun,
@@ -20,8 +19,9 @@ from agent.schemas import (
     ToolCall,
 )
 from agent.security import classify_command
-from agent.session import SessionStore, utc_timestamp
-from agent.tool_registry import ToolRegistry
+from agent.state.context import ContextBudgetExceeded
+from agent.state.session import SessionStore, utc_timestamp
+from agent.tooling.tool_registry import ToolRegistry
 from main import (
     CliSessionState,
     checkpoint_session,

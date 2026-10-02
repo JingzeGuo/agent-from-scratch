@@ -4,7 +4,7 @@ Each function here is a pure Python implementation that does NOT know
 anything about LLMs, Pydantic, or schemas. They just take typed inputs
 and return strings (or raise exceptions on failure).
 
-The Tool wrapper class in `agent/tool.py` will adapt these into LLM-callable
+The Tool wrapper class in `agent/tooling/tool.py` adapts these into LLM-callable
 tools with schema + validation.
 """
 
@@ -22,8 +22,8 @@ from typing import Any, Literal, cast
 
 import httpx
 
-from .security import classify_command
-from .workspace import resolve_workspace_path
+from ..security import classify_command
+from ..workspace import resolve_workspace_path
 
 _SKIPPED_DIRS = {".git", ".venv", "node_modules", "build", "dist"}
 
@@ -460,8 +460,8 @@ async def sub_agent(
     if parent_agent.registry.workspace_root is None:
         raise ValueError("Workspace root is required.")
 
-    from .agent import Agent
-    from .schemas import TokenUsage
+    from ..agent import Agent
+    from ..schemas import TokenUsage
     from .setup import AGENT_PROFILES, create_registry
 
     profile_config = AGENT_PROFILES[profile]

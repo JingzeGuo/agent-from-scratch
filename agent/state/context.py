@@ -9,8 +9,8 @@ from typing import Any
 
 import tiktoken
 
+from ..schemas import ConsolidatedState, ContextBuildResult, WorkingContextState
 from .consolidation import Consolidator
-from .schemas import ConsolidatedState, ContextBuildResult, WorkingContextState
 
 Message = dict[str, Any]
 CONSOLIDATED_STATE_HEADER = "[Consolidated state]"

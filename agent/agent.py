@@ -6,8 +6,6 @@ from time import perf_counter
 from typing import Any, cast
 from uuid import uuid4
 
-from .consolidation import LLMConsolidator
-from .context import ContextBuilder, ContextConfig
 from .prompts import build_system_prompt
 from .provider import ProviderAdapter
 from .schemas import (
@@ -23,9 +21,11 @@ from .schemas import (
     ToolResult,
 )
 from .security import ToolApprovalPolicy, classify_command, redact_text
-from .session import SessionStore, utc_timestamp
-from .token_tracker import TokenTracker
-from .tool_registry import ToolRegistry
+from .state.consolidation import LLMConsolidator
+from .state.context import ContextBuilder, ContextConfig
+from .state.session import SessionStore, utc_timestamp
+from .state.token_tracker import TokenTracker
+from .tooling.tool_registry import ToolRegistry
 from .workspace import resolve_workspace_path
 
 TRACE_PREVIEW_CHARS = 500

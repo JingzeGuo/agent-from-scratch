@@ -11,7 +11,6 @@ import pytest
 from pydantic import BaseModel
 
 from agent.agent import Agent
-from agent.context import ContextBuilder
 from agent.prompts import build_system_prompt
 from agent.schemas import (
     AgentRun,
@@ -27,11 +26,12 @@ from agent.schemas import (
     ToolResult,
 )
 from agent.security import ToolApprovalPolicy
-from agent.session import SessionStore
-from agent.setup import create_registry as create_workspace_registry
-from agent.tool import Tool
-from agent.tool_registry import ToolRegistry
-from agent.tools import run_command
+from agent.state.context import ContextBuilder
+from agent.state.session import SessionStore
+from agent.tooling.setup import create_registry as create_workspace_registry
+from agent.tooling.tool import Tool
+from agent.tooling.tool_registry import ToolRegistry
+from agent.tooling.tools import run_command
 
 MessageParam = dict[str, Any]
 
@@ -288,7 +288,7 @@ def test_agent_uses_context_builder_for_model_messages() -> None:
 
 
 def test_agent_consolidates_with_provider_and_counts_usage() -> None:
-    from agent.context import ContextConfig
+    from agent.state.context import ContextConfig
     from tests.test_context import make_state, task
 
     state = make_state("Wrong old objective")
@@ -314,7 +314,7 @@ def test_agent_consolidates_with_provider_and_counts_usage() -> None:
 
 
 def test_consolidated_snapshot_resumes_without_refolding_old_history(tmp_path: Path) -> None:
-    from agent.context import ContextConfig
+    from agent.state.context import ContextConfig
     from tests.test_context import FakeConsolidator, build, task
 
     agent, _ = create_agent([])

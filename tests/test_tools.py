@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.setup import AGENT_PROFILES, create_registry
+from agent.tooling.setup import AGENT_PROFILES, create_registry
 
 pytestmark = pytest.mark.anyio
 

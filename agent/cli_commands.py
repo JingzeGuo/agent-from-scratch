@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from .agent import Agent
 from .schemas import SessionEvent, ToolCall
 from .security import ToolApprovalPolicy
-from .session import SessionStore, utc_timestamp
+from .state.session import SessionStore, utc_timestamp
 from .workspace import resolve_workspace_path
 
 COMMANDS = {

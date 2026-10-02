@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from agent.setup import create_registry
+from agent.tooling.setup import create_registry
 
 
 @dataclass(frozen=True)

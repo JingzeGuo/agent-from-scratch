@@ -2,8 +2,8 @@ import httpx
 import pytest
 from pydantic import BaseModel
 
-from agent.retry import is_transient_error, retry
-from agent.tool import Tool
+from agent.tooling.retry import is_transient_error, retry
+from agent.tooling.tool import Tool
 
 
 class SampleToolInput(BaseModel):
@@ -20,7 +20,7 @@ async def test_retry_succeeds_on_third_attempt(
     async def fake_sleep(wait_time: float) -> None:
         sleep_calls.append(wait_time)
 
-    monkeypatch.setattr("agent.retry.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("agent.tooling.retry.asyncio.sleep", fake_sleep)
 
     @retry(max_attempts=3, backoff=2)
     async def flaky_operation() -> str:
@@ -44,7 +44,7 @@ async def test_retry_raises_after_max_attempts(
     async def no_sleep(_: float) -> None:
         return None
 
-    monkeypatch.setattr("agent.retry.asyncio.sleep", no_sleep)
+    monkeypatch.setattr("agent.tooling.retry.asyncio.sleep", no_sleep)
 
     @retry(max_attempts=3)
     async def failing_operation() -> None:
@@ -94,7 +94,7 @@ async def test_async_tool_uses_retry(
     async def fake_sleep(wait_time: float) -> None:
         sleep_calls.append(wait_time)
 
-    monkeypatch.setattr("agent.retry.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("agent.tooling.retry.asyncio.sleep", fake_sleep)
 
     async def sample_tool(value: str) -> str:
         nonlocal attempts

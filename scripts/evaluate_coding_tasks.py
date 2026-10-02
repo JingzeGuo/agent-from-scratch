@@ -31,9 +31,9 @@ from agent.schemas import (
     ToolResult,
 )
 from agent.security import ToolApprovalPolicy
-from agent.session import SessionStore
-from agent.setup import create_registry
-from agent.tool_registry import ToolRegistry
+from agent.state.session import SessionStore
+from agent.tooling.setup import create_registry
+from agent.tooling.tool_registry import ToolRegistry
 
 PYTHON = sys.executable
 EvaluationMode = Literal["deterministic", "real_model", "swe_bench"]
@@ -253,7 +253,7 @@ def build_cases() -> dict[str, CodingTaskCase]:
                 "class, and do not edit anything."
             ),
             files={
-                "agent/token_tracker.py": (
+                "agent/state/token_tracker.py": (
                     "class TokenTracker:\n"
                     "    def estimated_cost(self) -> float:\n"
                     "        return 0.0\n"
@@ -267,20 +267,20 @@ def build_cases() -> dict[str, CodingTaskCase]:
                 ),
                 tool_step(
                     "read_file",
-                    {"path": "agent/token_tracker.py", "offset": 1, "limit": 80},
+                    {"path": "agent/state/token_tracker.py", "offset": 1, "limit": 80},
                     "read-tracker",
                 ),
                 final_step(
                     "Estimated cost is calculated by TokenTracker in "
-                    "agent/token_tracker.py."
+                    "agent/state/token_tracker.py."
                 ),
             ],
             acceptance_criteria=[
                 "Search the repository before answering.",
-                "Name agent/token_tracker.py and TokenTracker.",
+                "Name agent/state/token_tracker.py and TokenTracker.",
                 "Do not modify files.",
             ],
-            expected_final_text="agent/token_tracker.py",
+            expected_final_text="agent/state/token_tracker.py",
         ),
         "small_bug_fix": CodingTaskCase(
             name="small_bug_fix",
