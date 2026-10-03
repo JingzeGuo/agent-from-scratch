@@ -240,7 +240,9 @@ returns. The next task never waits for formation. The existing provider extracts
 zero to three evidenced candidates, then chooses ADD, MERGE, SUPERSEDE, or NOOP
 against similar active memories. MERGE updates an existing record; SUPERSEDE
 atomically retains the old fact and links its replacement. Experiences retain
-their historical meaning. Echo checks reject mere reuse without new information.
+their historical meaning. MERGE and SUPERSEDE inherit the target's access mode,
+subject to the core token budget; only ADD uses the candidate's routing decision.
+Echo checks reject mere reuse without new information.
 
 Formation uses only the captured snapshot and store, with no later reads of live
 agent history. Token usage contributes to the existing token tracker. Exceptions

@@ -266,7 +266,6 @@ class LLMMemoryFormation:
                 update={
                     "id": target.id,
                     "content": redact_text(decision.content),
-                    "access": "core" if target.access == "core" else record.access,
                     "created_at": target.created_at,
                     "supersedes": target.supersedes,
                     "files": list(dict.fromkeys([*target.files, *record.files])),
@@ -275,6 +274,10 @@ class LLMMemoryFormation:
                     ),
                 }
             )
+        if decision.action in {"MERGE", "SUPERSEDE"}:
+            assert target is not None
+            # Content updates preserve access; the core budget still applies below.
+            record = record.model_copy(update={"access": target.access})
         if record.access == "core":
             other_core = [
                 m

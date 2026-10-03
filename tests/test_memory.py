@@ -248,6 +248,54 @@ def test_supersede_retains_old_record_and_filters_retrieval(store: MemoryStore) 
     assert store.search("parser", access=None) == active
 
 
+@pytest.mark.parametrize("action", ["MERGE", "SUPERSEDE"])
+@pytest.mark.parametrize(
+    "access,route", [("core", "RETRIEVAL"), ("retrieval", "CORE")]
+)
+def test_memory_updates_inherit_access_despite_candidate_route(
+    store: MemoryStore, action: str, access: str, route: str
+) -> None:
+    original = memory(access=access)
+    store.add(original)
+    llm = provider(
+        {"candidates": [candidate(route=route)]},
+        {
+            "action": action,
+            "target_id": original.id,
+            "content": "The parser accepts empty token lists after validation.",
+        },
+    )
+
+    asyncio.run(LLMMemoryFormation(llm, store).form(snapshot()))
+
+    active = store.search("parser", access=None)
+    assert len(active) == 1
+    assert active[0].access == original.access
+
+
+@pytest.mark.parametrize("action", ["MERGE", "SUPERSEDE"])
+def test_inherited_core_access_still_obeys_budget(
+    store: MemoryStore, action: str
+) -> None:
+    original = memory(access="core")
+    store.add(original)
+    budget = count_tokens(render_memories("Core memories", [original]))
+    content = "Parser validation handles empty token lists. " * 100
+    llm = provider(
+        {"candidates": [candidate(route="CORE", content=content)]},
+        {"action": action, "target_id": original.id, "content": content},
+    )
+
+    asyncio.run(
+        LLMMemoryFormation(llm, store, config=MemoryConfig(core_tokens=budget)).form(
+            snapshot()
+        )
+    )
+
+    assert store.get_core() == []
+    assert store.search("parser")[0].content == content
+
+
 @pytest.mark.parametrize(
     "route,decision", [("NOOP", None), ("RETRIEVAL", {"action": "NOOP"})]
 )
