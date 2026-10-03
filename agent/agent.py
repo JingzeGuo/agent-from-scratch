@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from collections.abc import Callable
 from pathlib import Path
 from time import perf_counter
@@ -23,6 +24,8 @@ from .schemas import (
 from .security import ToolApprovalPolicy, classify_command, redact_text
 from .state.consolidation import LLMConsolidator
 from .state.context import ContextBuilder, ContextConfig
+from .state.memory import MemoryConfig, MemoryStore, TaskMemoryContext, load_task_memory
+from .state.memory_formation import LLMMemoryFormation, capture_task_memory
 from .state.session import SessionStore, utc_timestamp
 from .state.token_tracker import TokenTracker
 from .tooling.tool_registry import ToolRegistry
@@ -38,6 +41,7 @@ PARALLEL_READ_ONLY_TOOLS = {
     "get_diff",
 }
 ApprovalCallback = Callable[[ToolCall, ToolApprovalPolicy], bool]
+logger = logging.getLogger(__name__)
 
 
 def format_tool_activity(tool_call: ToolCall) -> str:
@@ -74,6 +78,8 @@ class Agent:
         activity_prefix: str = "",
         activity_label: str | None = None,
         context_config: ContextConfig | None = None,
+        memory_store: MemoryStore | None = None,
+        memory_config: MemoryConfig | None = None,
     ) -> None:
         if reserve_finalization_steps is None:
             reserve_finalization_steps = min(2, max_steps)
@@ -106,6 +112,21 @@ class Agent:
                 provider_adapter, on_usage=lambda usage: self.token_tracker.add(usage)
             ),
             config=context_config,
+        )
+        self.memory_store = memory_store
+        self.memory_config = memory_config or MemoryConfig()
+        self.task_memory_context = TaskMemoryContext()
+        self._memory_jobs: set[asyncio.Task[None]] = set()
+        self.memory_formation = (
+            LLMMemoryFormation(
+                provider_adapter,
+                memory_store,
+                config=self.memory_config,
+                token_counter=self.context_builder.token_counter,
+                on_usage=self.token_tracker.add,
+            )
+            if memory_store is not None
+            else None
         )
         self.system_prompt = build_system_prompt(
             workspace_root=registry.workspace_root,
@@ -147,7 +168,7 @@ class Agent:
     ) -> int:
         return self.context_builder.measure_tokens(
             [
-                {"role": "system", "content": self.system_prompt},
+                {"role": "system", "content": self._request_system_prompt()},
                 {
                     "tools": [
                         tool.model_dump()
@@ -157,6 +178,10 @@ class Agent:
                 *(extra_messages or []),
             ]
         )
+
+    def _request_system_prompt(self) -> str:
+        memory = self.task_memory_context.render()
+        return self.system_prompt + ("\n\n" + memory if memory else "")
 
     def create_snapshot(
         self,
@@ -210,6 +235,9 @@ class Agent:
         self.token_tracker.input_tokens = snapshot.input_tokens
         self.token_tracker.output_tokens = snapshot.output_tokens
         self.token_tracker._estimated_cost = snapshot.estimated_cost
+        self.task_memory_context = TaskMemoryContext()
+        if self.memory_formation is not None:
+            self.memory_formation.on_usage = self.token_tracker.add
         self.clear_approval_cache()
         self.system_prompt = build_system_prompt(
             workspace_root=self.registry.workspace_root,
@@ -218,6 +246,16 @@ class Agent:
         )
 
     async def run(self, user_task: str) -> AgentRun:
+        self.task_memory_context = (
+            load_task_memory(
+                self.memory_store,
+                user_task,
+                self.memory_config,
+                self.context_builder.token_counter,
+            )
+            if self.memory_store is not None
+            else TaskMemoryContext()
+        )
         run_steps: list[AgentStep] = []
         run_id = self._new_run_id()
         self._record_run_started(run_id, user_task)
@@ -267,7 +305,7 @@ class Agent:
                 step_number=step,
             )
             response = await self.provider_adapter.stream_response(
-                system=self.system_prompt,
+                system=self._request_system_prompt(),
                 tools=self.registry.to_tool_definitions(),
                 messages=model_messages,
                 on_text_delta=print_text_delta if self.stream_output else None,
@@ -377,7 +415,29 @@ class Agent:
             objective=objective,
             agent_run=agent_run,
         )
+        if self.memory_formation is not None:
+            snapshot = capture_task_memory(
+                agent_run, self.task_memory_context, self.registry.workspace_root
+            )
+            job = asyncio.create_task(
+                self.memory_formation.form(snapshot), name=f"memory:{run_id}"
+            )
+            self._memory_jobs.add(job)
+            job.add_done_callback(self._memory_job_finished)
         return agent_run
+
+    def _memory_job_finished(self, job: asyncio.Task[None]) -> None:
+        self._memory_jobs.discard(job)
+        if not job.cancelled() and (error := job.exception()) is not None:
+            logger.error(
+                "Memory formation failed for %s", job.get_name(),
+                exc_info=(type(error), error, error.__traceback__),
+            )
+
+    async def wait_for_memory_jobs(self) -> None:
+        """Drain background jobs at shutdown/in tests, never at task start."""
+        if self._memory_jobs:
+            await asyncio.gather(*self._memory_jobs, return_exceptions=True)
 
     def print_activity(self, message: str) -> None:
         """Print one activity line with optional evaluation context."""

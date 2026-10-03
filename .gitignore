@@ -23,6 +23,7 @@ wheels/
 
 .agents/sessions/
 .agents/evals/
+.agents/memory.sqlite3*
 
 # Local SWE-bench dataset exports
 /swe_bench*.jsonl

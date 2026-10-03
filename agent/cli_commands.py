@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from .agent import Agent
 from .schemas import SessionEvent, ToolCall
 from .security import ToolApprovalPolicy
+from .state.memory import TaskMemoryContext
 from .state.session import SessionStore, utc_timestamp
 from .workspace import resolve_workspace_path
 
@@ -192,6 +193,7 @@ def handle_command(
         agent.steps.clear()
         agent.task_starts.clear()
         agent.context_builder.reset()
+        agent.task_memory_context = TaskMemoryContext()
         agent.clear_approval_cache()
         print("Conversation context reset.")
         return False

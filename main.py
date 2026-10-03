@@ -27,6 +27,7 @@ from agent.provider import (
 )
 from agent.schemas import SessionEvent
 from agent.state.context import ContextBudgetExceeded
+from agent.state.memory import MemoryStore
 from agent.state.session import SessionStore, utc_timestamp
 from agent.tooling.setup import create_registry
 
@@ -173,13 +174,19 @@ def ensure_agent_state_gitignore(workspace_root: Path) -> None:
     state_dir.mkdir(parents=True, exist_ok=True)
     gitignore_path = state_dir / ".gitignore"
     if gitignore_path.exists():
+        content = gitignore_path.read_text(encoding="utf-8")
+        if "memory.sqlite3*" not in content.splitlines():
+            gitignore_path.write_text(
+                content.rstrip("\n") + "\nmemory.sqlite3*\n", encoding="utf-8"
+            )
         return
     gitignore_path.write_text(
         "\n".join(
             [
                 "# Agent runtime state.",
-                "# Ignore generated sessions and evaluation outputs.",
+                "# Ignore generated sessions, memory, and evaluation outputs.",
                 "sessions/",
+                "memory.sqlite3*",
                 "evals/",
                 "pending/",
                 "",
@@ -234,7 +241,7 @@ async def run_cli(
     session_state: CliSessionState | None = None,
 ) -> None:
     while True:
-        user_input = read_user_task()
+        user_input = await asyncio.to_thread(read_user_task)
         if user_input.should_exit:
             print("Goodbye.")
             return
@@ -308,6 +315,7 @@ async def main(argv: Sequence[str] | None = None) -> None:
         return
     ensure_agent_state_gitignore(workspace_root)
     registry = create_registry(workspace_root)
+    memory_store = MemoryStore(default_agent_state_dir(workspace_root) / "memory.sqlite3")
     agent = Agent(
         provider_adapter=DeepSeekProvider(
             model=config.model,
@@ -315,6 +323,7 @@ async def main(argv: Sequence[str] | None = None) -> None:
             base_url=config.base_url,
         ),
         registry=registry,
+        memory_store=memory_store,
     )
     agent.configure_approval_callback(prompt_tool_approval)
     session_state = CliSessionState(session_id=generate_session_id())
@@ -345,7 +354,11 @@ async def main(argv: Sequence[str] | None = None) -> None:
         )
     agent.configure_session_recording(session_store, session_state.session_id)
     print(f"Provider: {agent.provider} | Model: {agent.model}")
-    await run_cli(agent, session_store, session_state)
+    try:
+        await run_cli(agent, session_store, session_state)
+    finally:
+        await agent.wait_for_memory_jobs()
+        memory_store.close()
 
 
 def cli() -> None:

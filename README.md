@@ -155,6 +155,7 @@ By default, runtime state is stored under `.agents/`:
     events/                 append-only JSONL traces
     pending/                uncheckpointed tool-action markers
   evals/                    generated evaluation output
+  memory.sqlite3            repository-local long-term memory
 ```
 
 Snapshots preserve messages, steps, completed runs, file tracking, and token
@@ -197,8 +198,8 @@ Configure `Agent(..., context_config=ContextConfig(...))` in Python. Defaults:
 | Pathological single tool-result limit | 16,000 tokens |
 | Retained head + tail of a pathological result | 2,000 tokens plus truncation marker |
 
-Token pressure includes system instructions, tool definitions, and runtime step
-instructions. Counting uses `tiktoken`'s `cl100k_base` BPE as an estimate, not
+Token pressure includes system instructions, long-term memory, tool definitions,
+and runtime step instructions. Counting uses `tiktoken`'s `cl100k_base` BPE as an estimate, not
 DeepSeek's exact tokenizer; `ContextBuilder` accepts an alternative token counter.
 The tokenizer downloads and caches its vocabulary on first use (offline hosts
 must prepopulate the cache, optionally via `TIKTOKEN_CACHE_DIR`). Normal-sized
@@ -210,6 +211,62 @@ consolidated state, folded-prefix offset, and task boundaries. Old snapshots loa
 with an empty working state. `/reset` clears this state with the conversation.
 Legacy character metrics and the `summary_included` trace field remain compatible
 (the latter now means that a consolidated state is present).
+
+## Long-term memory (V1)
+
+The interactive CLI uses one SQLite store at `.agents/memory.sqlite3`, or
+`$AGENT_STATE_DIR/memory.sqlite3`. Use a separate state directory for each
+repository. Facts and historical experiences share the same table; user
+preferences are facts with user scope. Both scopes remain local to this store
+in V1, with no cross-repository sharing.
+
+At each task start, the agent loads active core memories and performs one FTS5
+lexical search, with file/path overlap and near-duplicate filtering. Defaults
+are at most four retrieved memories, 1,500 tokens of core memory and 1,800 tokens
+of retrieved memory. Whole records and section metadata must fit; oversized
+records are skipped. Core admission is conservative, with overflow routed to
+retrieval. Historical memories are explicitly subordinate to current user
+instructions and repository state.
+
+`TaskMemoryContext` is temporary request context in the system prompt. It is
+never appended to `Agent.messages`, folded into `ConsolidatedState`, or stored
+in session snapshots. Same-session continuity continues to use working memory.
+`/reset` clears the temporary context but leaves persistent memories intact.
+
+Task completion captures an immutable snapshot of that run's steps (including
+verification results), outcome, observed file edits, evidence references, and
+injected memory IDs/content. It schedules background formation and immediately
+returns. The next task never waits for formation. The existing provider extracts
+zero to three evidenced candidates, then chooses ADD, MERGE, SUPERSEDE, or NOOP
+against similar active memories. MERGE updates an existing record; SUPERSEDE
+atomically retains the old fact and links its replacement. Experiences retain
+their historical meaning. Echo checks reject mere reuse without new information.
+
+Formation uses only the captured snapshot and store, with no later reads of live
+agent history. Token usage contributes to the existing token tracker. Exceptions
+are logged at the background-job boundary. CLI input yields the event loop, and
+normal shutdown drains outstanding jobs. Jobs are in-process and are not resumed
+after a crash; malformed LLM output fails that job without delaying user tasks.
+File-edit metadata covers successful `edit_file`/`write_file` calls; command-driven
+changes and their verification remain available in the captured tool trajectory.
+
+For Python callers, memory is opt-in (evaluations and child agents do not enable
+it implicitly):
+
+```python
+from pathlib import Path
+from agent.agent import Agent
+from agent.state.memory import MemoryConfig, MemoryStore
+
+store = MemoryStore(Path(".agents/memory.sqlite3"))  # injectable for tests
+agent = Agent(provider, registry, memory_store=store,
+              memory_config=MemoryConfig(top_k=4))
+# Keep the same event loop alive across tasks:
+await agent.run("First task")
+await agent.run("Second task")  # does not await First task's formation
+await agent.wait_for_memory_jobs()  # shutdown/test helper only
+store.close()
+```
 
 ## Architecture
 
@@ -231,6 +288,8 @@ the top level. `agent/state/` owns context, sessions, and token accounting;
 | `agent/tooling/retry.py` | Retry policy for transient tool errors |
 | `agent/state/context.py` | Token pressure, prefix selection, working context, emergency fallback |
 | `agent/state/consolidation.py` | LLM-generated, schema-validated continuation state |
+| `agent/state/memory.py` | Unified SQLite memory store, lexical retrieval, and task memory budgets |
+| `agent/state/memory_formation.py` | Immutable task capture, LLM candidate extraction, and lifecycle updates |
 | `agent/state/session.py` | Snapshots, pending actions, and JSONL events |
 | `agent/schemas.py` | Provider-neutral controller and session models |
 | `agent/security.py` | Command policy and trace redaction |
