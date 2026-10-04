@@ -164,11 +164,16 @@ class Agent:
         )
 
     def _context_overhead_tokens(
-        self, extra_messages: list[dict[str, Any]] | None = None
+        self,
+        extra_messages: list[dict[str, Any]] | None = None,
+        *,
+        system_prompt: str | None = None,
     ) -> int:
+        if system_prompt is None:
+            system_prompt = self._request_system_prompt()
         return self.context_builder.measure_tokens(
             [
-                {"role": "system", "content": self._request_system_prompt()},
+                {"role": "system", "content": system_prompt},
                 {
                     "tools": [
                         tool.model_dump()
@@ -256,6 +261,7 @@ class Agent:
             if self.memory_store is not None
             else TaskMemoryContext()
         )
+        request_system = self._request_system_prompt()
         run_steps: list[AgentStep] = []
         run_id = self._new_run_id()
         self._record_run_started(run_id, user_task)
@@ -296,7 +302,9 @@ class Agent:
                 self.messages,
                 objective=user_task,
                 task_starts=self.task_starts,
-                request_overhead_tokens=self._context_overhead_tokens(extra_messages),
+                request_overhead_tokens=self._context_overhead_tokens(
+                    extra_messages, system_prompt=request_system
+                ),
             )
             model_messages.extend(extra_messages)
             model_request_started = perf_counter()
@@ -305,7 +313,7 @@ class Agent:
                 step_number=step,
             )
             response = await self.provider_adapter.stream_response(
-                system=self._request_system_prompt(),
+                system=request_system,
                 tools=self.registry.to_tool_definitions(),
                 messages=model_messages,
                 on_text_delta=print_text_delta if self.stream_output else None,
