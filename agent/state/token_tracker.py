@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from types import TracebackType
 
 from ..schemas import TokenUsage
 
@@ -40,12 +39,6 @@ class TokenTracker:
         self.output_tokens = 0
         self._estimated_cost = 0.0
 
-    def __enter__(self) -> "TokenTracker":
-        self.input_tokens = 0
-        self.output_tokens = 0
-        self._estimated_cost = 0.0
-        return self
-
     def add(self, usage: TokenUsage) -> None:
         self.input_tokens += usage.input_tokens
         self.output_tokens += usage.output_tokens
@@ -56,17 +49,3 @@ class TokenTracker:
     @property
     def estimated_cost(self) -> float:
         return self._estimated_cost
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        total_tokens = self.input_tokens + self.output_tokens
-        print(
-            f"Input tokens: {self.input_tokens}\n"
-            f"Output tokens: {self.output_tokens}\n"
-            f"Total tokens: {total_tokens}\n"
-            f"Estimated cost: ${self.estimated_cost:.6f}"
-        )

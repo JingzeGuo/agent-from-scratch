@@ -4,7 +4,7 @@ import logging
 from collections.abc import Callable
 from pathlib import Path
 from time import perf_counter
-from typing import Any, cast
+from typing import Any
 from uuid import uuid4
 
 from .prompts import build_system_prompt
@@ -12,7 +12,6 @@ from .provider import ProviderAdapter
 from .schemas import (
     AgentRun,
     AgentStep,
-    ContextBuildResult,
     PendingAction,
     RunOutcome,
     SessionEvent,
@@ -100,7 +99,6 @@ class Agent:
         self.activity_prefix = activity_prefix
         self.activity_label = activity_label
         self.messages: list[dict[str, Any]] = []
-        self.steps: list[AgentStep] = []
         self.completed_runs: list[AgentRun] = []
         self.task_starts: list[int] = []
         self.session_store: SessionStore | None = None
@@ -155,14 +153,6 @@ class Agent:
     def clear_approval_cache(self) -> None:
         self._approved_commands.clear()
 
-    def build_context_result(self, objective: str | None = None) -> ContextBuildResult:
-        return self.context_builder.inspect(
-            cast(Any, self.messages),
-            objective=objective,
-            task_starts=self.task_starts or None,
-            request_overhead_tokens=self._context_overhead_tokens(),
-        )
-
     def _context_overhead_tokens(
         self,
         extra_messages: list[dict[str, Any]] | None = None,
@@ -201,8 +191,7 @@ class Agent:
             provider=self.provider,
             model=self.model,
             max_steps=self.max_steps,
-            messages=cast(list[dict[str, Any]], self.messages),
-            steps=self.steps,
+            messages=self.messages,
             completed_runs=self.completed_runs,
             working_context=self.context_builder.state.model_copy(deep=True),
             task_starts=list(self.task_starts),
@@ -218,14 +207,9 @@ class Agent:
         self._validate_snapshot_workspace(snapshot)
         self.max_steps = snapshot.max_steps
         self.messages = list(snapshot.messages)
-        self.steps = list(snapshot.steps)
         self.completed_runs = list(snapshot.completed_runs)
         self.context_builder.state = snapshot.working_context.model_copy(deep=True)
-        self.task_starts = list(snapshot.task_starts) or [
-            i
-            for i, message in enumerate(self.messages)
-            if message.get("role") == "user" and isinstance(message.get("content"), str)
-        ]
+        self.task_starts = list(snapshot.task_starts)
         self.registry.read_files = {
             self._restore_snapshot_path(path) for path in snapshot.read_files
         }
@@ -361,7 +345,6 @@ class Agent:
                 tool_results=tool_results,
             )
             run_steps.append(agent_step)
-            self.steps.append(agent_step)
             self._record_step_finished(
                 run_id=run_id,
                 agent_step=agent_step,
@@ -674,12 +657,12 @@ class Agent:
         if self.stream_output:
             self.print_activity(format_tool_activity(tool_call))
         if tool_call.name == "sub_agent":
-            _, output, is_error, latency_ms = await self._run_tool_call(
+            output, is_error, latency_ms = await self._run_tool_call(
                 tool_call,
                 extra_kwargs={"parent_agent": self},
             )
         else:
-            _, output, is_error, latency_ms = await self._run_tool_call(
+            output, is_error, latency_ms = await self._run_tool_call(
                 tool_call,
                 approval_granted=approval is not None,
             )
@@ -740,7 +723,7 @@ class Agent:
         *,
         approval_granted: bool = False,
         extra_kwargs: dict[str, Any] | None = None,
-    ) -> tuple[ToolCall, str, bool, float]:
+    ) -> tuple[str, bool, float]:
         tool_started = perf_counter()
         output, is_error = await self.registry.execute(
             tool_call.name,
@@ -749,7 +732,7 @@ class Agent:
             extra_kwargs=extra_kwargs,
         )
         tool_latency_ms = (perf_counter() - tool_started) * 1000
-        return tool_call, output, is_error, tool_latency_ms
+        return output, is_error, tool_latency_ms
 
     def _required_approval(
         self,

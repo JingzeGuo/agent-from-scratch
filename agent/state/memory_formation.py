@@ -40,14 +40,15 @@ advice, obvious facts, task noise, secrets and credentials.
 Route CORE only for broadly useful, stable facts: explicit persistent user
 preferences/instructions or evidenced repository-wide constraints. Temporary bug
 state, one-off observations and experiences belong in RETRIEVAL if useful at all.
-Otherwise route NOOP. User scope is for preferences; repository scope is for
-repository-specific knowledge. Profile is not a separate kind.
+Omit candidates that are not useful; return an empty list when none qualify.
+User scope is for preferences; repository scope is for repository-specific
+knowledge. Profile is not a separate kind.
 
 injected_memories lists the exact long-term memories used in this task, with IDs.
 Merely applying one successfully is NOT new evidence and must NOT create memory.
 For each candidate, new_information must explain what this task adds beyond those
-memories (leave empty for NOOP). Cite only exact evidence_refs supplied with this
-task; retrieved memory itself and an assistant's unsupported claims are not new
+memories. Cite only exact evidence_refs supplied with this task; retrieved memory
+itself and an assistant's unsupported claims are not new
 evidence. Explicit user preferences can cite the objective. Keep records concise,
 normally under 200 words, and files repository-relative.
 """
@@ -69,7 +70,7 @@ For ADD/NOOP, target_id is null. content is required only for MERGE.
 class MemoryCandidate(BaseModel):
     model_config = {"extra": "forbid"}
 
-    route: Literal["CORE", "RETRIEVAL", "NOOP"]
+    route: Literal["CORE", "RETRIEVAL"]
     kind: MemoryKind
     scope: MemoryScope
     provenance: MemoryProvenance
@@ -191,8 +192,7 @@ class LLMMemoryFormation:
         )
         for candidate in candidates.candidates:
             if (
-                candidate.route == "NOOP"
-                or not candidate.new_information.strip()
+                not candidate.new_information.strip()
                 or not candidate.evidence_refs
                 or not set(candidate.evidence_refs).issubset(snapshot.evidence_refs)
             ):

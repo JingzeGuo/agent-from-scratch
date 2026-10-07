@@ -296,18 +296,10 @@ def test_inherited_core_access_still_obeys_budget(
     assert store.search("parser")[0].content == content
 
 
-@pytest.mark.parametrize(
-    "route,decision", [("NOOP", None), ("RETRIEVAL", {"action": "NOOP"})]
-)
-def test_noop_performs_no_write(
-    store: MemoryStore, route: str, decision: object
-) -> None:
+def test_lifecycle_noop_performs_no_write(store: MemoryStore) -> None:
     original = memory()
     store.add(original)
-    outputs: list[object] = [{"candidates": [candidate(route=route)]}]
-    if decision:
-        outputs.append(decision)
-    llm = provider(*outputs)
+    llm = provider({"candidates": [candidate()]}, {"action": "NOOP"})
     before = store.connection.total_changes
     asyncio.run(LLMMemoryFormation(llm, store).form(snapshot()))
     assert store.connection.total_changes == before

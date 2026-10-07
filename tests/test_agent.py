@@ -225,11 +225,10 @@ def test_single_tool_call_completes(
     assert agent_run.termination == "completed"
     assert agent_run.final_stop_reason == "end_turn"
     assert len(agent_run.steps) == 2
-    assert len(agent.steps) == 2
-    assert agent.steps[0].tool_calls[0].name == "read_file"
-    assert agent.steps[0].tool_results[0].content == "processed: sample"
-    assert agent.steps[0].tool_results[0].is_error is False
-    assert agent.steps[1].text == ["Done."]
+    assert agent_run.steps[0].tool_calls[0].name == "read_file"
+    assert agent_run.steps[0].tool_results[0].content == "processed: sample"
+    assert agent_run.steps[0].tool_results[0].is_error is False
+    assert agent_run.steps[1].text == ["Done."]
     assert capsys.readouterr().out == "Running read_file\nDone.\n"
 
 
@@ -310,7 +309,6 @@ def test_agent_consolidates_with_provider_and_counts_usage() -> None:
     assert agent.messages[:2] == raw
     assert agent.token_tracker.input_tokens == 20
     assert agent.token_tracker.output_tokens == 10
-    assert len(agent.steps) == 1
 
 
 def test_consolidated_snapshot_resumes_without_refolding_old_history(tmp_path: Path) -> None:
@@ -335,29 +333,14 @@ def test_consolidated_snapshot_resumes_without_refolding_old_history(tmp_path: P
     restored.context_builder = ContextBuilder(restored_fake, config)
     restored.restore_snapshot(snapshot)
     assert restored.task_starts == [0, 2, 4]
-    assert build(restored.context_builder, restored.messages, task_starts=restored.task_starts).messages == first.messages
+    assert build(restored.context_builder, restored.messages, task_starts=restored.task_starts) == first
     assert restored_fake.calls == []
     restored.messages.extend(task("Task4", 200))
     restored.task_starts.append(6)
     result = build(restored.context_builder, restored.messages, task_starts=restored.task_starts)
     assert restored_fake.calls[0][0] == snapshot.working_context.consolidated_state
     assert restored_fake.calls[0][1] == restored.messages[2:4]
-    assert result.messages[1:] == restored.messages[4:]
-
-
-def test_legacy_snapshot_restores_raw_context_and_task_boundaries() -> None:
-    from agent.schemas import SessionSnapshot
-    from tests.test_context import task
-
-    agent, _ = create_agent([])
-    agent.messages = task("Task1", 10) + task("Task2", 10)
-    data = agent.create_snapshot("legacy").model_dump()
-    data.pop("working_context")
-    data.pop("task_starts")
-    restored, _ = create_agent([])
-    restored.restore_snapshot(SessionSnapshot.model_validate(data))
-    assert restored.task_starts == [0, 2]
-    assert restored.build_context_result().messages == agent.messages
+    assert result[1:] == restored.messages[4:]
 
 
 def test_build_system_prompt_uses_workspace_and_registered_tools(
@@ -840,7 +823,6 @@ def test_agent_stops_at_max_steps(
     assert agent_run.termination == "max_steps"
     assert agent_run.final_stop_reason == "tool_use"
     assert len(agent_run.steps) == 2
-    assert len(agent.steps) == 2
     assert capsys.readouterr().out == (
         "Running read_file\n"
         "Running read_file\n"
@@ -945,8 +927,7 @@ def test_agent_handles_protocol_error_stop_reason(
     assert agent_run.termination == "protocol_error"
     assert agent_run.final_stop_reason == "max_tokens"
     assert len(agent_run.steps) == 1
-    assert len(agent.steps) == 1
-    assert agent.steps[0].stop_reason == "max_tokens"
+    assert agent_run.steps[0].stop_reason == "max_tokens"
     assert capsys.readouterr().out == (
         "Partial response\nProtocol error stop reason: max_tokens\n"
     )
@@ -972,7 +953,6 @@ def test_agent_run_contains_only_current_task_steps() -> None:
     assert len(first_run.steps) == 1
     assert second_run.objective == "Second task"
     assert len(second_run.steps) == 1
-    assert len(agent.steps) == 2
     assert agent.completed_runs == [first_run, second_run]
 
 
@@ -1662,7 +1642,6 @@ async def test_agent_creates_snapshot_from_current_state(tmp_path: Path) -> None
         list[dict[str, Any]],
         [{"role": "user", "content": "Fix module.py"}],
     )
-    agent.steps = [step]
     agent.completed_runs = [run]
     agent.token_tracker.add(TokenUsage(input_tokens=12, output_tokens=8))
 
@@ -1677,7 +1656,6 @@ async def test_agent_creates_snapshot_from_current_state(tmp_path: Path) -> None
     assert snapshot.model == "deepseek-v4-flash"
     assert snapshot.max_steps == 10
     assert snapshot.messages == [{"role": "user", "content": "Fix module.py"}]
-    assert snapshot.steps == [step]
     assert snapshot.completed_runs == [run]
     assert snapshot.read_files == ["module.py"]
     assert snapshot.changed_files == ["module.py"]
@@ -1721,7 +1699,6 @@ async def test_agent_restores_snapshot_into_current_state(tmp_path: Path) -> Non
     assert restored_agent.model == "deepseek-v4-flash"
     assert restored_agent.max_steps == snapshot.max_steps
     assert restored_agent.messages == snapshot.messages
-    assert restored_agent.steps == snapshot.steps
     assert restored_agent.completed_runs == snapshot.completed_runs
     assert restored_agent.registry.read_files == {target.resolve()}
     assert restored_agent.registry.changed_files == {target.resolve()}

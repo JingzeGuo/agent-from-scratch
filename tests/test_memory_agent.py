@@ -132,11 +132,6 @@ def test_memory_tokens_count_in_working_context_overhead(
         assert builder.overhead_calls == [
             memory_overhead + builder.measure_tokens(runtime)
         ]
-        report = agent.build_context_result()
-        assert (
-            report.final_context_tokens
-            == builder.measure_tokens(report.messages) + memory_overhead
-        )
         assert agent.task_memory_context.render() in agent._request_system_prompt()
     finally:
         store.close()
@@ -177,7 +172,6 @@ def test_next_task_runs_while_formation_pending_and_snapshot_is_detached(
         assert llm.requests[1]["messages"][0]["content"] == "First task"
         assert "Updated stored content" in llm.requests[1]["system"]
         agent.messages.clear()
-        agent.steps.clear()
         agent.completed_runs.clear()
         agent.task_memory_context = TaskMemoryContext()
         gate.set()

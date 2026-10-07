@@ -190,7 +190,6 @@ def handle_command(
             return False
 
         agent.messages.clear()
-        agent.steps.clear()
         agent.task_starts.clear()
         agent.context_builder.reset()
         agent.task_memory_context = TaskMemoryContext()

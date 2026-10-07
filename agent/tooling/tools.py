@@ -87,32 +87,14 @@ def glob_files(
         include_explicit_skipped_dirs=True,
         allow_workspace_symlinks=True,
     ):
-        matches.append(relative_path.as_posix())
         if len(matches) == max_results:
-            break
+            return "\n".join(matches) + f"\n[truncated after {max_results} files]"
+        matches.append(relative_path.as_posix())
 
     if not matches:
         return f"[No files matched pattern: {pattern}]"
 
-    truncated = _has_more_glob_matches(root, pattern, max_results)
-    output = "\n".join(matches)
-    if truncated:
-        output += f"\n[truncated after {max_results} files]"
-    return output
-
-
-def _has_more_glob_matches(root: Path, pattern: str, max_results: int) -> bool:
-    match_count = 0
-    for _ in _iter_workspace_files(
-        root,
-        pattern,
-        include_explicit_skipped_dirs=True,
-        allow_workspace_symlinks=True,
-    ):
-        match_count += 1
-        if match_count > max_results:
-            return True
-    return False
+    return "\n".join(matches)
 
 
 def search_text(
@@ -132,7 +114,6 @@ def search_text(
 
     root = workspace_root.expanduser().resolve()
     matches: list[str] = []
-    truncated = False
 
     for candidate, relative_path in _iter_workspace_files(root, file_pattern):
         if candidate.stat().st_size > _MAX_FILE_BYTES:
@@ -143,42 +124,14 @@ def search_text(
             start=1,
         ):
             if regex.search(line):
-                matches.append(f"{relative_path.as_posix()}:{line_number}: {line}")
                 if len(matches) == max_matches:
-                    truncated = _has_more_text_matches(
-                        root,
-                        file_pattern,
-                        regex,
-                        max_matches,
-                    )
-                    output = "\n".join(matches)
-                    if truncated:
-                        output += f"\n[truncated after {max_matches} matches]"
-                    return output
+                    return "\n".join(matches) + f"\n[truncated after {max_matches} matches]"
+                matches.append(f"{relative_path.as_posix()}:{line_number}: {line}")
 
     if not matches:
         return f"[No matches found for pattern: {pattern}]"
 
     return "\n".join(matches)
-
-
-def _has_more_text_matches(
-    root: Path,
-    file_pattern: str,
-    regex: re.Pattern[str],
-    max_matches: int,
-) -> bool:
-    match_count = 0
-    for candidate, _ in _iter_workspace_files(root, file_pattern):
-        if candidate.stat().st_size > _MAX_FILE_BYTES:
-            continue
-
-        for line in candidate.read_text(encoding="utf-8", errors="replace").splitlines():
-            if regex.search(line):
-                match_count += 1
-                if match_count > max_matches:
-                    return True
-    return False
 
 
 # We deliberately limit file size — don't blow up LLM's context window

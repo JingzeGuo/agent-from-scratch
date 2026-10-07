@@ -11,7 +11,6 @@ from agent.cli_commands import handle_command
 from agent.provider import DeepSeekProvider, ProviderRequestError
 from agent.schemas import (
     AgentRun,
-    AgentStep,
     PendingAction,
     SessionEvent,
     SessionSnapshot,
@@ -844,7 +843,6 @@ def test_reset_command_clears_conversation_context_only(
     read_file = tmp_path / "agent.py"
     changed_file = tmp_path / "tests.py"
     agent.messages.append({"role": "user", "content": "Previous task"})
-    agent.steps.append(AgentStep(step_number=1, stop_reason="end_turn"))
     from agent.schemas import WorkingContextState
     from tests.test_context import make_state
 
@@ -868,7 +866,6 @@ def test_reset_command_clears_conversation_context_only(
 
     assert should_exit is False
     assert agent.messages == []
-    assert agent.steps == []
     assert agent.task_starts == []
     assert agent.context_builder.state == WorkingContextState()
     assert agent._approved_commands == set()

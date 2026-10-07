@@ -1,5 +1,6 @@
 import shlex
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -147,18 +148,35 @@ async def test_glob_files_allows_explicit_workspace_symlink(tmp_path: Path) -> N
     assert is_error is False
 
 
-async def test_glob_files_truncates_results(tmp_path: Path) -> None:
-    for index in range(3):
+@pytest.mark.parametrize("file_count", [0, 1, 2, 3, 4])
+async def test_glob_files_truncates_results_in_one_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, file_count: int
+) -> None:
+    for index in range(file_count):
         (tmp_path / f"file_{index}.py").write_text("", encoding="utf-8")
     registry = create_registry(tmp_path)
+    scans: list[Path] = []
+    original_glob = Path.glob
+
+    def counted_glob(path: Path, pattern: str) -> Iterator[Path]:
+        scans.append(path)
+        yield from original_glob(path, pattern)
+
+    monkeypatch.setattr(Path, "glob", counted_glob)
 
     output, is_error = await registry.execute(
         "glob_files",
         {"pattern": "*.py", "max_results": 2},
     )
 
-    assert output == "file_0.py\nfile_1.py\n[truncated after 2 files]"
+    expected = "\n".join(f"file_{i}.py" for i in range(min(file_count, 2)))
+    if file_count == 0:
+        expected = "[No files matched pattern: *.py]"
+    elif file_count > 2:
+        expected += "\n[truncated after 2 files]"
+    assert output == expected
     assert is_error is False
+    assert scans == [tmp_path.resolve()]
 
 
 async def test_glob_files_rejects_parent_path_escape(tmp_path: Path) -> None:
@@ -240,20 +258,39 @@ async def test_search_text_skips_noisy_directories(tmp_path: Path) -> None:
     assert is_error is False
 
 
-async def test_search_text_truncates_matches(tmp_path: Path) -> None:
-    for index in range(3):
+@pytest.mark.parametrize("file_count", [0, 1, 2, 3, 4])
+async def test_search_text_truncates_matches_without_rereading_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, file_count: int
+) -> None:
+    for index in range(file_count):
         (tmp_path / f"file_{index}.py").write_text("needle\n", encoding="utf-8")
     registry = create_registry(tmp_path)
+    reads: list[Path] = []
+    original_read_text = Path.read_text
+
+    def counted_read_text(
+        path: Path, encoding: str | None = None, errors: str | None = None
+    ) -> str:
+        reads.append(path)
+        return original_read_text(path, encoding=encoding, errors=errors)
+
+    monkeypatch.setattr(Path, "read_text", counted_read_text)
 
     output, is_error = await registry.execute(
         "search_text",
         {"pattern": "needle", "file_pattern": "*.py", "max_matches": 2},
     )
 
-    assert output == (
-        "file_0.py:1: needle\nfile_1.py:1: needle\n[truncated after 2 matches]"
+    expected = "\n".join(
+        f"file_{i}.py:1: needle" for i in range(min(file_count, 2))
     )
+    if file_count == 0:
+        expected = "[No matches found for pattern: needle]"
+    elif file_count > 2:
+        expected += "\n[truncated after 2 matches]"
+    assert output == expected
     assert is_error is False
+    assert len(reads) == len(set(reads)) == min(file_count, 3)
 
 
 async def test_search_text_reports_invalid_regex(tmp_path: Path) -> None:
@@ -996,7 +1033,7 @@ async def test_run_command_requires_approval_for_arbitrary_python(
     )
 
     assert "requires approval" in output
-    assert "broad side effects" in output
+    assert "outside the automatic safe command policy" in output
     assert is_error is True
 
 

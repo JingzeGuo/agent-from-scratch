@@ -1,7 +1,6 @@
 import asyncio
 import inspect
 from collections.abc import Callable
-from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
@@ -18,16 +17,12 @@ class Tool:
     description: str
     input_schema: type[BaseModel]
     fn: Callable[..., Any]
-    definition_input_schema: dict[str, Any] | None = None
     approval_policy: ToolApprovalPolicy | None = None
 
     def to_definition(self) -> ToolDefinition:
         """Build a provider-neutral tool definition."""
-        if self.definition_input_schema is None:
-            json_schema = self.input_schema.model_json_schema()
-            json_schema.pop("title", None)
-        else:
-            json_schema = deepcopy(self.definition_input_schema)
+        json_schema = self.input_schema.model_json_schema()
+        json_schema.pop("title", None)
         return ToolDefinition(
             name=self.name,
             description=self.description,

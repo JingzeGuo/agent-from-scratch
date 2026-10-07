@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from agent.schemas import ConsolidatedState, ContextBuildResult
+from agent.schemas import ConsolidatedState
 from agent.state.context import (
     CONSOLIDATED_STATE_HEADER,
     ContextBudgetExceeded,
@@ -93,8 +93,8 @@ def exchange(name: str, size: int = 100) -> list[Message]:
 
 def build(
     builder: ContextBuilder, messages: list[Message], **kwargs: Any
-) -> ContextBuildResult:
-    return asyncio.run(builder.build_with_metadata(messages, **kwargs))
+) -> list[Message]:
+    return asyncio.run(builder.build(messages, **kwargs))
 
 
 def test_short_session_is_raw_and_copied_without_consolidation() -> None:
@@ -103,13 +103,13 @@ def test_short_session_is_raw_and_copied_without_consolidation() -> None:
     messages = task("Fix bug", 30) + exchange("test", 20)
     original = deepcopy(messages)
     result = build(builder, messages, objective="Fix bug", task_starts=[0])
-    assert result.messages == original
-    assert result.messages is not messages
-    result.messages[-1]["content"][0]["content"] = "changed copy"
+    assert result == original
+    assert result is not messages
+    result[-1]["content"][0]["content"] = "changed copy"
     assert messages == original
     assert fake.calls == []
-    assert not result.summary_included
-    assert not result.hard_collapsed
+    assert builder.state.consolidated_state is None
+    assert not any("Emergency context fallback" in str(m["content"]) for m in result)
 
 
 def test_multiple_completed_tasks_stay_raw_below_soft_threshold() -> None:
@@ -119,8 +119,30 @@ def test_multiple_completed_tasks_stay_raw_below_soft_threshold() -> None:
     for i in range(4):
         messages.extend(task(f"Task {i}", 40))
         result = build(builder, messages, task_starts=list(range(0, len(messages), 2)))
-        assert result.messages == messages
+        assert result == messages
     assert fake.calls == []
+
+
+def test_build_does_not_recount_folded_history_for_diagnostics() -> None:
+    counted: list[str] = []
+
+    def counter(text: str) -> int:
+        counted.append(text)
+        return count_tokens(text)
+
+    builder = ContextBuilder(
+        FakeConsolidator(),
+        ContextConfig(usable_context_tokens=1000, state_reserve_tokens=100),
+        token_counter=counter,
+    )
+    messages = task("Old task", 700) + task("Active", 100)
+    messages[1]["content"] += " folded-history-marker"
+    first = build(builder, messages)
+    assert builder.state.folded_message_count == 2
+    counted.clear()
+
+    assert build(builder, messages) == first
+    assert not any("folded-history-marker" in text for text in counted)
 
 
 def test_huge_recent_tool_result_retains_metadata_head_and_tail_independently() -> None:
@@ -130,15 +152,14 @@ def test_huge_recent_tool_result_retains_metadata_head_and_tail_independently() 
     messages = task("Run tests", 1) + exchange("normal", 50) + exchange("huge", 2000)
     original = deepcopy(messages)
     result = build(builder, messages)
-    assert result.messages[:-1] == messages[:-1]
-    block = result.messages[-1]["content"][0]
+    assert result[:-1] == messages[:-1]
+    block = result[-1]["content"][0]
     assert block["tool_use_id"] == "huge"
     assert block["is_error"] is True
     assert "exit_code: 1" in block["content"]
     assert "AssertionError: expected 2" in block["content"]
     assert "middle omitted" in block["content"]
-    assert "pytest -q" in str(result.messages[-2])
-    assert result.snipped_tool_results == 1
+    assert "pytest -q" in str(result[-2])
     assert fake.calls == []
     assert messages == original
 
@@ -152,10 +173,10 @@ def test_soft_pressure_folds_only_oldest_completed_task_and_preserves_active() -
     result = build(builder, messages, task_starts=[0, 2, 4], objective="Active")
     assert len(fake.calls) == 1
     assert fake.calls[0] == (None, messages[:2], "Active")
-    assert result.messages[1:] == messages[2:]
-    assert result.final_context_tokens < 650
-    assert result.folded_message_count == 2
-    assert not result.hard_collapsed
+    assert result[1:] == messages[2:]
+    assert builder.measure_tokens(result) < 650
+    assert builder.state.folded_message_count == 2
+    assert not any("Emergency context fallback" in str(m["content"]) for m in result)
 
 
 def test_additional_completed_tasks_fold_only_when_needed() -> None:
@@ -170,10 +191,10 @@ def test_additional_completed_tasks_fold_only_when_needed() -> None:
         + task("Active", 150)
     )
     result = build(builder, messages, task_starts=[0, 2, 4, 6])
-    assert result.messages[1:] == messages[4:]
+    assert result[1:] == messages[4:]
     assert [m for _, prefix, _ in fake.calls for m in prefix] == messages[:4]
-    assert result.final_context_tokens < 650
-    assert result.folded_message_count == 4
+    assert builder.measure_tokens(result) < 650
+    assert builder.state.folded_message_count == 4
 
 
 def test_second_pressure_event_recursively_replaces_one_state() -> None:
@@ -184,17 +205,17 @@ def test_second_pressure_event_recursively_replaces_one_state() -> None:
     messages = task("Task1", 300) + task("Task2", 200) + task("Task3", 150)
     first = build(builder, messages, task_starts=[0, 2, 4])
     first_state = builder.state.consolidated_state
-    assert first.folded_message_count == 2
+    assert builder.state.folded_message_count == 2
     # Rebuilding without new pressure neither reconsolidates nor reintroduces history.
-    assert build(builder, messages, task_starts=[0, 2, 4]).messages == first.messages
+    assert build(builder, messages, task_starts=[0, 2, 4]) == first
     assert len(fake.calls) == 1
     messages.extend(task("Task4", 200))
     second = build(builder, messages, task_starts=[0, 2, 4, 6])
     assert len(fake.calls) == 2
     assert fake.calls[1] == (first_state, messages[2:4], "Task4")
-    assert second.messages[1:] == messages[4:]
+    assert second[1:] == messages[4:]
     assert (
-        sum(CONSOLIDATED_STATE_HEADER in str(m["content"]) for m in second.messages)
+        sum(CONSOLIDATED_STATE_HEADER in str(m["content"]) for m in second)
         == 1
     )
     assert builder.state.consolidated_state != first_state
@@ -210,13 +231,13 @@ def test_long_active_task_folds_old_prefix_at_complete_tool_boundary() -> None:
     for i in range(8):
         messages.extend(exchange(str(i), 100))
     result = build(builder, messages, task_starts=[0], objective="Long task")
-    end = result.folded_message_count
+    end = builder.state.folded_message_count
     assert 0 < end <= len(messages) - 3
     assert messages[end]["role"] == "assistant"
-    assert result.messages[1:] == messages[end:]
-    assert result.messages[-4:] == messages[-4:]
-    assert result.final_context_tokens < 780
-    assert not result.hard_collapsed
+    assert result[1:] == messages[end:]
+    assert result[-4:] == messages[-4:]
+    assert builder.measure_tokens(result) < 780
+    assert not any("Emergency context fallback" in str(m["content"]) for m in result)
 
 
 def test_completed_tasks_are_exhausted_before_active_prefix() -> None:
@@ -228,10 +249,10 @@ def test_completed_tasks_are_exhausted_before_active_prefix() -> None:
     for i in range(7):
         messages.extend(exchange(str(i), 100))
     result = build(builder, messages, task_starts=[0, 2])
-    assert result.folded_message_count > 2
+    assert builder.state.folded_message_count > 2
     assert fake.calls[0][1][:2] == messages[:2]
-    assert result.messages[-2:] == messages[-2:]
-    assert result.final_context_tokens < 780
+    assert result[-2:] == messages[-2:]
+    assert builder.measure_tokens(result) < 780
 
 
 def test_failure_hard_collapses_without_committing_or_mutating_history() -> None:
@@ -240,11 +261,10 @@ def test_failure_hard_collapses_without_committing_or_mutating_history() -> None
     messages = task("Old", 700) + task("Active", 100) + exchange("latest", 40)
     original = deepcopy(messages)
     result = build(builder, messages, task_starts=[0, 2])
-    assert result.hard_collapsed
-    assert result.consolidation_error == "Consolidation failed (RuntimeError)"
-    assert result.final_context_tokens < 900
-    assert result.messages[-2:] == messages[-2:]
-    assert "Current objective: Active" in str(result.messages[0])
+    assert any("Emergency context fallback" in str(m["content"]) for m in result)
+    assert builder.measure_tokens(result) < 900
+    assert result[-2:] == messages[-2:]
+    assert "Current objective: Active" in str(result[0])
     assert builder.state.folded_message_count == 0
     assert builder.state.consolidated_state is None
     assert messages == original
@@ -260,10 +280,10 @@ def test_emergency_after_success_keeps_latest_complete_exchange() -> None:
         messages.extend(exchange(str(i), 250))
     result = build(builder, messages, task_starts=[0, 2])
     assert fake.calls
-    assert result.summary_included
-    assert result.hard_collapsed
-    assert result.final_context_tokens < 900
-    assert result.messages[-2:] == messages[-2:]
+    assert builder.state.consolidated_state is not None
+    assert any("Emergency context fallback" in str(m["content"]) for m in result)
+    assert builder.measure_tokens(result) < 900
+    assert result[-2:] == messages[-2:]
 
 
 def test_emergency_refuses_indivisible_over_budget_exchange() -> None:
@@ -276,10 +296,10 @@ def test_token_pressure_includes_request_overhead() -> None:
     fake = FakeConsolidator()
     builder = ContextBuilder(fake, ContextConfig(usable_context_tokens=1000))
     messages = task("Old", 300) + task("Active", 100)
-    assert build(builder, messages).messages == messages
+    assert build(builder, messages) == messages
     result = build(builder, messages, request_overhead_tokens=250)
     assert len(fake.calls) == 1
-    assert result.final_context_tokens < 650
+    assert builder.measure_tokens(result) + 250 < 650
 
 
 def test_token_count_is_not_character_count_and_handles_special_text() -> None:
@@ -296,7 +316,7 @@ def test_exact_soft_threshold_triggers_consolidation() -> None:
     )
     result = build(builder, messages)
     assert len(fake.calls) == 1
-    assert result.final_context_tokens < tokens
+    assert builder.measure_tokens(result) < tokens
 
 
 def test_oversized_generated_state_is_rejected_before_commit() -> None:
@@ -307,9 +327,9 @@ def test_oversized_generated_state_is_rejected_before_commit() -> None:
     builder = ContextBuilder(fake, ContextConfig(usable_context_tokens=1000))
     messages = task("Old", 2000) + task("Active", 100)
     result = build(builder, messages)
-    assert result.hard_collapsed
+    assert any("Emergency context fallback" in str(m["content"]) for m in result)
     assert builder.state.consolidated_state is None
-    assert result.messages[-2:] == messages[-2:]
+    assert result[-2:] == messages[-2:]
 
 
 def test_folding_preserves_all_results_of_multi_tool_request() -> None:
@@ -327,16 +347,8 @@ def test_folding_preserves_all_results_of_multi_tool_request() -> None:
         ]
     )
     result = build(builder, messages, task_starts=[0])
-    assert result.messages[-3:] == messages[-3:]
-    assert result.folded_message_count == 2
-
-
-def test_inspection_does_not_call_llm_even_under_pressure() -> None:
-    fake = FakeConsolidator()
-    builder = ContextBuilder(fake, ContextConfig(usable_context_tokens=1000))
-    messages = task("Old", 700) + task("Active", 100)
-    assert builder.inspect(messages).messages == messages
-    assert fake.calls == []
+    assert result[-3:] == messages[-3:]
+    assert builder.state.folded_message_count == 2
 
 
 @pytest.mark.parametrize("reserve, expected_calls", [(0, 2), (1024, 1)])
@@ -356,10 +368,10 @@ def test_state_reserve_avoids_repeated_folding_calls(
     )
     result = build(builder, messages)
     assert fake.consolidate.call_count == expected_calls
-    assert result.folded_message_count == 4
-    assert result.messages[1:] == messages[4:]
-    assert result.final_context_tokens < 32000 * 0.65
-    assert not result.hard_collapsed
+    assert builder.state.folded_message_count == 4
+    assert result[1:] == messages[4:]
+    assert builder.measure_tokens(result) < 32000 * 0.65
+    assert not any("Emergency context fallback" in str(m["content"]) for m in result)
 
 
 def test_state_limit_counts_objective_and_framing_and_accepts_exact_limit() -> None:
@@ -384,7 +396,7 @@ def test_state_limit_counts_objective_and_framing_and_accepts_exact_limit() -> N
         result = build(
             builder, task("Old", 700) + task(objective, 10), objective=objective
         )
-        assert result.hard_collapsed is rejected
+        assert any("Emergency context fallback" in str(m["content"]) for m in result) is rejected
         assert (builder.state.consolidated_state is None) is rejected
 
 
@@ -396,7 +408,7 @@ def test_reset_clears_folded_state() -> None:
     assert builder.state.consolidated_state is not None
     builder.reset()
     messages = task("New", 10)
-    assert build(builder, messages).messages == messages
+    assert build(builder, messages) == messages
     assert builder.state.folded_message_count == 0
 
 

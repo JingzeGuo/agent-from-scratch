@@ -54,7 +54,6 @@ def make_snapshot(
                 "content": "Inspect the agent loop",
             }
         ],
-        steps=[step],
         completed_runs=[run],
         read_files=["agent/agent.py"],
         changed_files=["agent/agent.py"],
@@ -74,6 +73,8 @@ def test_session_store_round_trips_snapshot(tmp_path: Path) -> None:
 
     assert path == tmp_path / "sessions" / "day10-demo.json"
     assert loaded == snapshot
+    assert "steps" not in snapshot.model_dump()
+    assert loaded.completed_runs[0].steps == snapshot.completed_runs[0].steps
 
 
 def test_session_store_finds_snapshot_by_id_or_name(tmp_path: Path) -> None:
@@ -155,21 +156,6 @@ def test_session_store_appends_and_reads_events(tmp_path: Path) -> None:
     assert path == tmp_path / "sessions" / "events" / "session-one.jsonl"
     assert store.read_events("session-one") == [first, second]
     assert store.list_snapshots() == []
-
-
-def test_session_event_reads_legacy_context_summary_field() -> None:
-    event = SessionEvent.model_validate(
-        {
-            "event_type": "compaction_reported",
-            "session_id": "session-one",
-            "created_at": "2026-06-25T00:00:00+00:00",
-            "checkpoint_included": True,
-        }
-    )
-
-    assert event.summary_included is True
-    assert event.model_dump()["summary_included"] is True
-    assert "checkpoint_included" not in event.model_dump()
 
 
 def test_session_store_resets_events_and_pending_action(tmp_path: Path) -> None:

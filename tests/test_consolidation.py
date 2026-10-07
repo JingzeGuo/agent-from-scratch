@@ -96,11 +96,11 @@ def test_oversized_state_retries_once_before_commit_or_fallback(
     )
     assert messages == original
     if repair_succeeds:
-        assert not result.hard_collapsed
+        assert not any("Emergency context fallback" in str(m["content"]) for m in result)
         assert builder.state.folded_message_count == 4
         assert builder.state.consolidated_state is not None
         assert builder.state.consolidated_state.current_objective == "Active"
-        assert result.messages[1:] == messages[4:]
+        assert result[1:] == messages[4:]
     else:
-        assert result.hard_collapsed
+        assert any("Emergency context fallback" in str(m["content"]) for m in result)
         assert builder.state == previous

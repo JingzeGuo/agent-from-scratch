@@ -76,7 +76,7 @@ Interactive commands:
 | `/help` | Show commands |
 | `/tokens` | Show input/output tokens and estimated cost |
 | `/status` | Show provider, workspace, session, and controller state |
-| `/reset` | Clear conversation messages, steps, and approval cache |
+| `/reset` | Clear conversation messages, working context, and approval cache |
 | `/save` | Save a session checkpoint |
 | `/diff [path]` | Show session changes, optionally for one file |
 | `/trace [path]` | Print trace events or export them inside the workspace |
@@ -158,14 +158,14 @@ By default, runtime state is stored under `.agents/`:
   memory.sqlite3            repository-local long-term memory
 ```
 
-Snapshots preserve messages, steps, completed runs, file tracking, and token
-totals. A pending-action marker records the most recent tool call that started
-after the last completed checkpoint. It remains until the interactive turn is
-checkpointed, even if the tool has already finished, so resume reports that the
+Snapshots preserve messages, completed runs with their steps, file tracking, and
+token totals. A pending-action marker records the most recent tool call that
+started after the last completed checkpoint. It remains until the interactive
+turn is checkpointed, even if the tool has already finished, so resume reports that the
 workspace may be ahead of the saved conversation state.
 
 Trace events cover model requests and responses, scheduling, approvals, tool
-execution, child runs, compaction, checkpoints, and run outcomes. Common
+execution, child runs, checkpoints, and run outcomes. Common
 secret-like values and configured redaction patterns are removed before events
 are written.
 
@@ -207,10 +207,10 @@ tool results remain intact; pathological results retain their head/tail and tool
 metadata regardless of age.
 
 Snapshots still contain full raw messages and run history, plus the single
-consolidated state, folded-prefix offset, and task boundaries. Old snapshots load
-with an empty working state. `/reset` clears this state with the conversation.
-Legacy character metrics and the `summary_included` trace field remain compatible
-(the latter now means that a consolidated state is present).
+consolidated state, folded-prefix offset, and task boundaries. `/reset` clears
+the working state with the conversation and retains completed run history.
+Context building returns the messages directly; token counting is used for
+budget decisions without generating unused diagnostic reports.
 
 ## Long-term memory (V1)
 
@@ -237,9 +237,9 @@ Task completion captures an immutable snapshot of that run's steps (including
 verification results), outcome, observed file edits, evidence references, and
 injected memory IDs/content. It schedules background formation and immediately
 returns. The next task never waits for formation. The existing provider extracts
-zero to three evidenced candidates, then chooses ADD, MERGE, SUPERSEDE, or NOOP
-against similar active memories. MERGE updates an existing record; SUPERSEDE
-atomically retains the old fact and links its replacement. Experiences retain
+zero to three evidenced CORE or RETRIEVAL candidates, then chooses ADD, MERGE,
+SUPERSEDE, or NOOP against similar active memories. MERGE updates an existing
+record; SUPERSEDE atomically retains the old fact and links its replacement. Experiences retain
 their historical meaning. MERGE and SUPERSEDE inherit the target's access mode,
 subject to the core token budget; only ADD uses the candidate's routing decision.
 Echo checks reject mere reuse without new information.

@@ -1,6 +1,6 @@
 from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import BaseModel, Field
 
 RunOutcome = Literal[
     "completed",
@@ -307,23 +307,6 @@ class WorkingContextState(BaseModel):
     folded_message_count: int = Field(default=0, ge=0)
 
 
-class ContextBuildResult(BaseModel):
-    """Working context and compaction measurements (chars kept for tracing)."""
-
-    messages: list[dict[str, Any]]
-    original_message_count: int = Field(ge=0)
-    final_message_count: int = Field(ge=0)
-    original_context_chars: int = Field(ge=0)
-    final_context_chars: int = Field(ge=0)
-    snipped_tool_results: int = Field(ge=0)
-    hard_collapsed: bool
-    summary_included: bool
-    original_context_tokens: int = Field(default=0, ge=0)
-    final_context_tokens: int = Field(default=0, ge=0)
-    folded_message_count: int = Field(default=0, ge=0)
-    consolidation_error: str | None = None
-
-
 SessionEventType = Literal[
     "session_started",
     "session_resumed",
@@ -332,7 +315,6 @@ SessionEventType = Literal[
     "model_response_finished",
     "step_finished",
     "run_finished",
-    "compaction_reported",
     "tool_schedule_decided",
     "tool_approval_requested",
     "tool_approval_granted",
@@ -367,18 +349,6 @@ class SessionEvent(BaseModel):
     estimated_cost: float | None = Field(default=None, ge=0.0)
     latency_ms: float | None = Field(default=None, ge=0.0)
     tool_call_count: int | None = Field(default=None, ge=0)
-    original_message_count: int | None = Field(default=None, ge=0)
-    final_message_count: int | None = Field(default=None, ge=0)
-    original_context_chars: int | None = Field(default=None, ge=0)
-    final_context_chars: int | None = Field(default=None, ge=0)
-    original_context_tokens: int | None = Field(default=None, ge=0)
-    final_context_tokens: int | None = Field(default=None, ge=0)
-    snipped_tool_results: int | None = Field(default=None, ge=0)
-    hard_collapsed: bool | None = None
-    summary_included: bool | None = Field(
-        default=None,
-        validation_alias=AliasChoices("summary_included", "checkpoint_included"),
-    )
     tool_name: str | None = None
     tool_use_id: str | None = None
     tool_input: dict[str, Any] | None = None
@@ -401,7 +371,6 @@ class SessionSnapshot(BaseModel):
     model: str
     max_steps: int = Field(ge=1)
     messages: list[dict[str, Any]] = Field(default_factory=list)
-    steps: list[AgentStep] = Field(default_factory=list)
     completed_runs: list[AgentRun] = Field(default_factory=list)
     working_context: WorkingContextState = Field(default_factory=WorkingContextState)
     task_starts: list[int] = Field(default_factory=list)

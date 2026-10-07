@@ -9,7 +9,7 @@ from typing import Any
 
 import tiktoken
 
-from ..schemas import ConsolidatedState, ContextBuildResult, WorkingContextState
+from ..schemas import ConsolidatedState, WorkingContextState
 from .consolidation import Consolidator
 
 Message = dict[str, Any]
@@ -97,31 +97,12 @@ class ContextBuilder:
         task_starts: list[int] | None = None,
         request_overhead_tokens: int = 0,
     ) -> list[Message]:
-        return (
-            await self.build_with_metadata(
-                messages,
-                objective=objective,
-                task_starts=task_starts,
-                request_overhead_tokens=request_overhead_tokens,
-            )
-        ).messages
-
-    async def build_with_metadata(
-        self,
-        messages: list[Message],
-        *,
-        objective: str | None = None,
-        task_starts: list[int] | None = None,
-        request_overhead_tokens: int = 0,
-    ) -> ContextBuildResult:
-        raw, snipped = self._protected_history(messages)
+        raw = self._protected_history(messages)
         starts = self._task_starts(raw, task_starts)
         objective = self._objective(raw, starts, objective)
         context = self._assemble(raw, objective)
         soft = self.config.usable_context_tokens * self.config.soft_threshold
         emergency = self.config.usable_context_tokens * self.config.emergency_threshold
-        error: str | None = None
-        hard_collapsed = False
 
         while self.measure_tokens(context) + request_overhead_tokens >= soft:
             candidates = self._fold_boundaries(raw, starts)
@@ -169,19 +150,17 @@ class ContextBuilder:
                     folded_message_count=end,
                 )
                 context = candidate
-            except Exception as exc:
+            except Exception:
                 # Do not swallow cancellation/interrupts (BaseException).
-                error = f"Consolidation failed ({type(exc).__name__})"
-                break
+                return self._collapse_context(
+                    raw, starts, objective, request_overhead_tokens
+                )
 
-        if error or self.measure_tokens(context) + request_overhead_tokens >= emergency:
-            context = self._collapse_context(
+        if self.measure_tokens(context) + request_overhead_tokens >= emergency:
+            return self._collapse_context(
                 raw, starts, objective, request_overhead_tokens
             )
-            hard_collapsed = True
-        return self._result(
-            messages, context, snipped, request_overhead_tokens, hard_collapsed, error
-        )
+        return context
 
     def _validate_state_size(self, state: ConsolidatedState) -> None:
         tokens = self.measure_tokens([self._state_message(state)])
@@ -191,26 +170,6 @@ class ContextBuilder:
                 f"limit is {self.config.max_consolidated_state_tokens}. "
                 "Compress the state further while preserving essential facts."
             )
-
-    def inspect(
-        self,
-        messages: list[Message],
-        *,
-        objective: str | None = None,
-        task_starts: list[int] | None = None,
-        request_overhead_tokens: int = 0,
-    ) -> ContextBuildResult:
-        """Inspect the working view without invoking an LLM or folding history."""
-        raw, snipped = self._protected_history(messages)
-        objective = self._objective(raw, self._task_starts(raw, task_starts), objective)
-        return self._result(
-            messages,
-            self._assemble(raw, objective),
-            snipped,
-            request_overhead_tokens,
-            False,
-            None,
-        )
 
     def _assemble(self, raw: list[Message], objective: str | None) -> list[Message]:
         if self.state.folded_message_count > len(raw):
@@ -332,9 +291,8 @@ class ContextBuilder:
                 return candidate
         raise ContextBudgetExceeded("Latest context cannot fit emergency token budget")
 
-    def _protected_history(self, messages: list[Message]) -> tuple[list[Message], int]:
+    def _protected_history(self, messages: list[Message]) -> list[Message]:
         raw = deepcopy(messages)
-        snipped = 0
         for message in raw:
             content = message.get("content")
             if not isinstance(content, list):
@@ -355,8 +313,7 @@ class ContextBuilder:
                     f"{head}\n[Oversized tool result truncated: "
                     f"approximately {tokens} tokens; middle omitted]\n{tail}"
                 )
-                snipped += 1
-        return raw, snipped
+        return raw
 
     def _clip(self, text: str, tokens: int, *, tail: bool = False) -> str:
         low, high = 0, len(text)
@@ -368,30 +325,3 @@ class ContextBuilder:
             else:
                 high = mid - 1
         return (text[-low:] if tail else text[:low]) if low else ""
-
-    def _result(
-        self,
-        original: list[Message],
-        context: list[Message],
-        snipped: int,
-        overhead: int,
-        hard_collapsed: bool,
-        error: str | None,
-    ) -> ContextBuildResult:
-        return ContextBuildResult(
-            messages=context,
-            original_message_count=len(original),
-            final_message_count=len(context),
-            original_context_chars=sum(
-                len(str(m.get("content", ""))) for m in original
-            ),
-            final_context_chars=sum(len(str(m.get("content", ""))) for m in context),
-            original_context_tokens=self.measure_tokens(original) + overhead,
-            final_context_tokens=self.measure_tokens(context) + overhead,
-            snipped_tool_results=snipped,
-            hard_collapsed=hard_collapsed,
-            # Retained field name for existing CLI/session trace consumers.
-            summary_included=self.state.consolidated_state is not None,
-            folded_message_count=self.state.folded_message_count,
-            consolidation_error=error,
-        )
