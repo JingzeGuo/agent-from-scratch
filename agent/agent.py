@@ -128,7 +128,6 @@ class Agent:
         )
         self.system_prompt = build_system_prompt(
             workspace_root=registry.workspace_root,
-            registry=registry,
             system_prompt_suffix=system_prompt_suffix,
         )
         self._validate_provider_capabilities(provider_adapter)
@@ -230,7 +229,6 @@ class Agent:
         self.clear_approval_cache()
         self.system_prompt = build_system_prompt(
             workspace_root=self.registry.workspace_root,
-            registry=self.registry,
             system_prompt_suffix=self.system_prompt_suffix,
         )
 

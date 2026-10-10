@@ -244,7 +244,10 @@ def test_agent_sends_coding_system_prompt() -> None:
     system_prompt = messages.requests[0]["system"]
     assert system_prompt == agent.system_prompt
     assert "You are a coding agent operating inside a local workspace." in system_prompt
-    assert "`read_file`: Read a bounded range of lines" in system_prompt
+    tool_definitions = messages.requests[0]["tools"]
+    assert tool_definitions == agent.registry.to_tool_definitions()
+    assert all(tool.description not in system_prompt for tool in tool_definitions)
+    assert "## Available tools" not in system_prompt
     assert "Inspect before editing" in system_prompt
     assert "Edit, then verify" in system_prompt
     assert "must run focused verification" in system_prompt
@@ -343,21 +346,19 @@ def test_consolidated_snapshot_resumes_without_refolding_old_history(tmp_path: P
     assert result[1:] == restored.messages[4:]
 
 
-def test_build_system_prompt_uses_workspace_and_registered_tools(
+def test_build_system_prompt_uses_workspace_and_workflow_policy(
     tmp_path: Path,
 ) -> None:
     workspace_root = tmp_path
-    registry = create_registry()
-
     prompt = build_system_prompt(
         workspace_root=workspace_root,
-        registry=registry,
+        system_prompt_suffix="Explore the repository without modifying files.",
     )
 
     assert workspace_root.as_posix() in prompt
-    assert "`read_file`: Read a bounded range of lines" in prompt
+    assert "Explore the repository without modifying files." in prompt
     assert "must run focused verification" in prompt
-    assert "`run_command` does not support shell operators" in prompt
+    assert "Use only the tools supplied with this request" in prompt
 
 
 def test_build_system_prompt_prefers_observed_venv_python(tmp_path: Path) -> None:
@@ -367,7 +368,6 @@ def test_build_system_prompt_prefers_observed_venv_python(tmp_path: Path) -> Non
 
     prompt = build_system_prompt(
         workspace_root=tmp_path,
-        registry=create_registry(),
     )
 
     assert "This workspace has `.venv/bin/python`" in prompt
@@ -381,7 +381,6 @@ def test_build_system_prompt_uses_python3_fallback_without_venv(
 ) -> None:
     prompt = build_system_prompt(
         workspace_root=tmp_path,
-        registry=create_registry(),
     )
 
     assert "`python3 -m pytest tests/test_target.py`" in prompt

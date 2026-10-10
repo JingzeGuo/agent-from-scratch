@@ -94,13 +94,13 @@ def _create_tool_catalog(
     tools = [
         Tool(
             name="read_file",
-            description="Read the contents of a local text file.",
+            description="Read a bounded range of lines from a workspace text file.",
             input_schema=ReadFileInput,
             fn=partial(read_file, workspace_root=workspace_root),
         ),
         Tool(
             name="glob_files",
-            description="Find workspace files that match a glob pattern.",
+            description="Find workspace files that match a workspace-relative glob pattern.",
             input_schema=GlobFilesInput,
             fn=partial(glob_files, workspace_root=workspace_root),
         ),
@@ -112,13 +112,13 @@ def _create_tool_catalog(
         ),
         Tool(
             name="edit_file",
-            description="Replace one exact text match in a workspace file and return a unified diff.",
+            description="Replace one exact, unique text match in a workspace file and return a unified diff.",
             input_schema=EditFileInput,
             fn=partial(edit_file, workspace_root=workspace_root),
         ),
         Tool(
             name="write_file",
-            description="Create a new file or intentionally overwrite a file and return a unified diff.",
+            description="Create a new file or intentionally overwrite a whole file and return a unified diff.",
             input_schema=WriteFileInput,
             fn=partial(write_file, workspace_root=workspace_root),
         ),
@@ -130,7 +130,12 @@ def _create_tool_catalog(
         ),
         Tool(
             name="run_command",
-            description="Run a bounded command inside the workspace and return exit code, output, duration, and timeout status.",
+            description=(
+                "Run a bounded command without a shell inside the workspace. "
+                "Shell operators (&&, |, ;, redirection) and built-ins such as cd "
+                "are unsupported; use cwd for subdirectories. "
+                "Return exit code, stdout, stderr, duration, and timeout status."
+            ),
             input_schema=RunCommandInput,
             fn=partial(run_command, workspace_root=workspace_root),
         ),
@@ -142,7 +147,7 @@ def _create_tool_catalog(
         ),
         Tool(
             name="fetch_url",
-            description="Fetch the content of a URL.",
+            description="Fetch the content of a known URL with bounded output.",
             input_schema=FetchUrlInput,
             fn=fetch_url,
         ),

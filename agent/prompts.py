@@ -1,36 +1,16 @@
 from pathlib import Path
 
-from .tooling.tool_registry import ToolRegistry
-
-_TOOL_GUIDANCE: dict[str, str] = {
-    "glob_files": "Find files matching a workspace-relative glob.",
-    "search_text": "Search file contents with a regular expression.",
-    "read_file": "Read a bounded range of lines from a workspace file.",
-    "edit_file": "Replace one exact, unique text match and return a unified diff.",
-    "write_file": "Create a file or intentionally overwrite a whole file.",
-    "get_diff": "Show session diffs for changed files.",
-    "run_command": "Run a bounded safe command inside the workspace. Prefer focused verification commands.",
-    "sub_agent": "Delegate narrow read-only repository exploration to an isolated child agent.",
-    "search_web": "Optional helper when current external information is required.",
-    "fetch_url": "Optional helper for reading a known URL.",
-}
-
 
 def build_system_prompt(
     *,
     workspace_root: Path | None,
-    registry: ToolRegistry,
     system_prompt_suffix: str = "",
 ) -> str:
-    """Build the coding-agent policy sent to the model."""
+    """Build workflow policy; tool interfaces are supplied in the request's tools."""
     workspace_text = (
         workspace_root.expanduser().resolve().as_posix()
         if workspace_root is not None
         else "[workspace root not configured]"
-    )
-    tool_lines = "\n".join(
-        f"- `{name}`: {_TOOL_GUIDANCE.get(name, tool.description)}"
-        for name, tool in registry.tools.items()
     )
     verification_command_guidance = _verification_command_guidance(workspace_root)
     profile_instructions = ""
@@ -50,13 +30,13 @@ The workspace root is:
 
 All file reads, writes, edits, searches, and commands must stay inside this workspace. Never access, edit, or execute commands in paths that resolve outside the workspace root.
 
-## Available tools
+## Tool use strategy
 
-{tool_lines}
+Use only the tools supplied with this request; their definitions describe their behavior and parameters.
 
-Treat `search_web` and `fetch_url` as optional helper tools. For coding tasks, prefer repository inspection, targeted edits, diffs, and verification commands.
+For coding tasks, prefer repository inspection, targeted edits, diffs, and verification commands. When available, use `search_web` for current external information and `fetch_url` for a known URL only when needed.
 
-Use `sub_agent` only for narrow, bounded read-only exploration, such as locating files or tracing one focused concept. Do not delegate broad repository-wide analysis as one subtask, and treat a child result as supporting evidence rather than a final answer.
+When available, use `sub_agent` only for narrow, bounded read-only exploration, such as locating files or tracing one focused concept. Do not delegate broad repository-wide analysis as one subtask, and treat a child result as supporting evidence rather than a final answer.
 
 {profile_instructions}
 ## Core operating rules
@@ -84,8 +64,6 @@ Prefer the smallest relevant command that can prove the change, such as `python 
 {verification_command_guidance}
 
 Do not spend steps probing interpreter locations with commands like `which python`, `python --version`, or `python3 --version`. If an interpreter command fails because it is unavailable or lacks a module, switch directly to the recommended verification command above or report the verification limitation.
-
-`run_command` does not support shell operators such as `cd`, `&&`, `|`, `;`, or redirection. Use the tool's `cwd` argument when a command should run from a subdirectory.
 
 After a successful edit, do not spend many steps searching for more context before running the focused verification. Run the check, inspect failures if any, then repair.
 
