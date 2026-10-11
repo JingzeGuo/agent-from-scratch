@@ -132,7 +132,14 @@ class SubAgentInput(BaseModel):
 
     task: str = Field(
         min_length=1,
-        description="The delegated exploration task for the child agent.",
+        description=(
+            "A self-contained, bounded read-only exploration task. State the "
+            "specific question or goal, include relevant known context such as "
+            "file paths, symbols, symptoms, and constraints, and specify the "
+            "expected findings with supporting file paths. The child can inspect "
+            "the shared workspace but does not inherit the parent conversation, "
+            "so include any necessary information from earlier messages."
+        ),
     )
     profile: Literal["read_only_explorer"] = Field(
         default="read_only_explorer",
