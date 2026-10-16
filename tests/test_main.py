@@ -7,7 +7,22 @@ from typing import cast
 import pytest
 
 from agent.agent import Agent
-from agent.cli_commands import handle_command
+from agent.cli.commands import handle_command
+from agent.cli.main import (
+    CliSessionState,
+    checkpoint_session,
+    default_agent_state_dir,
+    default_sessions_dir,
+    ensure_agent_state_gitignore,
+    generate_session_id,
+    parse_cli_args,
+    prompt_tool_approval,
+    report_interrupted_action,
+    run_cli,
+)
+from agent.cli.main import (
+    main as cli_main,
+)
 from agent.provider import DeepSeekProvider, ProviderRequestError
 from agent.schemas import (
     AgentRun,
@@ -21,21 +36,6 @@ from agent.security import classify_command
 from agent.state.context import ContextBudgetExceeded
 from agent.state.session import SessionStore, utc_timestamp
 from agent.tooling.tool_registry import ToolRegistry
-from main import (
-    CliSessionState,
-    checkpoint_session,
-    default_agent_state_dir,
-    default_sessions_dir,
-    ensure_agent_state_gitignore,
-    generate_session_id,
-    parse_cli_args,
-    prompt_tool_approval,
-    report_interrupted_action,
-    run_cli,
-)
-from main import (
-    main as cli_main,
-)
 
 
 class FakeRunAgent:
@@ -345,7 +345,7 @@ def test_parse_cli_args_rejects_invalid_api_key_usage() -> None:
 def test_pyproject_exposes_agent_console_script() -> None:
     pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
 
-    assert pyproject["project"]["scripts"]["agent"] == "main:cli"
+    assert pyproject["project"]["scripts"]["agent"] == "agent.cli.main:cli"
 
 
 def test_cli_help_does_not_require_provider_config(
@@ -355,7 +355,7 @@ def test_cli_help_does_not_require_provider_config(
     def fail_load_deepseek_config(*args: object, **kwargs: object) -> object:
         raise AssertionError("Provider config should not be loaded for --help.")
 
-    monkeypatch.setattr("main.load_deepseek_config", fail_load_deepseek_config)
+    monkeypatch.setattr("agent.cli.main.load_deepseek_config", fail_load_deepseek_config)
 
     asyncio.run(cli_main(["--help"]))
 
@@ -372,8 +372,8 @@ def test_cli_version_does_not_require_provider_config(
     def fail_load_deepseek_config(*args: object, **kwargs: object) -> object:
         raise AssertionError("Provider config should not be loaded for --version.")
 
-    monkeypatch.setattr("main.load_deepseek_config", fail_load_deepseek_config)
-    monkeypatch.setattr("main.package_version", lambda: "0.1.0")
+    monkeypatch.setattr("agent.cli.main.load_deepseek_config", fail_load_deepseek_config)
+    monkeypatch.setattr("agent.cli.main.package_version", lambda: "0.1.0")
 
     asyncio.run(cli_main(["--version"]))
 
@@ -398,8 +398,8 @@ def test_cli_eval_does_not_require_provider_config(
         print("eval ok")
         return 0
 
-    monkeypatch.setattr("main.load_deepseek_config", fail_load_deepseek_config)
-    monkeypatch.setattr("main.run_eval_command", fake_run_eval_command)
+    monkeypatch.setattr("agent.cli.main.load_deepseek_config", fail_load_deepseek_config)
+    monkeypatch.setattr("agent.cli.main.run_eval_command", fake_run_eval_command)
 
     asyncio.run(cli_main(["--api-key", "cli-key", "eval", "--list"]))
 
@@ -414,7 +414,7 @@ def test_cli_reports_configuration_error_without_traceback(
     def fail_load_deepseek_config(*args: object, **kwargs: object) -> object:
         raise ValueError("DEEPSEEK_API_KEY is not set")
 
-    monkeypatch.setattr("main.load_deepseek_config", fail_load_deepseek_config)
+    monkeypatch.setattr("agent.cli.main.load_deepseek_config", fail_load_deepseek_config)
 
     asyncio.run(cli_main([]))
 

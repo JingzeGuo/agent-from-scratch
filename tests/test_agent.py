@@ -16,9 +16,6 @@ from agent.schemas import (
     AgentRun,
     AgentStep,
     ProviderResponse,
-    ReadFileInput,
-    RunCommandInput,
-    SearchWebInput,
     TokenUsage,
     ToolCall,
     ToolDefinition,
@@ -27,10 +24,11 @@ from agent.schemas import (
 from agent.security import ToolApprovalPolicy
 from agent.state.context import ContextBuilder
 from agent.state.session import SessionStore
-from agent.tooling.setup import create_registry as create_workspace_registry
+from agent.tooling.catalog import create_registry as create_workspace_registry
+from agent.tooling.command import run_command
+from agent.tooling.inputs import ReadFileInput, RunCommandInput, SearchWebInput
 from agent.tooling.tool import Tool
 from agent.tooling.tool_registry import ToolRegistry
-from agent.tooling.tools import run_command
 
 MessageParam = dict[str, Any]
 # Registry root for tests whose fake tools never touch the filesystem.

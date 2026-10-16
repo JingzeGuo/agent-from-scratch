@@ -1,4 +1,3 @@
-# ruff: noqa: E402
 """Small local, live-model, and SWE-bench-compatible agent evaluations."""
 
 import argparse
@@ -17,11 +16,9 @@ from uuid import uuid4
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from agent.agent import Agent
-from agent.provider import DeepSeekProvider, ProviderAdapter, load_deepseek_config
-from agent.schemas import (
+from ..agent import Agent
+from ..provider import DeepSeekProvider, ProviderAdapter, load_deepseek_config
+from ..schemas import (
     AgentRun,
     ProviderResponse,
     TokenUsage,
@@ -29,10 +26,10 @@ from agent.schemas import (
     ToolDefinition,
     ToolResult,
 )
-from agent.security import ToolApprovalPolicy
-from agent.state.session import SessionStore
-from agent.tooling.setup import create_registry
-from agent.tooling.tool_registry import ToolRegistry
+from ..security import ToolApprovalPolicy
+from ..state.session import SessionStore
+from ..tooling.catalog import create_registry
+from ..tooling.tool_registry import ToolRegistry
 
 PYTHON = sys.executable
 EvaluationMode = Literal["deterministic", "real_model", "swe_bench"]

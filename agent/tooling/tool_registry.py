@@ -4,10 +4,11 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from ..schemas import EditFileInput, ReadFileInput, ToolDefinition, WriteFileInput
+from ..schemas import ToolDefinition
 from ..workspace import resolve_workspace_path
+from .files import build_unified_diff
+from .inputs import EditFileInput, ReadFileInput, WriteFileInput
 from .tool import Tool
-from .tools import _build_unified_diff
 
 ISOLATED_PATH_FIELDS = {
     "read_file": "path",
@@ -226,7 +227,7 @@ class ToolRegistry:
         after = ""
         if path.exists():
             after = path.read_text(encoding="utf-8")
-        return _build_unified_diff(
+        return build_unified_diff(
             path=path,
             before=before,
             after=after,

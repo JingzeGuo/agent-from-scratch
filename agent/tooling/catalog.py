@@ -1,8 +1,11 @@
-from dataclasses import dataclass
+"""Built-in tool catalog and the registry factory for agent profiles."""
+
 from functools import partial
 from pathlib import Path
 
-from ..schemas import (
+from .command import run_command
+from .files import edit_file, glob_files, read_file, search_text, write_file
+from .inputs import (
     EditFileInput,
     FetchUrlInput,
     GetDiffInput,
@@ -14,45 +17,10 @@ from ..schemas import (
     SubAgentInput,
     WriteFileInput,
 )
+from .sub_agent import sub_agent
 from .tool import Tool
 from .tool_registry import ToolRegistry
-from .tools import (
-    edit_file,
-    fetch_url,
-    glob_files,
-    read_file,
-    run_command,
-    search_text,
-    search_web,
-    sub_agent,
-    write_file,
-)
-
-
-@dataclass(frozen=True)
-class AgentProfile:
-    allowed_tools: frozenset[str]
-    default_max_steps: int
-    system_prompt_suffix: str = ""
-
-
-AGENT_PROFILES: dict[str, AgentProfile] = {
-    "read_only_explorer": AgentProfile(
-        allowed_tools=frozenset(
-            {
-                "read_file",
-                "glob_files",
-                "search_text",
-            }
-        ),
-        default_max_steps=6,
-        system_prompt_suffix=(
-            "Explore the repository and return concise supporting evidence "
-            "with relevant file paths. Do not modify files, execute commands, "
-            "access the network, or delegate work."
-        ),
-    )
-}
+from .web import fetch_url, search_web
 
 
 def create_registry(

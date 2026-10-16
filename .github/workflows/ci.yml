@@ -24,7 +24,7 @@ jobs:
         run: uv sync --dev
 
       - name: Compile Python files
-        run: uv run python -m py_compile main.py agent/*.py scripts/*.py
+        run: uv run python -m compileall -q agent
 
       - name: Run Ruff
         run: uv run ruff check .

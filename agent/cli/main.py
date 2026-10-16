@@ -10,8 +10,19 @@ from pathlib import Path
 from dotenv import load_dotenv
 from pydantic import BaseModel
 
-from agent.agent import Agent
-from agent.cli_commands import (
+from ..agent import Agent
+from ..memory.store import MemoryStore
+from ..provider import (
+    DeepSeekProvider,
+    ProviderRequestError,
+    format_provider_request_error,
+    load_deepseek_config,
+)
+from ..schemas import SessionEvent
+from ..state.context import ContextBudgetExceeded
+from ..state.session import SessionStore, utc_timestamp
+from ..tooling.catalog import create_registry
+from .commands import (
     COMMANDS,
     CliSessionState,
     checkpoint_session,
@@ -19,17 +30,6 @@ from agent.cli_commands import (
     prompt_tool_approval,
     report_interrupted_action,
 )
-from agent.provider import (
-    DeepSeekProvider,
-    ProviderRequestError,
-    format_provider_request_error,
-    load_deepseek_config,
-)
-from agent.schemas import SessionEvent
-from agent.state.context import ContextBudgetExceeded
-from agent.state.memory import MemoryStore
-from agent.state.session import SessionStore, utc_timestamp
-from agent.tooling.setup import create_registry
 
 PACKAGE_NAME = "agent-from-scratch"
 FALLBACK_VERSION = "0.1.0"
@@ -142,7 +142,7 @@ async def run_eval_command(
     *,
     api_key: str | None = None,
 ) -> int:
-    from scripts.evaluate_coding_tasks import run_eval_cli
+    from ..evaluation.coding_tasks import run_eval_cli
 
     return await run_eval_cli(eval_args, api_key=api_key)
 

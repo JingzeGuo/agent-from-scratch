@@ -38,7 +38,8 @@ cd /path/to/target-repository
 /path/to/agent-from-scratch/.venv/bin/agent
 ```
 
-The current directory becomes the workspace root.
+The current directory becomes the workspace root. `python -m agent` is equivalent
+to the `agent` command.
 
 ## Configuration
 
@@ -258,7 +259,7 @@ it implicitly):
 ```python
 from pathlib import Path
 from agent.agent import Agent
-from agent.state.memory import MemoryConfig, MemoryStore
+from agent.memory.store import MemoryConfig, MemoryStore
 
 store = MemoryStore(Path(".agents/memory.sqlite3"))  # injectable for tests
 agent = Agent(provider, registry, memory_store=store,
@@ -273,31 +274,38 @@ store.close()
 ## Architecture
 
 `agent/` keeps the controller, provider adapter, shared schemas, and policies at
-the top level. `agent/state/` owns context, sessions, and token accounting;
-`agent/tooling/` owns tool implementations, registration, and retries.
+the top level. Each subpackage owns one subsystem: `agent/cli/` the interactive
+entry point, `agent/tooling/` tool schemas, implementations, and registration,
+`agent/state/` working context, sessions, and token accounting, `agent/memory/`
+long-term memory, and `agent/evaluation/` the evaluation harnesses.
 
 | File | Responsibility |
 | --- | --- |
-| `main.py` | CLI parsing, provider setup, sessions, and startup wiring |
 | `agent/agent.py` | Explicit controller loop, scheduling, approvals, traces, and termination |
-| `agent/cli_commands.py` | Interactive slash commands and session controls |
 | `agent/provider.py` | DeepSeek transport and provider-neutral response normalization |
 | `agent/prompts.py` | System prompt and tool guidance |
-| `agent/tooling/setup.py` | Default tool registry and read-only child profile |
-| `agent/tooling/tool.py` | Tool schemas, validation, execution, and retry boundary |
-| `agent/tooling/tool_registry.py` | Dispatch, workspace action tracking, and diffs |
-| `agent/tooling/tools.py` | Built-in tool implementations |
+| `agent/schemas.py` | Provider-neutral controller, provider, and session models |
+| `agent/security.py` | Command policy and trace redaction |
+| `agent/workspace.py` | Workspace-relative path resolution |
+| `agent/cli/main.py` | CLI parsing, provider setup, sessions, and startup wiring |
+| `agent/cli/commands.py` | Interactive slash commands, approval prompts, and checkpoints |
+| `agent/tooling/catalog.py` | Built-in tool catalog and registry factory |
+| `agent/tooling/inputs.py` | Validated input schemas for built-in tools |
+| `agent/tooling/tool.py` | Tool definition, validation, execution, and retry boundary |
+| `agent/tooling/tool_registry.py` | Dispatch, workspace isolation, action tracking, and diffs |
+| `agent/tooling/files.py` | Glob, search, read, edit, write, and unified diffs |
+| `agent/tooling/command.py` | Bounded, shell-free command execution |
+| `agent/tooling/web.py` | URL fetching and web search |
+| `agent/tooling/sub_agent.py` | Read-only child agent profiles and delegation |
 | `agent/tooling/retry.py` | Retry policy for transient tool errors |
 | `agent/state/context.py` | Token pressure, prefix selection, working context, emergency fallback |
 | `agent/state/consolidation.py` | LLM-generated, schema-validated continuation state |
-| `agent/state/memory.py` | Unified SQLite memory store, lexical retrieval, and task memory budgets |
-| `agent/state/memory_formation.py` | Immutable task capture, LLM candidate extraction, and lifecycle updates |
 | `agent/state/session.py` | Snapshots, pending actions, and JSONL events |
-| `agent/schemas.py` | Provider-neutral controller and session models |
-| `agent/security.py` | Command policy and trace redaction |
-| `agent/workspace.py` | Workspace-relative path resolution |
 | `agent/state/token_tracker.py` | Token totals and estimated cost |
-| `scripts/evaluate_coding_tasks.py` | Deterministic, live-model, and patch-generation evaluation |
+| `agent/memory/models.py` | Memory records and detached task snapshots |
+| `agent/memory/store.py` | SQLite memory store, lexical retrieval, and task memory budgets |
+| `agent/memory/formation.py` | Immutable task capture, LLM candidate extraction, and lifecycle updates |
+| `agent/evaluation/coding_tasks.py` | Deterministic, live-model, and patch-generation evaluation |
 
 ## Evaluation
 
@@ -396,11 +404,11 @@ input, and command while redacting configured secrets. When
 Run the normal local checks with the project environment:
 
 ```bash
-.venv/bin/python -m py_compile main.py agent/*.py scripts/*.py
+.venv/bin/python -m compileall -q agent
 .venv/bin/ruff check .
 .venv/bin/mypy .
 .venv/bin/python -m pytest -q
-.venv/bin/python scripts/evaluate_coding_tasks.py
+.venv/bin/agent eval
 ```
 
 Tests use fake providers and temporary workspaces; they do not make live API

@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [project.scripts]
-agent = "main:cli"
+agent = "agent.cli.main:cli"
 
 [dependency-groups]
 dev = [
@@ -38,9 +38,8 @@ disallow_untyped_defs = true
 warn_return_any = true
 warn_unused_ignores = true
 
-[tool.setuptools]
-packages = ["agent", "agent.state", "agent.tooling", "scripts"]
-py-modules = ["main"]
+[tool.setuptools.packages.find]
+include = ["agent*"]
 
 [build-system]
 requires = ["setuptools>=69", "wheel"]

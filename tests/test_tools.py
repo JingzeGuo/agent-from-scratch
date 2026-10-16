@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from agent.tooling.setup import AGENT_PROFILES, create_registry
+from agent.tooling.catalog import create_registry
+from agent.tooling.sub_agent import AGENT_PROFILES
 
 pytestmark = pytest.mark.anyio
 

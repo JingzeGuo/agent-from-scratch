@@ -7,14 +7,14 @@ from typing import Any
 import pytest
 
 from agent.agent import Agent
+from agent.cli.main import CliSessionState, run_cli
+from agent.cli.main import main as cli_main
+from agent.memory.formation import LIFECYCLE_PROMPT, LLMMemoryFormation
+from agent.memory.models import MemoryRecord, TaskMemorySnapshot
+from agent.memory.store import MemoryStore, TaskMemoryContext
 from agent.provider import DeepSeekConfig
-from agent.schemas import MemoryRecord, TaskMemorySnapshot
-from agent.state.memory import MemoryStore, TaskMemoryContext
-from agent.state.memory_formation import LIFECYCLE_PROMPT, LLMMemoryFormation
 from agent.state.session import SessionStore
-from agent.tooling.setup import create_registry
-from main import CliSessionState, run_cli
-from main import main as cli_main
+from agent.tooling.catalog import create_registry
 from tests.test_agent import (
     FakeContextBuilder,
     FakeProviderAdapter,
@@ -356,12 +356,12 @@ def test_cli_enables_persistence_and_drains_formation_at_shutdown(
     monkeypatch.delenv("AGENT_STATE_DIR", raising=False)
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
     monkeypatch.setattr(
-        "main.load_deepseek_config",
+        "agent.cli.main.load_deepseek_config",
         lambda **kwargs: DeepSeekConfig(
             model=llm.model, api_key="test-key", base_url="https://example.invalid"
         ),
     )
-    monkeypatch.setattr("main.DeepSeekProvider", lambda **kwargs: llm)
+    monkeypatch.setattr("agent.cli.main.DeepSeekProvider", lambda **kwargs: llm)
     monkeypatch.setattr(Agent, "_new_run_id", lambda self: "run-current")
 
     asyncio.run(cli_main([]))

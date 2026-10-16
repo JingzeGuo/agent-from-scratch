@@ -8,15 +8,16 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from agent.schemas import MemoryRecord, TaskMemorySnapshot, TokenUsage
-from agent.state.context import count_tokens
-from agent.state.memory import (
+from agent.memory.formation import LLMMemoryFormation
+from agent.memory.models import MemoryRecord, TaskMemorySnapshot
+from agent.memory.store import (
     MemoryConfig,
     MemoryStore,
     load_task_memory,
     render_memories,
 )
-from agent.state.memory_formation import LLMMemoryFormation
+from agent.schemas import TokenUsage
+from agent.state.context import count_tokens
 from tests.test_agent import FakeProviderAdapter, TextBlock, make_message
 
 

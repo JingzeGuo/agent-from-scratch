@@ -7,6 +7,8 @@ from time import perf_counter
 from typing import Any
 from uuid import uuid4
 
+from .memory.formation import LLMMemoryFormation, capture_task_memory
+from .memory.store import MemoryConfig, MemoryStore, TaskMemoryContext, load_task_memory
 from .prompts import build_system_prompt
 from .provider import ProviderAdapter
 from .schemas import (
@@ -24,8 +26,6 @@ from .schemas import (
 from .security import ToolApprovalPolicy, classify_command, redact_text
 from .state.consolidation import LLMConsolidator
 from .state.context import ContextBuilder, ContextConfig
-from .state.memory import MemoryConfig, MemoryStore, TaskMemoryContext, load_task_memory
-from .state.memory_formation import LLMMemoryFormation, capture_task_memory
 from .state.session import SessionStore, utc_timestamp
 from .state.token_tracker import TokenTracker
 from .tooling.tool_registry import ToolRegistry

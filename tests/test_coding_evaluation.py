@@ -7,8 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.provider import DeepSeekProvider
-from scripts.evaluate_coding_tasks import (
+from agent.evaluation.coding_tasks import (
     SWE_BENCH_SYSTEM_PROMPT_SUFFIX,
     CodingTaskResult,
     ScriptedProviderAdapter,
@@ -32,6 +31,7 @@ from scripts.evaluate_coding_tasks import (
     swe_bench_prompt,
     tool_step,
 )
+from agent.provider import DeepSeekProvider
 
 
 def test_build_cases_is_small_and_representative() -> None:

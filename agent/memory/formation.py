@@ -9,19 +9,18 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 from ..provider import ProviderAdapter
-from ..schemas import (
-    AgentRun,
+from ..schemas import AgentRun, TokenUsage
+from ..security import redact_text
+from ..state.context import count_tokens
+from ..state.session import utc_timestamp
+from .models import (
     MemoryKind,
     MemoryProvenance,
     MemoryRecord,
     MemoryScope,
     TaskMemorySnapshot,
-    TokenUsage,
 )
-from ..security import redact_text
-from .context import count_tokens
-from .memory import MemoryConfig, MemoryStore, TaskMemoryContext, render_memories
-from .session import utc_timestamp
+from .store import MemoryConfig, MemoryStore, TaskMemoryContext, render_memories
 
 FORMATION_PROMPT = """Extract only information from this completed coding task that
 could materially improve future task solving. This is NOT task summarization.
