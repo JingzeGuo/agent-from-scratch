@@ -95,7 +95,7 @@ class MemoryDecision(BaseModel):
 
 
 def capture_task_memory(
-    run: AgentRun, context: TaskMemoryContext, workspace_root: Path | None
+    run: AgentRun, context: TaskMemoryContext, workspace_root: Path
 ) -> TaskMemorySnapshot:
     """Copy only this run, before returning control to callers or the next task."""
     task_id = run.run_id
@@ -117,7 +117,7 @@ def capture_task_memory(
             ):
                 continue
             path = Path(call.input["path"])
-            if workspace_root is not None and path.is_absolute():
+            if path.is_absolute():
                 path = path.relative_to(workspace_root.resolve())
             changed.add(path.as_posix())
     return TaskMemorySnapshot(

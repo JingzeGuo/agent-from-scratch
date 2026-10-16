@@ -33,17 +33,11 @@ def test_day_9_outcome_vocabulary_is_available() -> None:
     outcomes: list[RunOutcome] = [
         "completed",
         "max_steps",
-        "interrupted",
-        "blocked",
-        "refused",
         "protocol_error",
     ]
 
     assert outcomes == [
         "completed",
         "max_steps",
-        "interrupted",
-        "blocked",
-        "refused",
         "protocol_error",
     ]

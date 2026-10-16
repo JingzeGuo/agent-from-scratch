@@ -33,7 +33,6 @@ from .tools import (
 class AgentProfile:
     allowed_tools: frozenset[str]
     default_max_steps: int
-    max_steps_cap: int
     system_prompt_suffix: str = ""
 
 
@@ -47,7 +46,6 @@ AGENT_PROFILES: dict[str, AgentProfile] = {
             }
         ),
         default_max_steps=6,
-        max_steps_cap=8,
         system_prompt_suffix=(
             "Explore the repository and return concise supporting evidence "
             "with relevant file paths. Do not modify files, execute commands, "

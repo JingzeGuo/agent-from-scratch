@@ -18,12 +18,16 @@ import subprocess
 import time
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Literal
 
 import httpx
 
+from ..schemas import AgentRun, TokenUsage
 from ..security import classify_command
 from ..workspace import resolve_workspace_path
+
+if TYPE_CHECKING:
+    from ..agent import Agent
 
 _SKIPPED_DIRS = {".git", ".venv", "node_modules", "build", "dist"}
 
@@ -400,33 +404,24 @@ def _normalize_subprocess_output(output: str | bytes | None) -> str:
     return output
 
 
+_SUB_AGENT_RESULT_CHARS = 4_000
+
+
 async def sub_agent(
     task: str,
     profile: Literal["read_only_explorer"] = "read_only_explorer",
     max_steps: int | None = None,
     *,
-    parent_agent: Any | None = None,
+    parent_agent: Agent,
 ) -> str:
     """Run a bounded read-only child agent and return a compact summary."""
-    if parent_agent is None:
-        raise ValueError("sub_agent tool is not initialized with a parent agent")
-    if parent_agent.registry.workspace_root is None:
-        raise ValueError("Workspace root is required.")
-
     from ..agent import Agent
-    from ..schemas import TokenUsage
     from .setup import AGENT_PROFILES, create_registry
 
     profile_config = AGENT_PROFILES[profile]
     effective_max_steps = (
         profile_config.default_max_steps if max_steps is None else max_steps
     )
-    if effective_max_steps > profile_config.max_steps_cap:
-        raise ValueError(
-            f"Profile '{profile}' allows at most "
-            f"{profile_config.max_steps_cap} steps."
-        )
-
     child_agent = Agent(
         provider_adapter=parent_agent.provider_adapter,
         registry=create_registry(
@@ -435,8 +430,6 @@ async def sub_agent(
             blocked_path_parts=parent_agent.registry.blocked_path_parts,
             blocked_command_names=parent_agent.registry.blocked_command_names,
         ),
-        model=parent_agent.model,
-        provider=parent_agent.provider,
         max_steps=effective_max_steps,
         stream_output=False,
         system_prompt_suffix=profile_config.system_prompt_suffix,
@@ -462,13 +455,33 @@ async def sub_agent(
             output_tokens=child_agent.token_tracker.output_tokens,
         )
     )
-    return cast(
-        str,
-        parent_agent._format_sub_agent_result(
-            profile=profile,
-            child_run=child_run,
-            child_agent=child_agent,
-        ),
+    return _format_sub_agent_result(profile, child_run, child_agent)
+
+
+def _format_sub_agent_result(
+    profile: str,
+    child_run: AgentRun,
+    child_agent: Agent,
+) -> str:
+    result = "\n".join(
+        [
+            "Sub-agent result:",
+            f"child_run_id: {child_run.run_id}",
+            f"profile: {profile}",
+            f"termination: {child_run.termination}",
+            f"steps: {len(child_run.steps)}",
+            f"final_stop_reason: {child_run.final_stop_reason}",
+            f"input_tokens: {child_agent.token_tracker.input_tokens}",
+            f"output_tokens: {child_agent.token_tracker.output_tokens}",
+            "final_answer:",
+            child_run.final_answer() or "[No final text returned by child agent.]",
+        ]
+    )
+    if len(result) <= _SUB_AGENT_RESULT_CHARS:
+        return result
+    return (
+        result[:_SUB_AGENT_RESULT_CHARS].rstrip()
+        + f"\n[truncated after {_SUB_AGENT_RESULT_CHARS} chars]"
     )
 
 

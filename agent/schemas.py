@@ -2,14 +2,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-RunOutcome = Literal[
-    "completed",
-    "max_steps",
-    "interrupted",
-    "blocked",
-    "refused",
-    "protocol_error",
-]
+RunOutcome = Literal["completed", "max_steps", "protocol_error"]
 
 
 class GlobFilesInput(BaseModel):
@@ -218,13 +211,6 @@ class ProviderResponse(BaseModel):
     native_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class ProviderCapabilities(BaseModel):
-    """Provider features that affect whether an agent run is valid."""
-
-    supports_tools: bool = True
-    supports_streaming: bool = True
-
-
 class AgentStep(BaseModel):
     step_number: int = Field(ge=1)
     stop_reason: str | None
@@ -239,6 +225,13 @@ class AgentRun(BaseModel):
     steps: list[AgentStep]
     termination: RunOutcome
     final_stop_reason: str | None
+
+    def final_answer(self) -> str:
+        """Return the text of the latest step that produced any."""
+        for step in reversed(self.steps):
+            if step.text:
+                return "\n".join(step.text)
+        return ""
 
 
 MemoryKind = Literal["fact", "experience"]

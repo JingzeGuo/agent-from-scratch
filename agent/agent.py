@@ -18,6 +18,7 @@ from .schemas import (
     SessionEventType,
     SessionSnapshot,
     ToolCall,
+    ToolDefinition,
     ToolResult,
 )
 from .security import ToolApprovalPolicy, classify_command, redact_text
@@ -31,7 +32,6 @@ from .tooling.tool_registry import ToolRegistry
 from .workspace import resolve_workspace_path
 
 TRACE_PREVIEW_CHARS = 500
-SUB_AGENT_RESULT_CHARS = 4_000
 DEFAULT_MAX_STEPS = 40
 PARALLEL_READ_ONLY_TOOLS = {
     "read_file",
@@ -67,8 +67,6 @@ class Agent:
         self,
         provider_adapter: ProviderAdapter,
         registry: ToolRegistry,
-        model: str | None = None,
-        provider: str | None = None,
         max_steps: int = DEFAULT_MAX_STEPS,
         stream_output: bool = True,
         approval_callback: ApprovalCallback | None = None,
@@ -88,8 +86,8 @@ class Agent:
             raise ValueError("reserve_finalization_steps cannot exceed max_steps")
         self.provider_adapter = provider_adapter
         self.registry = registry
-        self.model = provider_adapter.model if model is None else model
-        self.provider = provider_adapter.provider if provider is None else provider
+        self.model = provider_adapter.model
+        self.provider = provider_adapter.provider
         self.max_steps = max_steps
         self.stream_output = stream_output
         self.approval_callback = approval_callback
@@ -106,9 +104,7 @@ class Agent:
         self.record_pending_actions = True
         self.token_tracker = TokenTracker(model=self.model)
         self.context_builder = ContextBuilder(
-            LLMConsolidator(
-                provider_adapter, on_usage=lambda usage: self.token_tracker.add(usage)
-            ),
+            LLMConsolidator(provider_adapter, on_usage=self.token_tracker.add),
             config=context_config,
         )
         self.memory_store = memory_store
@@ -130,7 +126,6 @@ class Agent:
             workspace_root=registry.workspace_root,
             system_prompt_suffix=system_prompt_suffix,
         )
-        self._validate_provider_capabilities(provider_adapter)
 
     def configure_session_recording(
         self,
@@ -154,22 +149,14 @@ class Agent:
 
     def _context_overhead_tokens(
         self,
-        extra_messages: list[dict[str, Any]] | None = None,
-        *,
-        system_prompt: str | None = None,
+        system_prompt: str,
+        tools: list[ToolDefinition],
     ) -> int:
-        if system_prompt is None:
-            system_prompt = self._request_system_prompt()
+        """Tokens every request spends on the system prompt and tool definitions."""
         return self.context_builder.measure_tokens(
             [
                 {"role": "system", "content": system_prompt},
-                {
-                    "tools": [
-                        tool.model_dump()
-                        for tool in self.registry.to_tool_definitions()
-                    ]
-                },
-                *(extra_messages or []),
+                {"tools": [tool.model_dump() for tool in tools]},
             ]
         )
 
@@ -182,11 +169,10 @@ class Agent:
         session_id: str,
         session_name: str | None = None,
     ) -> SessionSnapshot:
-        workspace_root = self.registry.workspace_root
         return SessionSnapshot(
             session_id=session_id,
             session_name=session_name,
-            workspace_root="" if workspace_root is None else workspace_root.as_posix(),
+            workspace_root=self.registry.workspace_root.as_posix(),
             provider=self.provider,
             model=self.model,
             max_steps=self.max_steps,
@@ -219,13 +205,10 @@ class Agent:
             self._restore_snapshot_path(path): content
             for path, content in snapshot.original_file_contents.items()
         }
-        self.token_tracker = TokenTracker(model=self.model)
         self.token_tracker.input_tokens = snapshot.input_tokens
         self.token_tracker.output_tokens = snapshot.output_tokens
-        self.token_tracker._estimated_cost = snapshot.estimated_cost
+        self.token_tracker.estimated_cost = snapshot.estimated_cost
         self.task_memory_context = TaskMemoryContext()
-        if self.memory_formation is not None:
-            self.memory_formation.on_usage = self.token_tracker.add
         self.clear_approval_cache()
         self.system_prompt = build_system_prompt(
             workspace_root=self.registry.workspace_root,
@@ -244,6 +227,8 @@ class Agent:
             else TaskMemoryContext()
         )
         request_system = self._request_system_prompt()
+        tools = self.registry.to_tool_definitions()
+        base_overhead_tokens = self._context_overhead_tokens(request_system, tools)
         run_steps: list[AgentStep] = []
         run_id = self._new_run_id()
         self._record_run_started(run_id, user_task)
@@ -284,9 +269,8 @@ class Agent:
                 self.messages,
                 objective=user_task,
                 task_starts=self.task_starts,
-                request_overhead_tokens=self._context_overhead_tokens(
-                    extra_messages, system_prompt=request_system
-                ),
+                request_overhead_tokens=base_overhead_tokens
+                + self.context_builder.measure_tokens(extra_messages),
             )
             model_messages.extend(extra_messages)
             model_request_started = perf_counter()
@@ -296,7 +280,7 @@ class Agent:
             )
             response = await self.provider_adapter.stream_response(
                 system=request_system,
-                tools=self.registry.to_tool_definitions(),
+                tools=tools,
                 messages=model_messages,
                 on_text_delta=print_text_delta if self.stream_output else None,
             )
@@ -678,43 +662,6 @@ class Agent:
             is_error=is_error,
         )
 
-    def _format_sub_agent_result(
-        self,
-        profile: str,
-        child_run: AgentRun,
-        child_agent: "Agent",
-    ) -> str:
-        final_answer = self._sub_agent_final_answer(child_run)
-        result = "\n".join(
-            [
-                "Sub-agent result:",
-                f"child_run_id: {child_run.run_id}",
-                f"profile: {profile}",
-                f"termination: {child_run.termination}",
-                f"steps: {len(child_run.steps)}",
-                f"final_stop_reason: {child_run.final_stop_reason}",
-                f"input_tokens: {child_agent.token_tracker.input_tokens}",
-                f"output_tokens: {child_agent.token_tracker.output_tokens}",
-                "final_answer:",
-                final_answer,
-            ]
-        )
-        return self._bounded_sub_agent_result(result)
-
-    def _sub_agent_final_answer(self, child_run: AgentRun) -> str:
-        for step in reversed(child_run.steps):
-            if step.text:
-                return "\n".join(step.text)
-        return "[No final text returned by child agent.]"
-
-    def _bounded_sub_agent_result(self, result: str) -> str:
-        if len(result) <= SUB_AGENT_RESULT_CHARS:
-            return result
-        return (
-            result[:SUB_AGENT_RESULT_CHARS].rstrip()
-            + f"\n[truncated after {SUB_AGENT_RESULT_CHARS} chars]"
-        )
-
     async def _run_tool_call(
         self,
         tool_call: ToolCall,
@@ -736,24 +683,18 @@ class Agent:
         self,
         tool_call: ToolCall,
     ) -> ToolApprovalPolicy | None:
-        if tool_call.name == "run_command":
-            raw_command = tool_call.input.get("command")
-            if not isinstance(raw_command, str):
-                return None
-            try:
-                policy = classify_command(raw_command)
-            except ValueError:
-                return None
-            if policy.decision != "requires_approval":
-                return None
-            return policy
-
-        tool = self.registry.tools.get(tool_call.name)
-        if tool is None or tool.approval_policy is None:
+        if tool_call.name != "run_command":
             return None
-        if tool.approval_policy.decision != "requires_approval":
+        raw_command = tool_call.input.get("command")
+        if not isinstance(raw_command, str):
             return None
-        return tool.approval_policy
+        try:
+            policy = classify_command(raw_command)
+        except ValueError:
+            return None
+        if policy.decision != "requires_approval":
+            return None
+        return policy
 
     def _approval_cache_key(
         self,
@@ -962,57 +903,23 @@ class Agent:
         command = tool_call.input.get("command")
         return command if isinstance(command, str) else None
 
-    def _validate_provider_capabilities(
-        self,
-        provider_adapter: ProviderAdapter,
-    ) -> None:
-        if not provider_adapter.capabilities.supports_streaming:
-            raise ValueError(
-                "Provider does not support streaming: "
-                f"{provider_adapter.provider}/{provider_adapter.model}"
-            )
-        if self.registry.tools and not provider_adapter.capabilities.supports_tools:
-            raise ValueError(
-                "Provider does not support tools, but tools are registered: "
-                f"{provider_adapter.provider}/{provider_adapter.model}"
-            )
-
     def _snapshot_paths(self, paths: set[Path]) -> list[str]:
-        workspace_root = self.registry.workspace_root
-        if workspace_root is None:
-            return sorted(path.as_posix() for path in paths)
-
-        root = workspace_root.resolve()
-        return sorted(path.resolve().relative_to(root).as_posix() for path in paths)
+        return sorted(self.registry.relative_path(path) for path in paths)
 
     def _snapshot_original_file_contents(self) -> dict[str, str | None]:
-        workspace_root = self.registry.workspace_root
-        if workspace_root is None:
-            return {
-                path.as_posix(): content
-                for path, content in self.registry.original_file_contents.items()
-            }
-
-        root = workspace_root.resolve()
         return {
-            path.resolve().relative_to(root).as_posix(): content
+            self.registry.relative_path(path): content
             for path, content in self.registry.original_file_contents.items()
         }
 
     def _restore_snapshot_path(self, path: str) -> Path:
-        workspace_root = self.registry.workspace_root
-        if workspace_root is None:
-            return Path(path)
-        return resolve_workspace_path(workspace_root, path)
+        return resolve_workspace_path(self.registry.workspace_root, path)
 
     def _validate_snapshot_workspace(self, snapshot: SessionSnapshot) -> None:
-        workspace_root = self.registry.workspace_root
-        if workspace_root is None:
-            return
         if not snapshot.workspace_root:
             raise ValueError("Snapshot workspace root is missing.")
         snapshot_root = Path(snapshot.workspace_root).expanduser().resolve()
-        if snapshot_root != workspace_root.expanduser().resolve():
+        if snapshot_root != self.registry.workspace_root.expanduser().resolve():
             raise ValueError(
                 "Snapshot workspace root does not match the current agent workspace."
             )

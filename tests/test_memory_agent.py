@@ -13,8 +13,8 @@ from agent.state.memory import MemoryStore, TaskMemoryContext
 from agent.state.memory_formation import LIFECYCLE_PROMPT, LLMMemoryFormation
 from agent.state.session import SessionStore
 from agent.tooling.setup import create_registry
+from main import CliSessionState, run_cli
 from main import main as cli_main
-from main import run_cli
 from tests.test_agent import (
     FakeContextBuilder,
     FakeProviderAdapter,
@@ -111,7 +111,8 @@ def test_memory_tokens_count_in_working_context_overhead(
     builder = FakeContextBuilder([{"role": "user", "content": "Request"}])
     agent.context_builder = builder
     store.add(memory("Prefer targeted patches.", access="core"))
-    baseline = agent._context_overhead_tokens()
+    tools = agent.registry.to_tool_definitions()
+    baseline = agent._context_overhead_tokens(agent._request_system_prompt(), tools)
 
     async def exercise() -> None:
         await agent.run("Repair parser")
@@ -119,7 +120,9 @@ def test_memory_tokens_count_in_working_context_overhead(
 
     try:
         asyncio.run(exercise())
-        memory_overhead = agent._context_overhead_tokens()
+        memory_overhead = agent._context_overhead_tokens(
+            agent._request_system_prompt(), tools
+        )
         assert memory_overhead > baseline
         runtime = [
             {
@@ -396,7 +399,11 @@ def test_cli_background_job_progresses_during_input(
     monkeypatch.setattr("builtins.input", read_input)
 
     async def exercise() -> None:
-        await run_cli(agent)
+        await run_cli(
+            agent,
+            SessionStore(tmp_path / "sessions"),
+            CliSessionState(session_id="session-one"),
+        )
         await agent.wait_for_memory_jobs()
 
     try:

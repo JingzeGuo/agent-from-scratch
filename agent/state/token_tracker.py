@@ -37,15 +37,11 @@ class TokenTracker:
         self.pricing = MODEL_PRICING[model]
         self.input_tokens = 0
         self.output_tokens = 0
-        self._estimated_cost = 0.0
+        self.estimated_cost = 0.0
 
     def add(self, usage: TokenUsage) -> None:
         self.input_tokens += usage.input_tokens
         self.output_tokens += usage.output_tokens
         input_cost = usage.input_tokens * self.pricing.input_per_million
         output_cost = usage.output_tokens * self.pricing.output_per_million
-        self._estimated_cost += (input_cost + output_cost) / 1_000_000
-
-    @property
-    def estimated_cost(self) -> float:
-        return self._estimated_cost
+        self.estimated_cost += (input_cost + output_cost) / 1_000_000

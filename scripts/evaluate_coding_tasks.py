@@ -23,7 +23,6 @@ from agent.agent import Agent
 from agent.provider import DeepSeekProvider, ProviderAdapter, load_deepseek_config
 from agent.schemas import (
     AgentRun,
-    ProviderCapabilities,
     ProviderResponse,
     TokenUsage,
     ToolCall,
@@ -168,7 +167,6 @@ class ScriptedProviderAdapter:
 
     provider = "scripted"
     model = "deepseek-v4-flash"
-    capabilities = ProviderCapabilities()
 
     def __init__(self, steps: list[ScriptedStep]) -> None:
         self._responses = [self._response(step) for step in steps]
@@ -395,7 +393,7 @@ def materialize_case(case: CodingTaskCase, workspace: Path) -> None:
         path.write_text(content, encoding="utf-8")
 
 
-def create_real_provider_adapter(api_key: str | None = None) -> ProviderAdapter:
+def create_real_provider_adapter(api_key: str | None = None) -> DeepSeekProvider:
     config = load_deepseek_config(api_key=api_key)
     return DeepSeekProvider(
         model=config.model,
@@ -480,7 +478,9 @@ def verify_case(
     agent: Agent,
 ) -> CaseVerification:
     failures: list[str] = []
-    changed_files = relative_changed_files(workspace, agent)
+    changed_files = sorted(
+        agent.registry.relative_path(path) for path in agent.registry.changed_files
+    )
     if changed_files != case.expected_changed_files:
         failures.append(
             "changed files mismatch: "
@@ -491,7 +491,7 @@ def verify_case(
         actual = path.read_text(encoding="utf-8") if path.exists() else None
         if actual != expected:
             failures.append(f"unexpected content in {relative_path}")
-    if case.expected_final_text and case.expected_final_text not in final_answer(run):
+    if case.expected_final_text and case.expected_final_text not in run.final_answer():
         failures.append(f"final answer missing {case.expected_final_text!r}")
 
     if case.verification_command is None:
@@ -519,21 +519,6 @@ def verify_case(
     )
 
 
-def relative_changed_files(workspace: Path, agent: Agent) -> list[str]:
-    root = workspace.resolve()
-    return sorted(
-        path.resolve().relative_to(root).as_posix()
-        for path in agent.registry.changed_files
-    )
-
-
-def final_answer(run: AgentRun) -> str:
-    for step in reversed(run.steps):
-        if step.text:
-            return "\n".join(step.text)
-    return ""
-
-
 def deny_broad_command(
     tool_call: ToolCall,
     policy: ToolApprovalPolicy,
@@ -553,16 +538,20 @@ async def evaluate_cases(
     cases = build_cases()
     provider = create_real_provider_adapter(api_key) if mode == "real_model" else None
     results: list[CodingTaskResult] = []
-    for name in selected_names:
-        results.append(
-            await evaluate_case(
-                cases[name],
-                mode=mode,
-                provider_adapter=provider,
-                keep_workspace=keep_workspaces,
-                max_steps=max_steps,
+    try:
+        for name in selected_names:
+            results.append(
+                await evaluate_case(
+                    cases[name],
+                    mode=mode,
+                    provider_adapter=provider,
+                    keep_workspace=keep_workspaces,
+                    max_steps=max_steps,
+                )
             )
-        )
+    finally:
+        if provider is not None:
+            await provider.aclose()
     return results
 
 
@@ -627,18 +616,21 @@ async def evaluate_swe_bench_instances(
     predictions_path.write_text("", encoding="utf-8")
     resolved_metrics_path.write_text("", encoding="utf-8")
     results: list[CodingTaskResult] = []
-    for instance in instances:
-        result, patch = await evaluate_swe_bench_instance(
-            instance,
-            provider_adapter=provider,
-            keep_workspace=keep_workspaces,
-            max_steps=max_steps,
-            trajectories_dir=resolved_trajectories_dir,
-        )
-        append_prediction(predictions_path, instance, provider, patch)
-        append_swe_bench_metrics(resolved_metrics_path, result)
-        results.append(result)
-        print_swe_bench_result(result, resolved_metrics_path)
+    try:
+        for instance in instances:
+            result, patch = await evaluate_swe_bench_instance(
+                instance,
+                provider_adapter=provider,
+                keep_workspace=keep_workspaces,
+                max_steps=max_steps,
+                trajectories_dir=resolved_trajectories_dir,
+            )
+            append_prediction(predictions_path, instance, provider, patch)
+            append_swe_bench_metrics(resolved_metrics_path, result)
+            results.append(result)
+            print_swe_bench_result(result, resolved_metrics_path)
+    finally:
+        await provider.aclose()
     print(f"Predictions: {predictions_path}")
     print(f"Metrics: {resolved_metrics_path}")
     print(f"Trajectories: {resolved_trajectories_dir / 'events'}")

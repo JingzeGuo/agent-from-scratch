@@ -31,11 +31,9 @@ class CliSessionState(BaseModel):
 
 def checkpoint_session(
     agent: Agent,
-    session_store: SessionStore | None,
-    session_state: CliSessionState | None,
+    session_store: SessionStore,
+    session_state: CliSessionState,
 ) -> None:
-    if session_store is None or session_state is None:
-        return
     session_store.save(
         agent.create_snapshot(
             session_id=session_state.session_id,
@@ -114,9 +112,9 @@ def _format_tool_approval_input(tool_input: dict[str, object]) -> str:
 
 def handle_command(
     command: str,
-    agent: Agent | None = None,
-    session_store: SessionStore | None = None,
-    session_state: CliSessionState | None = None,
+    agent: Agent,
+    session_store: SessionStore,
+    session_state: CliSessionState,
 ) -> bool:
     if command == "/help":
         print("Available commands:")
@@ -125,10 +123,6 @@ def handle_command(
             print(f"  {name:<{width}} {description}")
         return False
     if command == "/tokens":
-        if agent is None:
-            print("Tokens command is unavailable.")
-            return False
-
         input_tokens = agent.token_tracker.input_tokens
         output_tokens = agent.token_tracker.output_tokens
         total_tokens = input_tokens + output_tokens
@@ -138,40 +132,16 @@ def handle_command(
         print(f"Estimated cost: ${agent.token_tracker.estimated_cost:.6f}")
         return False
     if command == "/status":
-        if agent is None:
-            print("Status command is unavailable.")
-            return False
-
-        session_id = "[none]" if session_state is None else session_state.session_id
-        session_name = (
-            "[none]"
-            if session_state is None or session_state.session_name is None
-            else session_state.session_name
+        pending = session_store.read_pending_action(session_state.session_id)
+        pending_action = (
+            "none" if pending is None else f"{pending.tool_name} ({pending.tool_use_id})"
         )
-        workspace = (
-            "[none]"
-            if agent.registry.workspace_root is None
-            else agent.registry.workspace_root.as_posix()
-        )
-        agent_state = (
-            "[unavailable]"
-            if session_store is None
-            else session_store.sessions_dir.parent.as_posix()
-        )
-        pending_action = "[unavailable]"
-        if session_store is not None and session_state is not None:
-            pending = session_store.read_pending_action(session_state.session_id)
-            pending_action = (
-                "none"
-                if pending is None
-                else f"{pending.tool_name} ({pending.tool_use_id})"
-            )
 
         print("Status:")
-        print(f"  Session: {session_id}")
-        print(f"  Name: {session_name}")
-        print(f"  Workspace files: {workspace}")
-        print(f"  Agent state: {agent_state}")
+        print(f"  Session: {session_state.session_id}")
+        print(f"  Name: {session_state.session_name or '[none]'}")
+        print(f"  Workspace files: {agent.registry.workspace_root.as_posix()}")
+        print(f"  Agent state: {session_store.sessions_dir.parent.as_posix()}")
         print(f"  Provider: {agent.provider}")
         print(f"  Model: {agent.model}")
         print(f"  Max steps: {agent.max_steps}")
@@ -185,10 +155,6 @@ def handle_command(
         print(f"  Estimated cost: ${agent.token_tracker.estimated_cost:.6f}")
         return False
     if command == "/reset":
-        if agent is None:
-            print("Reset command is unavailable.")
-            return False
-
         agent.messages.clear()
         agent.task_starts.clear()
         agent.context_builder.reset()
@@ -197,17 +163,9 @@ def handle_command(
         print("Conversation context reset.")
         return False
     if command == "/save":
-        if agent is None or session_store is None or session_state is None:
-            print("Save command is unavailable.")
-            return False
-
         checkpoint_session(agent, session_store, session_state)
         return False
     if command == "/diff" or command.startswith("/diff "):
-        if agent is None:
-            print("Diff command is unavailable.")
-            return False
-
         parts = command.split(maxsplit=1)
         path = parts[1] if len(parts) == 2 else None
         try:
@@ -216,10 +174,6 @@ def handle_command(
             print(f"Cannot show diff: {error}")
         return False
     if command == "/trace" or command.startswith("/trace "):
-        if session_store is None or session_state is None:
-            print("Trace command is unavailable.")
-            return False
-
         events = session_store.read_events(session_state.session_id)
         if not events:
             print("[No trace events]")
@@ -227,9 +181,6 @@ def handle_command(
 
         parts = command.split(maxsplit=1)
         if len(parts) == 2:
-            if agent is None or agent.registry.workspace_root is None:
-                print("Trace export is unavailable.")
-                return False
             try:
                 export_path = resolve_workspace_path(
                     agent.registry.workspace_root,
@@ -250,10 +201,6 @@ def handle_command(
             print(event.model_dump_json())
         return False
     if command == "/rename" or command.startswith("/rename "):
-        if agent is None or session_store is None or session_state is None:
-            print("Rename command is unavailable.")
-            return False
-
         parts = command.split()
         if len(parts) != 2:
             print("Usage: /rename <session-name>")
@@ -285,10 +232,6 @@ def handle_command(
         print(f"Renamed session: {session_name}")
         return False
     if command == "/sessions":
-        if session_store is None:
-            print("Sessions command is unavailable.")
-            return False
-
         snapshots = session_store.list_snapshots()
         if not snapshots:
             print("[No saved sessions]")

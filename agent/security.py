@@ -2,6 +2,7 @@ import os
 import re
 import shlex
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Literal
 
 CommandPolicyDecision = Literal["allowed", "blocked", "requires_approval"]
@@ -111,8 +112,12 @@ def classify_command(command: str) -> ToolApprovalPolicy:
     )
 
 
-def _configured_secret_patterns() -> list[re.Pattern[str]]:
-    raw_patterns = os.getenv("AGENT_TRACE_REDACT_PATTERNS", "")
+def _configured_secret_patterns() -> tuple[re.Pattern[str], ...]:
+    return _compile_secret_patterns(os.getenv("AGENT_TRACE_REDACT_PATTERNS", ""))
+
+
+@lru_cache(maxsize=8)
+def _compile_secret_patterns(raw_patterns: str) -> tuple[re.Pattern[str], ...]:
     patterns: list[re.Pattern[str]] = []
     for raw_pattern in raw_patterns.splitlines():
         pattern = raw_pattern.strip()
@@ -122,7 +127,7 @@ def _configured_secret_patterns() -> list[re.Pattern[str]]:
             patterns.append(re.compile(pattern))
         except re.error:
             continue
-    return patterns
+    return tuple(patterns)
 
 
 def _is_safe_python_module_command(args: list[str]) -> bool:

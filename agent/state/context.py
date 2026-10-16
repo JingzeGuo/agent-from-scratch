@@ -104,7 +104,10 @@ class ContextBuilder:
         soft = self.config.usable_context_tokens * self.config.soft_threshold
         emergency = self.config.usable_context_tokens * self.config.emergency_threshold
 
-        while self.measure_tokens(context) + request_overhead_tokens >= soft:
+        while True:
+            context_tokens = self.measure_tokens(context)
+            if context_tokens + request_overhead_tokens < soft:
+                return context
             candidates = self._fold_boundaries(raw, starts)
             if not candidates:
                 break
@@ -131,19 +134,19 @@ class ContextBuilder:
                     objective,
                     validate_state=self._validate_state_size,
                 )
-                state = ConsolidatedState.model_validate(state.model_dump())
-                state.current_objective = objective
+                # Never trust a consolidator's objective or size: enforce both here.
+                state = state.model_copy(update={"current_objective": objective})
                 self._validate_state_size(state)
+                state_message = self._state_message(state)
                 if (
-                    self.measure_tokens([self._state_message(state)])
-                    + request_overhead_tokens
+                    self.measure_tokens([state_message]) + request_overhead_tokens
                     >= emergency
                 ):
                     raise ValueError(
                         "Consolidated state exceeds emergency token budget"
                     )
-                candidate = [self._state_message(state), *raw[end:]]
-                if self.measure_tokens(candidate) >= self.measure_tokens(context):
+                candidate = [state_message, *raw[end:]]
+                if self.measure_tokens(candidate) >= context_tokens:
                     raise ValueError("Consolidation did not reduce context tokens")
                 self.state = WorkingContextState(
                     consolidated_state=state,
@@ -156,7 +159,7 @@ class ContextBuilder:
                     raw, starts, objective, request_overhead_tokens
                 )
 
-        if self.measure_tokens(context) + request_overhead_tokens >= emergency:
+        if context_tokens + request_overhead_tokens >= emergency:
             return self._collapse_context(
                 raw, starts, objective, request_overhead_tokens
             )

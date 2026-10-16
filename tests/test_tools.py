@@ -757,8 +757,8 @@ async def test_sub_agent_requires_parent_agent_when_executed_directly(
         },
     )
 
-    assert "Tool 'sub_agent' raised ValueError" in output
-    assert "not initialized with a parent agent" in output
+    assert "Tool 'sub_agent' raised TypeError" in output
+    assert "parent_agent" in output
     assert is_error is True
 
 

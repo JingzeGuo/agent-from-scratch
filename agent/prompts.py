@@ -3,15 +3,11 @@ from pathlib import Path
 
 def build_system_prompt(
     *,
-    workspace_root: Path | None,
+    workspace_root: Path,
     system_prompt_suffix: str = "",
 ) -> str:
     """Build workflow policy; tool interfaces are supplied in the request's tools."""
-    workspace_text = (
-        workspace_root.expanduser().resolve().as_posix()
-        if workspace_root is not None
-        else "[workspace root not configured]"
-    )
+    workspace_text = workspace_root.expanduser().resolve().as_posix()
     verification_command_guidance = _verification_command_guidance(workspace_root)
     profile_instructions = ""
     if system_prompt_suffix:
@@ -90,18 +86,16 @@ Before giving a final answer after file changes, call `get_diff()` unless there 
 End with a concise final answer covering what changed, which files changed, and what verification was run. Mention limitations only when relevant."""
 
 
-def _verification_command_guidance(workspace_root: Path | None) -> str:
-    if workspace_root is not None:
-        venv_python = workspace_root / ".venv" / "bin" / "python"
-        if venv_python.exists():
-            return (
-                "This workspace has `.venv/bin/python`; prefer commands like "
-                "`.venv/bin/python -m pytest tests/test_target.py` and "
-                "`.venv/bin/python -m py_compile module.py` for Python verification. "
-                "`glob_files` and `search_text` normally skip noisy hidden directories "
-                "such as `.venv`, so do not spend steps using glob searches to prove "
-                "that this interpreter exists."
-            )
+def _verification_command_guidance(workspace_root: Path) -> str:
+    if (workspace_root / ".venv" / "bin" / "python").exists():
+        return (
+            "This workspace has `.venv/bin/python`; prefer commands like "
+            "`.venv/bin/python -m pytest tests/test_target.py` and "
+            "`.venv/bin/python -m py_compile module.py` for Python verification. "
+            "`glob_files` and `search_text` normally skip noisy hidden directories "
+            "such as `.venv`, so do not spend steps using glob searches to prove "
+            "that this interpreter exists."
+        )
     return (
         "For Python workspaces, prefer module commands such as "
         "`python3 -m pytest tests/test_target.py` or "

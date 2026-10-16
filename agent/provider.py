@@ -1,13 +1,13 @@
 import json
 import os
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
 import httpx
 from pydantic import BaseModel
 
 from .schemas import (
-    ProviderCapabilities,
     ProviderResponse,
     TokenUsage,
     ToolCall,
@@ -58,7 +58,6 @@ class ProviderAdapter(Protocol):
 
     provider: str
     model: str
-    capabilities: ProviderCapabilities
 
     async def stream_response(
         self,
@@ -103,6 +102,18 @@ def format_provider_request_error(error: ProviderRequestError) -> str:
     )
 
 
+@dataclass
+class _StreamedCompletion:
+    """One chat completion assembled from streamed chunks."""
+
+    id: str | None = None
+    model: str | None = None
+    finish_reason: str | None = None
+    text: str = ""
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    usage: dict[str, Any] = field(default_factory=dict)
+
+
 class DeepSeekProvider:
     """Thin client for DeepSeek's Chat Completions API."""
 
@@ -113,14 +124,17 @@ class DeepSeekProvider:
         api_key: str,
         base_url: str,
         http_client: httpx.AsyncClient | None = None,
-        capabilities: ProviderCapabilities | None = None,
     ) -> None:
         self.provider = "deepseek"
         self.model = model
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.http_client = http_client
-        self.capabilities = capabilities or ProviderCapabilities()
+
+    async def aclose(self) -> None:
+        """Close the HTTP client shared by every request from this provider."""
+        if self.http_client is not None:
+            await self.http_client.aclose()
 
     async def stream_response(
         self,
@@ -130,7 +144,6 @@ class DeepSeekProvider:
         messages: list[dict[str, Any]],
         on_text_delta: Callable[[str], None] | None = None,
     ) -> ProviderResponse:
-        self._validate_request_capabilities(tools)
         payload: dict[str, Any] = {
             "model": self.model,
             "stream": True,
@@ -145,35 +158,35 @@ class DeepSeekProvider:
             payload["tool_choice"] = "auto"
 
         try:
-            response_data = await self._stream_chat_completions(payload, on_text_delta)
-            choice = response_data["choices"][0]
-            message = choice["message"]
-            finish_reason = choice.get("finish_reason")
-            text = message.get("content") or ""
-            tool_calls = self._tool_calls_from_message(message)
+            completion = await self._stream_chat_completions(payload, on_text_delta)
         except Exception as e:
             raise classify_provider_exception(
                 e,
                 provider=self.provider,
                 model=self.model,
             ) from e
+        tool_calls = [
+            ToolCall(
+                name=raw_tool_call["function"]["name"],
+                input=self._parse_tool_arguments(raw_tool_call["function"]["arguments"]),
+                tool_use_id=raw_tool_call["id"],
+            )
+            for raw_tool_call in completion.tool_calls
+        ]
         return ProviderResponse(
-            message=self._provider_neutral_assistant_message(text, tool_calls),
-            stop_reason=self._normalize_finish_reason(finish_reason),
-            text=[text] if text else [],
+            message=self._provider_neutral_assistant_message(completion.text, tool_calls),
+            stop_reason=self._normalize_finish_reason(completion.finish_reason),
+            text=[completion.text] if completion.text else [],
             tool_calls=tool_calls,
             usage=TokenUsage(
-                input_tokens=response_data.get("usage", {}).get("prompt_tokens", 0),
-                output_tokens=response_data.get("usage", {}).get(
-                    "completion_tokens",
-                    0,
-                ),
+                input_tokens=completion.usage.get("prompt_tokens", 0),
+                output_tokens=completion.usage.get("completion_tokens", 0),
             ),
             native_metadata={
-                "id": response_data.get("id"),
-                "model": response_data.get("model"),
+                "id": completion.id,
+                "model": completion.model,
                 "provider": self.provider,
-                "finish_reason": finish_reason,
+                "finish_reason": completion.finish_reason,
             },
         )
 
@@ -195,61 +208,49 @@ class DeepSeekProvider:
         self,
         payload: dict[str, Any],
         on_text_delta: Callable[[str], None] | None,
-    ) -> dict[str, Any]:
-        url = f"{self.base_url}/chat/completions"
-        headers = {"Authorization": f"Bearer {self.api_key}"}
-        if self.http_client is not None:
-            async with self.http_client.stream(
-                "POST",
-                url,
-                headers=headers,
-                json=payload,
-            ) as response:
-                return await self._collect_stream(response, on_text_delta)
-
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            async with client.stream(
-                "POST",
-                url,
-                headers=headers,
-                json=payload,
-            ) as response:
-                return await self._collect_stream(response, on_text_delta)
+    ) -> _StreamedCompletion:
+        if self.http_client is None:
+            self.http_client = httpx.AsyncClient(timeout=60.0)
+        async with self.http_client.stream(
+            "POST",
+            f"{self.base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            json=payload,
+        ) as response:
+            return await self._collect_stream(response, on_text_delta)
 
     async def _collect_stream(
         self,
         response: httpx.Response,
         on_text_delta: Callable[[str], None] | None,
-    ) -> dict[str, Any]:
+    ) -> _StreamedCompletion:
         response.raise_for_status()
 
-        response_id: str | None = None
-        response_model: str | None = None
-        finish_reason: str | None = None
-        usage: dict[str, Any] = {}
+        completion = _StreamedCompletion()
         text_parts: list[str] = []
         tool_calls_by_index: dict[int, dict[str, Any]] = {}
 
         async for line in response.aiter_lines():
-            data = self._parse_stream_line(line)
-            if data is None:
+            stripped = line.strip()
+            if not stripped.startswith("data:"):
                 continue
+            data = stripped.removeprefix("data:").strip()
             if data == "[DONE]":
                 break
-            if not isinstance(data, dict):
-                continue
+            chunk = json.loads(data)
+            if not isinstance(chunk, dict):
+                raise ValueError("DeepSeek stream chunk must be a JSON object.")
 
-            chunk = data
-            response_id = response_id or chunk.get("id")
-            response_model = response_model or chunk.get("model")
+            completion.id = completion.id or chunk.get("id")
+            completion.model = completion.model or chunk.get("model")
             if isinstance(chunk.get("usage"), dict):
-                usage = chunk["usage"]
+                completion.usage = chunk["usage"]
 
             choices = chunk.get("choices") or []
             if not choices:
                 continue
             choice = choices[0]
-            finish_reason = choice.get("finish_reason") or finish_reason
+            completion.finish_reason = choice.get("finish_reason") or completion.finish_reason
             delta = choice.get("delta") or {}
 
             text_delta = delta.get("content")
@@ -263,36 +264,11 @@ class DeepSeekProvider:
                 delta.get("tool_calls") or [],
             )
 
-        return {
-            "id": response_id,
-            "model": response_model,
-            "choices": [
-                {
-                    "finish_reason": finish_reason,
-                    "message": {
-                        "role": "assistant",
-                        "content": "".join(text_parts),
-                        "tool_calls": [
-                            tool_calls_by_index[index]
-                            for index in sorted(tool_calls_by_index)
-                        ],
-                    },
-                }
-            ],
-            "usage": usage,
-        }
-
-    def _parse_stream_line(self, line: str) -> dict[str, Any] | str | None:
-        stripped = line.strip()
-        if not stripped or not stripped.startswith("data:"):
-            return None
-        data = stripped.removeprefix("data:").strip()
-        if data == "[DONE]":
-            return data
-        parsed = json.loads(data)
-        if not isinstance(parsed, dict):
-            raise ValueError("DeepSeek stream chunk must be a JSON object.")
-        return parsed
+        completion.text = "".join(text_parts)
+        completion.tool_calls = [
+            tool_calls_by_index[index] for index in sorted(tool_calls_by_index)
+        ]
+        return completion
 
     def _accumulate_tool_call_deltas(
         self,
@@ -340,18 +316,6 @@ class DeepSeekProvider:
             for tool in tools
         ]
 
-    def _validate_request_capabilities(self, tools: list[ToolDefinition]) -> None:
-        if not self.capabilities.supports_streaming:
-            raise ValueError(
-                "Provider does not support streaming: "
-                f"{self.provider}/{self.model}"
-            )
-        if tools and not self.capabilities.supports_tools:
-            raise ValueError(
-                "Provider does not support tools: "
-                f"{self.provider}/{self.model}"
-            )
-
     def _deepseek_messages(
         self,
         messages: list[dict[str, Any]],
@@ -371,40 +335,38 @@ class DeepSeekProvider:
 
     def _deepseek_tool_result_messages(
         self,
-        content: list[Any],
+        content: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        messages: list[dict[str, Any]] = []
-        for block in content:
-            block_type = self._block_value(block, "type")
-            if block_type != "tool_result":
-                continue
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": self._block_value(block, "tool_use_id"),
-                    "content": str(self._block_value(block, "content") or ""),
-                }
-            )
-        return messages
+        return [
+            {
+                "role": "tool",
+                "tool_call_id": block.get("tool_use_id"),
+                "content": str(block.get("content") or ""),
+            }
+            for block in content
+            if block.get("type") == "tool_result"
+        ]
 
-    def _deepseek_assistant_message(self, content: list[Any]) -> dict[str, Any]:
+    def _deepseek_assistant_message(
+        self,
+        content: list[dict[str, Any]],
+    ) -> dict[str, Any]:
         text_parts: list[str] = []
         tool_calls: list[dict[str, Any]] = []
         for block in content:
-            block_type = self._block_value(block, "type")
+            block_type = block.get("type")
             if block_type == "text":
-                text = self._block_value(block, "text")
+                text = block.get("text")
                 if isinstance(text, str):
                     text_parts.append(text)
             if block_type == "tool_use":
-                tool_input = self._block_value(block, "input")
                 tool_calls.append(
                     {
-                        "id": self._block_value(block, "id"),
+                        "id": block.get("id"),
                         "type": "function",
                         "function": {
-                            "name": self._block_value(block, "name"),
-                            "arguments": json.dumps(tool_input or {}),
+                            "name": block.get("name"),
+                            "arguments": json.dumps(block.get("input") or {}),
                         },
                     }
                 )
@@ -416,19 +378,6 @@ class DeepSeekProvider:
         if tool_calls:
             message["tool_calls"] = tool_calls
         return message
-
-    def _tool_calls_from_message(self, message: dict[str, Any]) -> list[ToolCall]:
-        tool_calls: list[ToolCall] = []
-        for raw_tool_call in message.get("tool_calls") or []:
-            function = raw_tool_call.get("function") or {}
-            tool_calls.append(
-                ToolCall(
-                    name=function.get("name", ""),
-                    input=self._parse_tool_arguments(function.get("arguments")),
-                    tool_use_id=raw_tool_call.get("id", ""),
-                )
-            )
-        return tool_calls
 
     def _provider_neutral_assistant_message(
         self,
@@ -449,18 +398,12 @@ class DeepSeekProvider:
             )
         return {"role": "assistant", "content": content}
 
-    def _parse_tool_arguments(self, arguments: Any) -> dict[str, Any]:
-        if isinstance(arguments, dict):
-            return arguments
-        if not isinstance(arguments, str):
-            return {}
+    def _parse_tool_arguments(self, arguments: str) -> dict[str, Any]:
         try:
             parsed = json.loads(arguments)
         except json.JSONDecodeError:
             return {}
-        if not isinstance(parsed, dict):
-            return {}
-        return parsed
+        return parsed if isinstance(parsed, dict) else {}
 
     def _normalize_finish_reason(self, finish_reason: str | None) -> str | None:
         if finish_reason == "stop":
@@ -468,11 +411,6 @@ class DeepSeekProvider:
         if finish_reason == "tool_calls":
             return "tool_use"
         return finish_reason
-
-    def _block_value(self, block: Any, key: str) -> Any:
-        if isinstance(block, dict):
-            return block.get(key)
-        return getattr(block, key, None)
 
 
 def load_deepseek_config(

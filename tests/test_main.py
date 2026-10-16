@@ -41,6 +41,7 @@ from main import (
 class FakeRunAgent:
     def __init__(self) -> None:
         self.tasks: list[str] = []
+        self.snapshots: list[tuple[str, str | None]] = []
 
     async def run(self, user_task: str) -> AgentRun:
         self.tasks.append(user_task)
@@ -52,11 +53,6 @@ class FakeRunAgent:
             final_stop_reason="end_turn",
         )
 
-
-class FakeCheckpointAgent(FakeRunAgent):
-    def __init__(self) -> None:
-        super().__init__()
-        self.snapshots: list[tuple[str, str | None]] = []
 
     def create_snapshot(
         self,
@@ -85,7 +81,7 @@ class FakeProviderFailureAgent(FakeRunAgent):
         )
 
 
-def create_agent(workspace_root: Path | None = None) -> Agent:
+def create_agent(workspace_root: Path) -> Agent:
     registry = ToolRegistry(workspace_root)
     return Agent(
         provider_adapter=DeepSeekProvider(
@@ -97,10 +93,15 @@ def create_agent(workspace_root: Path | None = None) -> Agent:
     )
 
 
+def session_context(tmp_path: Path) -> tuple[SessionStore, CliSessionState]:
+    return SessionStore(tmp_path / "sessions"), CliSessionState(session_id="session-one")
+
+
 def test_help_lists_available_commands(
+    tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    should_exit = handle_command("/help")
+    should_exit = handle_command("/help", create_agent(tmp_path), *session_context(tmp_path))
 
     assert should_exit is False
     assert capsys.readouterr().out == (
@@ -120,9 +121,10 @@ def test_help_lists_available_commands(
 
 
 def test_exit_requests_cli_exit(
+    tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    should_exit = handle_command("/exit")
+    should_exit = handle_command("/exit", create_agent(tmp_path), *session_context(tmp_path))
 
     assert should_exit is True
     assert capsys.readouterr().out == "Goodbye.\n"
@@ -181,9 +183,10 @@ def test_prompt_tool_approval_rejects_no(
 
 
 def test_unknown_command_shows_help_hint(
+    tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    should_exit = handle_command("/unknown")
+    should_exit = handle_command("/unknown", create_agent(tmp_path), *session_context(tmp_path))
 
     assert should_exit is False
     assert capsys.readouterr().out == (
@@ -216,8 +219,9 @@ def test_trace_command_prints_current_session_events(
 
     should_exit = handle_command(
         "/trace",
-        session_store=session_store,
-        session_state=session_state,
+        create_agent(tmp_path),
+        session_store,
+        session_state,
     )
 
     assert should_exit is False
@@ -263,8 +267,9 @@ def test_trace_command_reports_empty_trace(
 
     should_exit = handle_command(
         "/trace",
-        session_store=session_store,
-        session_state=session_state,
+        create_agent(tmp_path),
+        session_store,
+        session_state,
     )
 
     assert should_exit is False
@@ -473,6 +478,7 @@ def test_generate_session_id_uses_safe_timestamp_format() -> None:
 
 
 def test_run_cli_executes_interactive_task(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -481,13 +487,16 @@ def test_run_cli_executes_interactive_task(
 
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
 
-    asyncio.run(run_cli(cast(Agent, fake_agent)))
+    asyncio.run(run_cli(cast(Agent, fake_agent), *session_context(tmp_path)))
 
     assert fake_agent.tasks == ["Fix the bug"]
-    assert capsys.readouterr().out == "\nAssistant: done\nGoodbye.\n"
+    assert capsys.readouterr().out == (
+        "\nAssistant: done\nCheckpoint saved: session-one\nGoodbye.\n"
+    )
 
 
 def test_run_cli_submits_multiline_prompt_as_one_task(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -506,7 +515,7 @@ def test_run_cli_submits_multiline_prompt_as_one_task(
 
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
 
-    asyncio.run(run_cli(cast(Agent, fake_agent)))
+    asyncio.run(run_cli(cast(Agent, fake_agent), *session_context(tmp_path)))
 
     assert fake_agent.tasks == [
         "Fix the login flow.\n\n/help\nRun the focused tests."
@@ -515,11 +524,13 @@ def test_run_cli_submits_multiline_prompt_as_one_task(
         "Paste mode: type /send on its own line to submit "
         "or /cancel to discard.\n"
         "\nAssistant: done\n"
+        "Checkpoint saved: session-one\n"
         "Goodbye.\n"
     )
 
 
 def test_run_cli_cancels_multiline_prompt(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -528,13 +539,14 @@ def test_run_cli_cancels_multiline_prompt(
 
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
 
-    asyncio.run(run_cli(cast(Agent, fake_agent)))
+    asyncio.run(run_cli(cast(Agent, fake_agent), *session_context(tmp_path)))
 
     assert fake_agent.tasks == []
     assert "Multiline prompt canceled.\n" in capsys.readouterr().out
 
 
 def test_run_cli_rejects_empty_multiline_prompt(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -543,13 +555,14 @@ def test_run_cli_rejects_empty_multiline_prompt(
 
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
 
-    asyncio.run(run_cli(cast(Agent, fake_agent)))
+    asyncio.run(run_cli(cast(Agent, fake_agent), *session_context(tmp_path)))
 
     assert fake_agent.tasks == []
     assert "Task cannot be empty.\n" in capsys.readouterr().out
 
 
 def test_run_cli_cancels_multiline_prompt_on_keyboard_interrupt(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -564,13 +577,14 @@ def test_run_cli_cancels_multiline_prompt_on_keyboard_interrupt(
 
     monkeypatch.setattr("builtins.input", fake_input)
 
-    asyncio.run(run_cli(cast(Agent, fake_agent)))
+    asyncio.run(run_cli(cast(Agent, fake_agent), *session_context(tmp_path)))
 
     assert fake_agent.tasks == []
     assert "\nMultiline prompt canceled.\n" in capsys.readouterr().out
 
 
 def test_run_cli_exits_cleanly_on_eof(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -581,13 +595,14 @@ def test_run_cli_exits_cleanly_on_eof(
 
     monkeypatch.setattr("builtins.input", raise_eof)
 
-    asyncio.run(run_cli(cast(Agent, fake_agent)))
+    asyncio.run(run_cli(cast(Agent, fake_agent), *session_context(tmp_path)))
 
     assert fake_agent.tasks == []
     assert capsys.readouterr().out == "Goodbye.\n"
 
 
 def test_run_cli_reports_provider_failure_without_traceback(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -597,7 +612,7 @@ def test_run_cli_reports_provider_failure_without_traceback(
 
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
 
-    asyncio.run(run_cli(cast(Agent, fake_agent)))
+    asyncio.run(run_cli(cast(Agent, fake_agent), *session_context(tmp_path)))
 
     output = capsys.readouterr().out
     assert fake_agent.tasks == ["Build a site"]
@@ -608,6 +623,7 @@ def test_run_cli_reports_provider_failure_without_traceback(
 
 
 def test_run_cli_reports_unrecoverable_context_pressure_without_exiting(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -619,7 +635,7 @@ def test_run_cli_reports_unrecoverable_context_pressure_without_exiting(
     fake_agent = TooLargeAgent()
     inputs = iter(["Continue", "/exit"])
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
-    asyncio.run(run_cli(cast(Agent, fake_agent)))
+    asyncio.run(run_cli(cast(Agent, fake_agent), *session_context(tmp_path)))
     output = capsys.readouterr().out
     assert "Context budget exceeded" in output
     assert "Goodbye." in output
@@ -631,7 +647,7 @@ def test_run_cli_checkpoints_interactive_task(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    fake_agent = FakeCheckpointAgent()
+    fake_agent = FakeRunAgent()
     session_store = SessionStore(tmp_path / "sessions")
     session_state = CliSessionState(session_id="session-one", session_name="day10")
     inputs = iter(["Fix the bug", "/exit"])
@@ -665,7 +681,7 @@ def test_run_cli_checkpoints_multiline_prompt_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fake_agent = FakeCheckpointAgent()
+    fake_agent = FakeRunAgent()
     session_store = SessionStore(tmp_path / "sessions")
     session_state = CliSessionState(session_id="session-multiline")
     inputs = iter(["/paste", "First line.", "Second line.", "/send", "/exit"])
@@ -686,16 +702,8 @@ def test_run_cli_checkpoints_multiline_prompt_once(
     assert [event.event_type for event in events] == ["checkpoint_saved"]
 
 
-def test_checkpoint_session_does_nothing_without_store_or_state() -> None:
-    fake_agent = FakeCheckpointAgent()
-
-    checkpoint_session(cast(Agent, fake_agent), None, None)
-
-    assert fake_agent.snapshots == []
-
-
 def test_checkpoint_session_clears_existing_pending_action(tmp_path: Path) -> None:
-    fake_agent = FakeCheckpointAgent()
+    fake_agent = FakeRunAgent()
     session_store = SessionStore(tmp_path / "sessions")
     session_state = CliSessionState(session_id="session-one")
     session_store.write_pending_action(
@@ -743,12 +751,13 @@ def test_report_interrupted_action_warns_and_clears_marker(
 
 
 def test_tokens_command_shows_usage_and_cost(
+    tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    agent = create_agent()
+    agent = create_agent(tmp_path)
     agent.token_tracker.add(TokenUsage(input_tokens=1000, output_tokens=200))
 
-    should_exit = handle_command("/tokens", agent)
+    should_exit = handle_command("/tokens", agent, *session_context(tmp_path))
 
     assert should_exit is False
     assert capsys.readouterr().out == (
@@ -757,15 +766,6 @@ def test_tokens_command_shows_usage_and_cost(
         "Total tokens: 1200\n"
         "Estimated cost: $0.000196\n"
     )
-
-
-def test_tokens_command_requires_agent(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    should_exit = handle_command("/tokens")
-
-    assert should_exit is False
-    assert capsys.readouterr().out == "Tokens command is unavailable.\n"
 
 
 def test_status_command_shows_current_agent_state(
@@ -826,15 +826,6 @@ def test_status_command_shows_current_agent_state(
     )
 
 
-def test_status_command_requires_agent(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    should_exit = handle_command("/status")
-
-    assert should_exit is False
-    assert capsys.readouterr().out == "Status command is unavailable.\n"
-
-
 def test_reset_command_clears_conversation_context_only(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -862,7 +853,7 @@ def test_reset_command_clears_conversation_context_only(
     agent.registry.changed_files.add(changed_file)
     agent.token_tracker.add(TokenUsage(input_tokens=1000, output_tokens=200))
 
-    should_exit = handle_command("/reset", agent)
+    should_exit = handle_command("/reset", agent, *session_context(tmp_path))
 
     assert should_exit is False
     assert agent.messages == []
@@ -875,15 +866,6 @@ def test_reset_command_clears_conversation_context_only(
     assert agent.token_tracker.input_tokens == 1000
     assert agent.token_tracker.output_tokens == 200
     assert capsys.readouterr().out == "Conversation context reset.\n"
-
-
-def test_reset_command_requires_agent(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    should_exit = handle_command("/reset")
-
-    assert should_exit is False
-    assert capsys.readouterr().out == "Reset command is unavailable.\n"
 
 
 def test_save_command_checkpoints_current_session(
@@ -912,42 +894,23 @@ def test_save_command_checkpoints_current_session(
     assert capsys.readouterr().out == "Checkpoint saved: session-one\n"
 
 
-def test_save_command_requires_session_context(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    agent = create_agent()
-
-    should_exit = handle_command("/save", agent)
-
-    assert should_exit is False
-    assert capsys.readouterr().out == "Save command is unavailable.\n"
-
-
 def test_diff_command_shows_session_diff(
+    tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    agent = create_agent()
+    agent = create_agent(tmp_path)
 
-    should_exit = handle_command("/diff", agent)
+    should_exit = handle_command("/diff", agent, *session_context(tmp_path))
 
     assert should_exit is False
     assert capsys.readouterr().out == "[No files changed]\n"
-
-
-def test_diff_command_requires_agent(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    should_exit = handle_command("/diff")
-
-    assert should_exit is False
-    assert capsys.readouterr().out == "Diff command is unavailable.\n"
 
 
 def test_rename_command_updates_current_session_name(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    agent = create_agent()
+    agent = create_agent(tmp_path)
     session_store = SessionStore(tmp_path / "sessions")
     session_state = CliSessionState(session_id="session-one")
 
@@ -969,7 +932,7 @@ def test_rename_command_requires_session_name(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    agent = create_agent()
+    agent = create_agent(tmp_path)
     session_store = SessionStore(tmp_path / "sessions")
     session_state = CliSessionState(session_id="session-one")
 
@@ -979,27 +942,18 @@ def test_rename_command_requires_session_name(
     assert capsys.readouterr().out == "Usage: /rename <session-name>\n"
 
 
-def test_rename_command_requires_session_context(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    agent = create_agent()
-
-    should_exit = handle_command("/rename day10", agent)
-
-    assert should_exit is False
-    assert capsys.readouterr().out == "Rename command is unavailable.\n"
-
-
 def test_sessions_command_lists_saved_sessions(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    agent = create_agent()
+    agent = create_agent(tmp_path)
     session_store = SessionStore(tmp_path / "sessions")
     session_store.save(agent.create_snapshot("z-session", "later"))
     session_store.save(agent.create_snapshot("a-session"))
 
-    should_exit = handle_command("/sessions", session_store=session_store)
+    should_exit = handle_command(
+        "/sessions", agent, session_store, CliSessionState(session_id="session-one")
+    )
 
     assert should_exit is False
     assert capsys.readouterr().out == (
@@ -1013,18 +967,9 @@ def test_sessions_command_handles_empty_store(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    session_store = SessionStore(tmp_path / "sessions")
-
-    should_exit = handle_command("/sessions", session_store=session_store)
+    should_exit = handle_command(
+        "/sessions", create_agent(tmp_path), *session_context(tmp_path)
+    )
 
     assert should_exit is False
     assert capsys.readouterr().out == "[No saved sessions]\n"
-
-
-def test_sessions_command_requires_store(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    should_exit = handle_command("/sessions")
-
-    assert should_exit is False
-    assert capsys.readouterr().out == "Sessions command is unavailable.\n"

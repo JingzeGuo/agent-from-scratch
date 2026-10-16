@@ -7,7 +7,6 @@ from typing import Any
 from pydantic import BaseModel, ValidationError
 
 from ..schemas import ToolDefinition
-from ..security import ToolApprovalPolicy
 from .retry import retry
 
 
@@ -17,7 +16,6 @@ class Tool:
     description: str
     input_schema: type[BaseModel]
     fn: Callable[..., Any]
-    approval_policy: ToolApprovalPolicy | None = None
 
     def to_definition(self) -> ToolDefinition:
         """Build a provider-neutral tool definition."""
@@ -29,39 +27,18 @@ class Tool:
             input_schema=json_schema,
         )
 
-    @retry(max_attempts=3, backoff=2)
-    async def _run(
-        self,
-        parsed_input: BaseModel,
-        extra_kwargs: dict[str, Any] | None = None,
-    ) -> Any:
-        kwargs = parsed_input.model_dump()
-        if extra_kwargs is not None:
-            kwargs.update(extra_kwargs)
-
-        if self._is_async_callable():
-            result = self.fn(**kwargs)
-        else:
-            result = await asyncio.to_thread(self.fn, **kwargs)
-        if inspect.isawaitable(result):
-            return await result
-        return result
-
     async def execute(
         self,
         raw_input: dict[str, Any],
         extra_kwargs: dict[str, Any] | None = None,
     ) -> tuple[str, bool]:
-        parsed_or_error = self._parse(raw_input)
+        parsed_or_error = self.parse(raw_input)
         if isinstance(parsed_or_error, str):
             return parsed_or_error, True
-        try:
-            result = await self._run(parsed_or_error, extra_kwargs)
-            return str(result), False
-        except Exception as e:
-            return f"Tool '{self.name}' raised {type(e).__name__}: {e}", True
+        return await self.run(parsed_or_error, extra_kwargs)
 
-    def _parse(self, raw_input: dict[str, Any]) -> BaseModel | str:
+    def parse(self, raw_input: dict[str, Any]) -> BaseModel | str:
+        """Validate raw model input, returning a readable error on failure."""
         try:
             return self.input_schema(**raw_input)
         except ValidationError as e:
@@ -71,8 +48,27 @@ class Tool:
                 error_lines.append(f"  - field '{field}': {err['msg']}")
             return "\n".join(error_lines)
 
-    def _is_async_callable(self) -> bool:
+    async def run(
+        self,
+        parsed_input: BaseModel,
+        extra_kwargs: dict[str, Any] | None = None,
+    ) -> tuple[str, bool]:
+        """Run already-validated input, turning exceptions into observations."""
+        try:
+            return str(await self._invoke(parsed_input, extra_kwargs)), False
+        except Exception as e:
+            return f"Tool '{self.name}' raised {type(e).__name__}: {e}", True
+
+    @retry(max_attempts=3, backoff=2)
+    async def _invoke(
+        self,
+        parsed_input: BaseModel,
+        extra_kwargs: dict[str, Any] | None = None,
+    ) -> Any:
+        kwargs = parsed_input.model_dump()
+        if extra_kwargs is not None:
+            kwargs.update(extra_kwargs)
+        # iscoroutinefunction also recognizes functools.partial of async functions.
         if inspect.iscoroutinefunction(self.fn):
-            return True
-        wrapped = getattr(self.fn, "func", None)
-        return inspect.iscoroutinefunction(wrapped)
+            return await self.fn(**kwargs)
+        return await asyncio.to_thread(self.fn, **kwargs)

@@ -15,7 +15,6 @@ from agent.prompts import build_system_prompt
 from agent.schemas import (
     AgentRun,
     AgentStep,
-    ProviderCapabilities,
     ProviderResponse,
     ReadFileInput,
     RunCommandInput,
@@ -34,6 +33,8 @@ from agent.tooling.tool_registry import ToolRegistry
 from agent.tooling.tools import run_command
 
 MessageParam = dict[str, Any]
+# Registry root for tests whose fake tools never touch the filesystem.
+UNUSED_WORKSPACE = Path("/nonexistent/agent-test-workspace")
 
 
 class TextBlock(BaseModel):
@@ -88,17 +89,18 @@ class FakeProviderAdapter:
     def __init__(
         self,
         responses: list[ProviderResponse] | None = None,
-        capabilities: ProviderCapabilities | None = None,
     ) -> None:
         self.provider = "deepseek"
         self.model = "deepseek-v4-flash"
-        self.capabilities = capabilities or ProviderCapabilities()
         self.responses = responses or []
         self.requests: list[dict[str, Any]] = []
 
     @property
     def call_count(self) -> int:
         return len(self.requests)
+
+    async def aclose(self) -> None:
+        return None
 
     async def stream_response(
         self,
@@ -159,7 +161,7 @@ def make_message(
 
 
 def create_registry() -> ToolRegistry:
-    registry = ToolRegistry()
+    registry = ToolRegistry(UNUSED_WORKSPACE)
     registry.register(
         Tool(
             name="read_file",
@@ -955,30 +957,6 @@ def test_agent_run_contains_only_current_task_steps() -> None:
     assert agent.completed_runs == [first_run, second_run]
 
 
-def test_agent_rejects_provider_without_tool_support() -> None:
-    adapter = FakeProviderAdapter(
-        capabilities=ProviderCapabilities(supports_tools=False)
-    )
-
-    with pytest.raises(ValueError, match="does not support tools"):
-        Agent(
-            provider_adapter=adapter,
-            registry=create_registry(),
-        )
-
-
-def test_agent_rejects_provider_without_streaming_support() -> None:
-    adapter = FakeProviderAdapter(
-        capabilities=ProviderCapabilities(supports_streaming=False)
-    )
-
-    with pytest.raises(ValueError, match="does not support streaming"):
-        Agent(
-            provider_adapter=adapter,
-            registry=ToolRegistry(),
-        )
-
-
 def test_agent_executes_multiple_tool_calls_serially() -> None:
     events: list[str] = []
 
@@ -1002,7 +980,7 @@ def test_agent_executes_multiple_tool_calls_serially() -> None:
         input={"value": "second sample"},
         tool_use_id="call_second",
     )
-    registry = ToolRegistry()
+    registry = ToolRegistry(UNUSED_WORKSPACE)
     registry.register(
         Tool(
             name="first_probe",
@@ -1085,7 +1063,7 @@ def test_agent_executes_async_tool_calls_serially() -> None:
         input={"value": "sample"},
         tool_use_id="call_async",
     )
-    registry = ToolRegistry()
+    registry = ToolRegistry(UNUSED_WORKSPACE)
     registry.register(
         Tool(
             name="async_probe",
@@ -1165,7 +1143,7 @@ def test_agent_executes_read_only_tool_calls_concurrently_preserving_order(
         input={"value": "second"},
         tool_use_id="call_second",
     )
-    registry = ToolRegistry()
+    registry = ToolRegistry(UNUSED_WORKSPACE)
     registry.register(
         Tool(
             name="read_file",
@@ -1236,63 +1214,6 @@ def test_agent_executes_read_only_tool_calls_concurrently_preserving_order(
     )
 
 
-def test_agent_does_not_bypass_approval_for_parallel_tool_calls() -> None:
-    executed: list[str] = []
-
-    def approval_required_read(value: str) -> str:
-        executed.append(value)
-        return value
-
-    registry = ToolRegistry()
-    registry.register(
-        Tool(
-            name="read_file",
-            description="Run a read that requires approval.",
-            input_schema=SampleToolInput,
-            fn=approval_required_read,
-            approval_policy=ToolApprovalPolicy(
-                decision="requires_approval",
-                reason="Test approval policy.",
-            ),
-        )
-    )
-    responses = [
-        make_message(
-            content=[
-                ToolUseBlock(
-                    id="call_first",
-                    name="read_file",
-                    input={"value": "first"},
-                ),
-                ToolUseBlock(
-                    id="call_second",
-                    name="read_file",
-                    input={"value": "second"},
-                ),
-            ],
-            stop_reason="tool_use",
-        ),
-        make_message(
-            content=[TextBlock(text="Done.")],
-            stop_reason="end_turn",
-        ),
-    ]
-    agent, _ = create_agent(responses, registry=registry)
-    approval_requests: list[str] = []
-
-    def deny(tool_call: ToolCall, policy: ToolApprovalPolicy) -> bool:
-        approval_requests.append(tool_call.tool_use_id)
-        return False
-
-    agent.configure_approval_callback(deny)
-
-    agent_run = asyncio.run(agent.run("Run two protected reads"))
-
-    assert approval_requests == ["call_first", "call_second"]
-    assert executed == []
-    assert all(result.is_error for result in agent_run.steps[0].tool_results)
-
-
 def test_agent_preserves_result_order_when_parallel_tool_call_fails() -> None:
     def probe_read(value: str) -> str:
         if value == "bad":
@@ -1309,7 +1230,7 @@ def test_agent_preserves_result_order_when_parallel_tool_call_fails() -> None:
         input={"value": "bad"},
         tool_use_id="call_bad",
     )
-    registry = ToolRegistry()
+    registry = ToolRegistry(UNUSED_WORKSPACE)
     registry.register(
         Tool(
             name="read_file",
@@ -1804,7 +1725,7 @@ def test_agent_redacts_secret_like_tool_output_in_trace(
     def secret_tool(value: str) -> str:
         return f"{value} api_key=sk-secret123456 token=plain-secret CUSTOM-12345"
 
-    registry = ToolRegistry()
+    registry = ToolRegistry(UNUSED_WORKSPACE)
     registry.register(
         Tool(
             name="secret_tool",
@@ -1944,7 +1865,7 @@ def test_agent_recovers_from_missing_file_with_different_action() -> None:
     def search_web(query: str, max_results: int = 5) -> str:
         return f"Found {max_results} results for: {query}"
 
-    registry = ToolRegistry()
+    registry = ToolRegistry(UNUSED_WORKSPACE)
     registry.register(
         Tool(
             name="read_file",

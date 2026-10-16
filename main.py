@@ -237,8 +237,8 @@ def read_user_task() -> CliInputResult:
 
 async def run_cli(
     agent: Agent,
-    session_store: SessionStore | None = None,
-    session_state: CliSessionState | None = None,
+    session_store: SessionStore,
+    session_state: CliSessionState,
 ) -> None:
     while True:
         user_input = await asyncio.to_thread(read_user_task)
@@ -316,12 +316,13 @@ async def main(argv: Sequence[str] | None = None) -> None:
     ensure_agent_state_gitignore(workspace_root)
     registry = create_registry(workspace_root)
     memory_store = MemoryStore(default_agent_state_dir(workspace_root) / "memory.sqlite3")
+    provider = DeepSeekProvider(
+        model=config.model,
+        api_key=config.api_key,
+        base_url=config.base_url,
+    )
     agent = Agent(
-        provider_adapter=DeepSeekProvider(
-            model=config.model,
-            api_key=config.api_key,
-            base_url=config.base_url,
-        ),
+        provider_adapter=provider,
         registry=registry,
         memory_store=memory_store,
     )
@@ -359,6 +360,7 @@ async def main(argv: Sequence[str] | None = None) -> None:
     finally:
         await agent.wait_for_memory_jobs()
         memory_store.close()
+        await provider.aclose()
 
 
 def cli() -> None:

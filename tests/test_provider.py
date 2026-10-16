@@ -11,7 +11,7 @@ from agent.provider import (
     format_provider_request_error,
     load_deepseek_config,
 )
-from agent.schemas import ProviderCapabilities, ToolDefinition, ToolResult
+from agent.schemas import ToolDefinition, ToolResult
 
 
 class FakeHttpClient:
@@ -137,15 +137,12 @@ class BadJsonStreamResponse:
 
 def make_provider(
     http_client: object,
-    *,
-    capabilities: ProviderCapabilities | None = None,
 ) -> DeepSeekProvider:
     return DeepSeekProvider(
         model="deepseek-v4-flash",
         api_key="deepseek-key",
         base_url="https://api.deepseek.com/",
         http_client=cast(httpx.AsyncClient, http_client),
-        capabilities=capabilities,
     )
 
 
@@ -383,28 +380,6 @@ def test_deepseek_provider_converts_tool_result_history() -> None:
         "tool_call_id": "call_sample",
         "content": "2",
     }
-
-
-def test_deepseek_provider_rejects_unsupported_capabilities() -> None:
-    provider = make_provider(
-        FakeHttpClient([]),
-        capabilities=ProviderCapabilities(supports_tools=False),
-    )
-
-    with pytest.raises(ValueError, match="does not support tools"):
-        asyncio.run(
-            provider.stream_response(
-                system="system prompt",
-                tools=[
-                    ToolDefinition(
-                        name="read_file",
-                        description="Process input.",
-                        input_schema={"type": "object"},
-                    )
-                ],
-                messages=[{"role": "user", "content": "Process input"}],
-            )
-        )
 
 
 def test_deepseek_provider_wraps_network_errors() -> None:

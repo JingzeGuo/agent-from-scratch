@@ -2,16 +2,27 @@ import shlex
 from pathlib import Path
 from typing import Any
 
-from ..schemas import ToolDefinition
+from pydantic import BaseModel
+
+from ..schemas import EditFileInput, ReadFileInput, ToolDefinition, WriteFileInput
 from ..workspace import resolve_workspace_path
 from .tool import Tool
 from .tools import _build_unified_diff
+
+ISOLATED_PATH_FIELDS = {
+    "read_file": "path",
+    "edit_file": "path",
+    "write_file": "path",
+    "get_diff": "path",
+    "glob_files": "pattern",
+    "search_text": "file_pattern",
+}
 
 
 class ToolRegistry:
     def __init__(
         self,
-        workspace_root: Path | None = None,
+        workspace_root: Path,
         *,
         blocked_path_parts: frozenset[str] = frozenset(),
         blocked_command_names: frozenset[str] = frozenset(),
@@ -30,6 +41,10 @@ class ToolRegistry:
     def to_tool_definitions(self) -> list[ToolDefinition]:
         return [tool.to_definition() for tool in self.tools.values()]
 
+    def relative_path(self, path: Path) -> str:
+        """Return a tracked absolute path as a workspace-relative POSIX path."""
+        return path.resolve().relative_to(self.workspace_root.resolve()).as_posix()
+
     async def execute(
         self,
         name: str,
@@ -42,61 +57,58 @@ class ToolRegistry:
         if tool is None:
             return f"Unknown tool: '{name}'. Available: {list(self.tools)}", True
 
-        error = self._validate_execution_allowed(tool, raw_input, approval_granted)
-        if error is not None:
-            return error, True
+        parsed = tool.parse(raw_input)
+        if isinstance(parsed, str):
+            return parsed, True
 
-        snapshot_error, original_snapshot = self._prepare_mutation_snapshot(
-            name,
-            raw_input,
-        )
-        if snapshot_error is not None:
-            return snapshot_error, True
-        output, is_error = await tool.execute(
-            raw_input,
+        try:
+            error = self._validate_execution_allowed(name, parsed)
+            if error is not None:
+                return error, True
+            original_snapshot = self._snapshot_before_mutation(parsed)
+        except Exception as e:
+            return f"Tool '{name}' raised {type(e).__name__}: {e}", True
+
+        output, is_error = await tool.run(
+            parsed,
             self._tool_extra_kwargs(name, approval_granted, extra_kwargs),
         )
         if not is_error:
-            self._record_successful_file_action(name, raw_input, original_snapshot)
+            self._record_successful_file_action(parsed, original_snapshot)
         return output, is_error
 
     def _validate_execution_allowed(
         self,
-        tool: Tool,
-        raw_input: dict[str, Any],
-        approval_granted: bool,
+        tool_name: str,
+        parsed: BaseModel,
     ) -> str | None:
-        approval_error = self._validate_tool_approval(tool, approval_granted)
-        if approval_error is not None:
-            return approval_error
-        isolation_error = self._validate_isolation_policy(tool.name, raw_input)
+        isolation_error = self._validate_isolation_policy(tool_name, parsed)
         if isolation_error is not None:
             return isolation_error
-        if tool.name == "edit_file":
-            error = self._validate_edit_allowed(raw_input)
-            if error is not None:
-                return error
-        if tool.name == "write_file":
-            error = self._validate_write_allowed(raw_input)
-            if error is not None:
-                return error
+        if isinstance(parsed, EditFileInput):
+            path = resolve_workspace_path(self.workspace_root, parsed.path)
+            if path not in self.read_files:
+                return (
+                    "Tool 'edit_file' raised ValueError: "
+                    f"File must be read before editing: {parsed.path}"
+                )
+        if isinstance(parsed, WriteFileInput) and parsed.overwrite:
+            path = resolve_workspace_path(self.workspace_root, parsed.path)
+            if path.exists() and path not in self.read_files:
+                return (
+                    "Tool 'write_file' raised ValueError: "
+                    f"File must be read before overwriting: {parsed.path}"
+                )
         return None
 
     def _validate_isolation_policy(
         self,
         tool_name: str,
-        raw_input: dict[str, Any],
+        parsed: BaseModel,
     ) -> str | None:
-        path_field = {
-            "read_file": "path",
-            "edit_file": "path",
-            "write_file": "path",
-            "get_diff": "path",
-            "glob_files": "pattern",
-            "search_text": "file_pattern",
-        }.get(tool_name)
+        path_field = ISOLATED_PATH_FIELDS.get(tool_name)
         if path_field is not None:
-            raw_path = raw_input.get(path_field)
+            raw_path = getattr(parsed, path_field, None)
             if isinstance(raw_path, str):
                 blocked_part = self._blocked_path_part(raw_path)
                 if blocked_part is not None:
@@ -107,7 +119,7 @@ class ToolRegistry:
 
         if tool_name != "run_command":
             return None
-        raw_command = raw_input.get("command")
+        raw_command = getattr(parsed, "command", None)
         if not isinstance(raw_command, str):
             return None
         try:
@@ -138,7 +150,7 @@ class ToolRegistry:
         for blocked_part in sorted(self.blocked_path_parts):
             if blocked_part in raw_parts:
                 return blocked_part
-        if self.workspace_root is None or any(char in raw_path for char in "*?[]"):
+        if any(char in raw_path for char in "*?[]"):
             return None
         try:
             resolved = resolve_workspace_path(self.workspace_root, raw_path)
@@ -148,22 +160,6 @@ class ToolRegistry:
         for blocked_part in sorted(self.blocked_path_parts):
             if blocked_part in relative_parts:
                 return blocked_part
-        return None
-
-    def _validate_tool_approval(
-        self,
-        tool: Tool,
-        approval_granted: bool,
-    ) -> str | None:
-        policy = tool.approval_policy
-        if policy is None:
-            return None
-        if approval_granted and policy.decision == "requires_approval":
-            return None
-        if policy.decision == "blocked":
-            return f"Tool '{tool.name}' raised ValueError: {policy.reason}"
-        if policy.decision == "requires_approval":
-            return f"Tool '{tool.name}' requires approval: {policy.reason}"
         return None
 
     def _tool_extra_kwargs(
@@ -181,118 +177,42 @@ class ToolRegistry:
 
     def get_diff(self, path: str | None = None) -> str:
         """Return unified diffs for files changed during this registry session."""
-        if self.workspace_root is None:
-            return "[No files changed]"
         paths = self._changed_paths_for_diff(path)
         if not paths:
             return "[No files changed]"
         return "\n\n".join(self._diff_for_changed_path(changed_path) for changed_path in paths)
 
-    def _validate_edit_allowed(self, raw_input: dict[str, Any]) -> str | None:
-        if self.workspace_root is None:
-            return None
-        raw_path = raw_input.get("path")
-        if not isinstance(raw_path, str):
-            return None
-        try:
-            path = resolve_workspace_path(self.workspace_root, raw_path)
-        except Exception as e:
-            return f"Tool 'edit_file' raised {type(e).__name__}: {e}"
-        if path not in self.read_files:
-            return (
-                "Tool 'edit_file' raised ValueError: "
-                f"File must be read before editing: {raw_path}"
-            )
-        return None
-
-    def _validate_write_allowed(self, raw_input: dict[str, Any]) -> str | None:
-        if self.workspace_root is None:
-            return None
-        raw_path = raw_input.get("path")
-        if not isinstance(raw_path, str):
-            return None
-        try:
-            path = resolve_workspace_path(self.workspace_root, raw_path)
-        except Exception as e:
-            return f"Tool 'write_file' raised {type(e).__name__}: {e}"
-        if (
-            path.exists()
-            and self._raw_bool_is_true(raw_input.get("overwrite", False))
-            and path not in self.read_files
-        ):
-            return (
-                "Tool 'write_file' raised ValueError: "
-                f"File must be read before overwriting: {raw_path}"
-            )
-        return None
-
-    def _raw_bool_is_true(self, value: Any) -> bool:
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, int):
-            return value == 1
-        if isinstance(value, str):
-            return value.lower() in {"1", "true", "yes", "on"}
-        return False
-
     def _snapshot_before_mutation(
         self,
-        name: str,
-        raw_input: dict[str, Any],
+        parsed: BaseModel,
     ) -> tuple[Path, str | None] | None:
-        if self.workspace_root is None or name not in {"edit_file", "write_file"}:
+        if not isinstance(parsed, EditFileInput | WriteFileInput):
             return None
-        raw_path = raw_input.get("path")
-        if not isinstance(raw_path, str):
-            return None
-        path = resolve_workspace_path(self.workspace_root, raw_path)
+        path = resolve_workspace_path(self.workspace_root, parsed.path)
         if path in self.original_file_contents:
             return None
         if not path.exists():
             return path, None
-        if name == "write_file" and not self._raw_bool_is_true(
-            raw_input.get("overwrite", False)
-        ):
+        if isinstance(parsed, WriteFileInput) and not parsed.overwrite:
             return None
         return path, path.read_text(encoding="utf-8")
 
-    def _prepare_mutation_snapshot(
-        self,
-        name: str,
-        raw_input: dict[str, Any],
-    ) -> tuple[str | None, tuple[Path, str | None] | None]:
-        try:
-            return None, self._snapshot_before_mutation(name, raw_input)
-        except Exception as e:
-            return f"Tool '{name}' raised {type(e).__name__}: {e}", None
-
     def _record_successful_file_action(
         self,
-        name: str,
-        raw_input: dict[str, Any],
+        parsed: BaseModel,
         original_snapshot: tuple[Path, str | None] | None,
     ) -> None:
-        if self.workspace_root is None or name not in {
-            "read_file",
-            "edit_file",
-            "write_file",
-        }:
-            return
-        raw_path = raw_input.get("path")
-        if not isinstance(raw_path, str):
-            return
-        path = resolve_workspace_path(self.workspace_root, raw_path)
-        if name == "read_file":
-            self.read_files.add(path)
-        if name in {"edit_file", "write_file"}:
+        if isinstance(parsed, ReadFileInput):
+            self.read_files.add(resolve_workspace_path(self.workspace_root, parsed.path))
+        elif isinstance(parsed, EditFileInput | WriteFileInput):
             if original_snapshot is not None:
                 original_path, original_content = original_snapshot
                 self.original_file_contents[original_path] = original_content
-            self.changed_files.add(path)
+            self.changed_files.add(
+                resolve_workspace_path(self.workspace_root, parsed.path)
+            )
 
     def _changed_paths_for_diff(self, path: str | None) -> list[Path]:
-        if self.workspace_root is None:
-            return []
         if path is None:
             return sorted(self.changed_files)
         resolved = resolve_workspace_path(self.workspace_root, path)
@@ -301,8 +221,6 @@ class ToolRegistry:
         return [resolved]
 
     def _diff_for_changed_path(self, path: Path) -> str:
-        if self.workspace_root is None:
-            return "[No files changed]"
         original = self.original_file_contents.get(path)
         before = "" if original is None else original
         after = ""
