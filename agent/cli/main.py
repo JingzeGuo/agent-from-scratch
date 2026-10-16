@@ -266,10 +266,8 @@ async def run_cli(
             await agent.run(user_task)
         except ProviderRequestError as error:
             print_provider_request_error(error)
-            continue
         except ContextBudgetExceeded as error:
-            print(f"Context budget exceeded: {error}. Save the session or use /reset.")
-            continue
+            print(f"Context budget exceeded: {error}. Use /reset to clear the context.")
         checkpoint_session(agent, session_store, session_state)
 
 

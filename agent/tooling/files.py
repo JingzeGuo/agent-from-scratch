@@ -10,22 +10,22 @@ from pathlib import Path
 
 from ..workspace import resolve_workspace_path
 
-# We deliberately limit file size — don't blow up LLM's context window
-# by reading a 50MB log file.
-
+# Searching and whole-file rewrites skip large files so a 50MB log cannot
+# blow up the context window; reads and edits are bounded by line ranges instead.
 _MAX_FILE_BYTES = 100_000  # ~25k tokens worst case
 _MAX_DIFF_CHARS = 20_000
 
-_SKIPPED_DIRS = {".git", ".venv", "node_modules", "build", "dist"}
+_SKIPPED_DIRS = {".git", ".venv", "node_modules"}  # skipped at any depth
+_SKIPPED_ROOT_DIRS = {"build", "dist"}  # build output at the workspace root only
 
 
-def _is_skipped_path(path: Path) -> bool:
-    return any(part in _SKIPPED_DIRS for part in path.parts)
-
-
-def _pattern_names_skipped_dir(pattern: str, path: Path) -> bool:
-    pattern_parts = set(Path(pattern).parts)
-    return any(part in pattern_parts and part in path.parts for part in _SKIPPED_DIRS)
+def _skipped_dirs(path: Path) -> set[str]:
+    """Return the noisy directories containing this workspace-relative file."""
+    dirs = path.parts[:-1]
+    skipped = {part for part in dirs if part in _SKIPPED_DIRS}
+    if dirs and dirs[0] in _SKIPPED_ROOT_DIRS:
+        skipped.add(dirs[0])
+    return skipped
 
 
 def _validate_workspace_pattern(pattern: str, *, kind: str) -> None:
@@ -51,9 +51,9 @@ def _iter_workspace_files(
             continue
 
         relative_path = candidate.relative_to(root)
-        if _is_skipped_path(relative_path) and not (
-            include_explicit_skipped_dirs
-            and _pattern_names_skipped_dir(pattern, relative_path)
+        skipped = _skipped_dirs(relative_path)
+        if skipped and not (
+            include_explicit_skipped_dirs and skipped & set(Path(pattern).parts)
         ):
             continue
 
@@ -105,9 +105,11 @@ def search_text(
 
     root = workspace_root.expanduser().resolve()
     matches: list[str] = []
+    skipped_large = 0
 
     for candidate, relative_path in _iter_workspace_files(root, file_pattern):
         if candidate.stat().st_size > _MAX_FILE_BYTES:
+            skipped_large += 1
             continue
 
         for line_number, line in enumerate(
@@ -119,10 +121,15 @@ def search_text(
                     return "\n".join(matches) + f"\n[truncated after {max_matches} matches]"
                 matches.append(f"{relative_path.as_posix()}:{line_number}: {line}")
 
+    note = (
+        f"\n[Skipped {skipped_large} files over {_MAX_FILE_BYTES} bytes; "
+        "inspect them with read_file offset/limit.]"
+        if skipped_large
+        else ""
+    )
     if not matches:
-        return f"[No matches found for pattern: {pattern}]"
-
-    return "\n".join(matches)
+        return f"[No matches found for pattern: {pattern}]{note}"
+    return "\n".join(matches) + note
 
 
 def read_file(
@@ -132,21 +139,12 @@ def read_file(
     offset: int = 1,
     limit: int = 200,
 ) -> str:
-    """Read a range of lines from a local text file.
-
-    Limited to 100KB and 500 lines to avoid blowing up the context window.
-    """
+    """Read a range of lines (at most 500) from a local text file."""
     p = resolve_workspace_path(workspace_root, path)
     if not p.exists():
         raise FileNotFoundError(f"File not found: {path}")
     if not p.is_file():
         raise IsADirectoryError(f"Path is not a file: {path}")
-    size = p.stat().st_size
-    if size > _MAX_FILE_BYTES:
-        raise ValueError(
-            f"File too large: {size} bytes (limit: {_MAX_FILE_BYTES}). "
-            f"Consider reading specific lines instead."
-        )
     lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
     start_index = offset - 1
     selected_lines = lines[start_index : start_index + limit]
@@ -173,14 +171,11 @@ def edit_file(
         raise FileNotFoundError(f"File not found: {path}")
     if not p.is_file():
         raise IsADirectoryError(f"Path is not a file: {path}")
-    size = p.stat().st_size
-    if size > _MAX_FILE_BYTES:
-        raise ValueError(
-            f"File too large: {size} bytes (limit: {_MAX_FILE_BYTES}). "
-            "Use a smaller, targeted file."
-        )
 
-    original = p.read_text(encoding="utf-8")
+    # Match on LF text, then write back with the file's own line endings.
+    raw = p.read_bytes().decode("utf-8")
+    newline = "\r\n" if "\r\n" in raw else None
+    original = raw.replace("\r\n", "\n")
     match_count = original.count(old_text)
     if match_count == 0:
         raise ValueError("Exact text was not found in the file.")
@@ -190,7 +185,7 @@ def edit_file(
         )
 
     updated = original.replace(old_text, new_text, 1)
-    p.write_text(updated, encoding="utf-8")
+    p.write_text(updated, encoding="utf-8", newline=newline)
     return build_unified_diff(
         path=p,
         before=original,

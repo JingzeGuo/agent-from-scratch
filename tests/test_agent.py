@@ -1927,3 +1927,61 @@ def test_agent_recovers_from_missing_file_with_different_action() -> None:
     error_observation = second_request_messages[-2]["content"][0]
     assert error_observation["tool_use_id"] == "toolu_missing"
     assert error_observation["is_error"] is True
+
+
+def test_agent_executes_tool_calls_reported_with_end_turn() -> None:
+    responses = [
+        make_message(
+            content=[
+                TextBlock(text="Let me check."),
+                ToolUseBlock(id="call_1", name="read_file", input={"value": "a"}),
+            ],
+            stop_reason="end_turn",
+        ),
+        make_message(content=[TextBlock(text="Done.")], stop_reason="end_turn"),
+    ]
+    agent, provider = create_agent(responses)
+
+    agent_run = asyncio.run(agent.run("Inspect"))
+
+    assert agent_run.termination == "completed"
+    assert agent_run.steps[0].tool_results[0].content == "processed: a"
+    assert provider.call_count == 2
+    assert agent.messages[2]["content"][0]["tool_use_id"] == "call_1"
+
+
+def test_agent_records_run_that_fails_mid_task(tmp_path: Path) -> None:
+    from agent.provider import ProviderRequestError
+
+    responses = [
+        make_message(
+            content=[ToolUseBlock(id="call_1", name="read_file", input={"value": "a"})],
+            stop_reason="tool_use",
+        )
+    ]
+
+    class FailsWhenScriptEnds(FakeProviderAdapter):
+        async def stream_response(self, **kwargs: Any) -> ProviderResponse:
+            if not self.responses:
+                raise ProviderRequestError(
+                    kind="network", provider="deepseek", model="m", detail="down"
+                )
+            return await super().stream_response(**kwargs)
+
+    agent = Agent(
+        provider_adapter=FailsWhenScriptEnds(responses), registry=create_registry()
+    )
+    session_store = SessionStore(tmp_path / "sessions")
+    agent.configure_session_recording(session_store, "session-one")
+
+    with pytest.raises(ProviderRequestError):
+        asyncio.run(agent.run("Inspect"))
+
+    assert [run.termination for run in agent.completed_runs] == ["error"]
+    assert len(agent.completed_runs[0].steps) == 1
+    finished = [
+        event
+        for event in session_store.read_events("session-one")
+        if event.event_type == "run_finished"
+    ]
+    assert [event.termination for event in finished] == ["error"]

@@ -1121,3 +1121,67 @@ async def test_run_command_rejects_cwd_outside_workspace(tmp_path: Path) -> None
 
     assert "Path is outside the workspace" in output
     assert is_error is True
+
+
+async def test_run_command_replaces_invalid_utf8_output(tmp_path: Path) -> None:
+    registry = create_registry(tmp_path)
+    command = shlex.join(
+        [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'ok\\xff\\n')"]
+    )
+
+    output, is_error = await registry.execute(
+        "run_command", {"command": command}, approval_granted=True
+    )
+
+    assert is_error is False
+    assert "exit_code: 0" in output
+    assert "ok�" in output
+
+
+async def test_edit_file_preserves_crlf_line_endings(tmp_path: Path) -> None:
+    (tmp_path / "notes.txt").write_bytes(b"first\r\nsecond\r\nthird\r\n")
+    registry = create_registry(tmp_path)
+    await registry.execute("read_file", {"path": "notes.txt"})
+
+    output, is_error = await registry.execute(
+        "edit_file",
+        {"path": "notes.txt", "old_text": "second\nthird", "new_text": "2nd\nthird"},
+    )
+
+    assert is_error is False
+    assert (tmp_path / "notes.txt").read_bytes() == b"first\r\n2nd\r\nthird\r\n"
+    assert "-second\n+2nd" in output
+
+
+async def test_large_files_can_be_read_and_edited_but_are_reported_by_search(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "big.py").write_text("x = 1\n" * 20_000 + "needle = 2\n")
+    registry = create_registry(tmp_path)
+
+    read_output, read_error = await registry.execute(
+        "read_file", {"path": "big.py", "offset": 20_001, "limit": 1}
+    )
+    edit_output, edit_error = await registry.execute(
+        "edit_file", {"path": "big.py", "old_text": "needle = 2", "new_text": "needle = 3"}
+    )
+    search_output, _ = await registry.execute("search_text", {"pattern": "needle"})
+
+    assert (read_error, edit_error) == (False, False)
+    assert read_output == "20001: needle = 2"
+    assert "+needle = 3" in edit_output
+    assert search_output.startswith("[No matches found for pattern: needle]")
+    assert "[Skipped 1 files over 100000 bytes" in search_output
+
+
+async def test_build_and_dist_are_skipped_only_at_workspace_root(tmp_path: Path) -> None:
+    for relative in ["build/out.py", "dist/out.py", "src/build/config.py", "src/dist.py"]:
+        (tmp_path / relative).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / relative).write_text("needle\n", encoding="utf-8")
+    registry = create_registry(tmp_path)
+
+    glob_output, _ = await registry.execute("glob_files", {"pattern": "**/*.py"})
+    search_output, _ = await registry.execute("search_text", {"pattern": "needle"})
+
+    assert glob_output == "src/build/config.py\nsrc/dist.py"
+    assert search_output == "src/build/config.py:1: needle\nsrc/dist.py:1: needle"

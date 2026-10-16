@@ -620,6 +620,7 @@ def test_run_cli_reports_provider_failure_without_traceback(
     assert "Provider: deepseek/deepseek-v4-flash" in output
     assert "Set AGENT_DEBUG=1" in output
     assert "Traceback" not in output
+    assert "Checkpoint saved: session-one" in output
 
 
 def test_run_cli_reports_unrecoverable_context_pressure_without_exiting(

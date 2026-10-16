@@ -4,7 +4,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-RunOutcome = Literal["completed", "max_steps", "protocol_error"]
+RunOutcome = Literal["completed", "max_steps", "protocol_error", "error"]
 
 
 class ToolCall(BaseModel):

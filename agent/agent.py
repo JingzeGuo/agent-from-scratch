@@ -239,6 +239,30 @@ class Agent:
                 "content": user_task,
             }
         )
+        try:
+            return await self._run_steps(
+                run_id, user_task, request_system, tools, base_overhead_tokens, run_steps
+            )
+        except Exception:
+            # Record the partial run so traces and checkpoints stay complete.
+            self._finish_run(
+                run_id=run_id,
+                objective=user_task,
+                steps=run_steps,
+                termination="error",
+                final_stop_reason=None,
+            )
+            raise
+
+    async def _run_steps(
+        self,
+        run_id: str,
+        user_task: str,
+        request_system: str,
+        tools: list[ToolDefinition],
+        base_overhead_tokens: int,
+        run_steps: list[AgentStep],
+    ) -> AgentRun:
         for step in range(1, self.max_steps + 1):
             remaining_steps = self.max_steps - step + 1
             text_blocks: list[str] = []
@@ -309,7 +333,9 @@ class Agent:
             self.messages.append(response.message)
             text_blocks.extend(response.text)
 
-            if response.stop_reason != "end_turn":
+            # Some providers report "stop" alongside tool calls; the calls still
+            # need results, or the history becomes invalid for the next request.
+            if response.tool_calls:
                 tool_calls.extend(response.tool_calls)
                 tool_results.extend(
                     await self._execute_tool_calls(
@@ -332,7 +358,7 @@ class Agent:
                 agent_step=agent_step,
             )
 
-            if response.stop_reason == "end_turn":
+            if response.stop_reason == "end_turn" and not tool_calls:
                 return self._finish_run(
                     run_id=run_id,
                     objective=user_task,
@@ -388,7 +414,7 @@ class Agent:
             objective=objective,
             agent_run=agent_run,
         )
-        if self.memory_formation is not None:
+        if self.memory_formation is not None and termination != "error":
             snapshot = capture_task_memory(
                 agent_run, self.task_memory_context, self.registry.workspace_root
             )
