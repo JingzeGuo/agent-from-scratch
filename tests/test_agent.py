@@ -452,6 +452,8 @@ def test_agent_completes_read_search_edit_test_trajectory(
     ]
     agent, _ = create_agent(responses, registry=registry)
 
+    agent.configure_approval_callback(lambda tool_call, policy: True)
+
     agent_run = asyncio.run(agent.run("Fix module.py"))
 
     assert [step.tool_calls[0].name for step in agent_run.steps[:-1]] == [
@@ -536,6 +538,8 @@ def test_failed_command_followed_by_repair_and_passing_command(
     ]
     agent, _ = create_agent(responses, registry=registry)
 
+    agent.configure_approval_callback(lambda tool_call, policy: True)
+
     agent_run = asyncio.run(agent.run("Repair module.py"))
 
     assert agent_run.steps[1].tool_results[0].is_error is False
@@ -543,6 +547,7 @@ def test_failed_command_followed_by_repair_and_passing_command(
     assert "exit_code: 0" in agent_run.steps[3].tool_results[0].content
 
 
+@pytest.mark.usefixtures("no_sandbox")
 def test_agent_runs_approved_command_requiring_approval(tmp_path: Path) -> None:
     command = f"{shlex.quote(sys.executable)} -c \"print('approved')\""
     registry = create_command_registry(tmp_path)
@@ -582,6 +587,7 @@ def test_agent_runs_approved_command_requiring_approval(tmp_path: Path) -> None:
     assert "tool_started" in [event.event_type for event in events]
 
 
+@pytest.mark.usefixtures("no_sandbox")
 def test_agent_reuses_approval_for_same_command(tmp_path: Path) -> None:
     command = f"{shlex.quote(sys.executable)} -c \"print('approved')\""
     registry = create_command_registry(tmp_path)
@@ -631,6 +637,7 @@ def test_agent_reuses_approval_for_same_command(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.usefixtures("no_sandbox")
 def test_agent_requests_approval_again_for_different_cwd(tmp_path: Path) -> None:
     command = f"{shlex.quote(sys.executable)} -c \"print('approved')\""
     (tmp_path / "nested").mkdir()
@@ -678,6 +685,7 @@ def test_agent_requests_approval_again_for_different_cwd(tmp_path: Path) -> None
     assert approval_requests == 2
 
 
+@pytest.mark.usefixtures("no_sandbox")
 def test_agent_denies_command_requiring_approval_by_default(tmp_path: Path) -> None:
     command = f"{shlex.quote(sys.executable)} -c \"print('denied')\""
     registry = create_command_registry(tmp_path)

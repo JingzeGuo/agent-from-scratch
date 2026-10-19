@@ -5,7 +5,9 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Literal
 
-CommandPolicyDecision = Literal["allowed", "blocked", "requires_approval"]
+from .sandbox import sandbox_available
+
+CommandPolicyDecision = Literal["allowed", "requires_approval"]
 
 SECRET_PATTERNS = [
     (
@@ -15,25 +17,6 @@ SECRET_PATTERNS = [
     (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}"), "Bearer [REDACTED]"),
     (re.compile(r"\bsk-[A-Za-z0-9_-]{8,}"), "[REDACTED_SECRET]"),
 ]
-
-SHELL_OPERATORS = {"|", "||", "&", "&&", ";", ">", ">>", "<", "2>", "2>>"}
-BLOCKED_COMMANDS = {
-    "chmod",
-    "chown",
-    "dd",
-    "halt",
-    "mkfs",
-    "mount",
-    "mv",
-    "reboot",
-    "rm",
-    "shutdown",
-    "sudo",
-    "umount",
-}
-SAFE_PYTHON_MODULES = {"py_compile", "pytest", "ruff", "mypy"}
-SAFE_DIRECT_COMMANDS = {"mypy", "pytest", "ruff"}
-SAFE_GIT_SUBCOMMANDS = {"diff", "status"}
 
 
 @dataclass(frozen=True)
@@ -56,7 +39,8 @@ def redact_text(text: str) -> str:
 def classify_command(command: str) -> ToolApprovalPolicy:
     """Classify a command before execution.
 
-    This is a controller-level policy check, not an OS sandbox.
+    Sandboxed commands run automatically; without a sandbox, every command
+    requires approval.
     """
     try:
         args = shlex.split(command)
@@ -65,49 +49,15 @@ def classify_command(command: str) -> ToolApprovalPolicy:
 
     if not args:
         raise ValueError("Command cannot be empty.")
-    if any(operator in args for operator in SHELL_OPERATORS):
-        return ToolApprovalPolicy(
-            decision="blocked",
-            reason="Shell operators are not supported by run_command.",
-            args=args,
-        )
-    if "$(" in command or "`" in command:
-        return ToolApprovalPolicy(
-            decision="blocked",
-            reason="Shell command substitution is not supported by run_command.",
-            args=args,
-        )
-    if args[0] in BLOCKED_COMMANDS:
-        return ToolApprovalPolicy(
-            decision="blocked",
-            reason=f"Blocked dangerous command: {args[0]}",
-            args=args,
-        )
-    if args[:3] == ["git", "reset", "--hard"]:
-        return ToolApprovalPolicy(
-            decision="blocked",
-            reason="Blocked dangerous command: git reset --hard",
-            args=args,
-        )
-    if args[:2] == ["git", "clean"]:
-        return ToolApprovalPolicy(
-            decision="blocked",
-            reason="Blocked dangerous command: git clean",
-            args=args,
-        )
-    if (
-        _is_safe_python_module_command(args)
-        or _is_safe_python_version_command(args)
-        or _is_safe_direct_command(args)
-    ):
+    if sandbox_available():
         return ToolApprovalPolicy(
             decision="allowed",
-            reason="Command matches the safe coding-agent command policy.",
+            reason="Command runs inside the OS sandbox.",
             args=args,
         )
     return ToolApprovalPolicy(
         decision="requires_approval",
-        reason="Command requires approval because it is outside the automatic safe command policy.",
+        reason="Command requires approval because run_command is not sandboxed.",
         args=args,
     )
 
@@ -128,27 +78,3 @@ def _compile_secret_patterns(raw_patterns: str) -> tuple[re.Pattern[str], ...]:
         except re.error:
             continue
     return tuple(patterns)
-
-
-def _is_safe_python_module_command(args: list[str]) -> bool:
-    if len(args) < 3:
-        return False
-    executable = args[0].split("/")[-1]
-    if executable not in {"python", "python3"} and not executable.endswith("python"):
-        return False
-    return args[1] == "-m" and args[2] in SAFE_PYTHON_MODULES
-
-
-def _is_safe_python_version_command(args: list[str]) -> bool:
-    if len(args) != 2:
-        return False
-    executable = args[0].split("/")[-1]
-    if executable not in {"python", "python3"} and not executable.endswith("python"):
-        return False
-    return args[1] in {"--version", "-V"}
-
-
-def _is_safe_direct_command(args: list[str]) -> bool:
-    if args[0] == "git":
-        return len(args) >= 2 and args[1] in SAFE_GIT_SUBCOMMANDS
-    return args[0] in SAFE_DIRECT_COMMANDS

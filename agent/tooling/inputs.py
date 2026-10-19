@@ -100,7 +100,7 @@ class RunCommandInput(BaseModel):
 
     command: str = Field(
         min_length=1,
-        description="Command to run without shell operators, e.g., '.venv/bin/python -m pytest tests/test_tools.py'.",
+        description="Shell command to run, e.g., '.venv/bin/python -m pytest tests/test_tools.py'.",
     )
     cwd: str | None = Field(
         default=None,

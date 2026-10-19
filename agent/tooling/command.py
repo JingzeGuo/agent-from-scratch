@@ -1,11 +1,18 @@
-"""Bounded, shell-free command execution inside the workspace."""
+"""Bounded shell command execution inside the workspace sandbox."""
 
+import os
+import re
+import shlex
+import signal
 import subprocess
 import time
 from pathlib import Path
 
+from ..sandbox import sandbox_argv
 from ..security import classify_command
 from ..workspace import resolve_workspace_path
+
+SECRET_ENV_NAME = re.compile(r"(^|_)(API_KEY|TOKEN|SECRET|PASSWORD)($|_)", re.I)
 
 
 def run_command(
@@ -17,51 +24,55 @@ def run_command(
     max_output_chars: int = 8000,
     approval_granted: bool = False,
 ) -> str:
-    """Run a bounded command inside the workspace and return its observation."""
-    args = _parse_safe_command(command, approval_granted)
+    """Run a bounded shell command inside the workspace and return its observation."""
+    _check_approval(command, approval_granted)
     command_cwd = _resolve_command_cwd(workspace_root, cwd)
-    args = _resolve_workspace_local_executable(args, workspace_root)
+    command = _resolve_workspace_local_executable(command, workspace_root)
+    args = sandbox_argv(command, workspace_root) or ["/bin/sh", "-c", command]
 
     start = time.monotonic()
-    try:
-        completed = subprocess.run(
-            args,
-            cwd=command_cwd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout_seconds,
-            check=False,
-        )
-        duration = time.monotonic() - start
-        return _format_command_result(
-            exit_code=completed.returncode,
-            timed_out=False,
-            duration_seconds=duration,
-            stdout=completed.stdout,
-            stderr=completed.stderr,
-            max_output_chars=max_output_chars,
-        )
-    except subprocess.TimeoutExpired as e:
-        duration = time.monotonic() - start
-        return _format_command_result(
-            exit_code=None,
-            timed_out=True,
-            duration_seconds=duration,
-            stdout=_normalize_subprocess_output(e.stdout),
-            stderr=_normalize_subprocess_output(e.stderr),
-            max_output_chars=max_output_chars,
-        )
+    # A new session lets a timeout kill the shell's children along with it.
+    with subprocess.Popen(
+        args,
+        cwd=command_cwd,
+        env=_command_env(),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        errors="replace",
+        start_new_session=True,
+    ) as process:
+        try:
+            stdout, stderr = process.communicate(timeout=timeout_seconds)
+            timed_out = False
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            stdout, stderr = process.communicate()
+            timed_out = True
+    return _format_command_result(
+        exit_code=None if timed_out else process.returncode,
+        timed_out=timed_out,
+        duration_seconds=time.monotonic() - start,
+        stdout=stdout,
+        stderr=stderr,
+        max_output_chars=max_output_chars,
+    )
 
 
-def _parse_safe_command(command: str, approval_granted: bool = False) -> list[str]:
+def _check_approval(command: str, approval_granted: bool) -> None:
     policy = classify_command(command)
-    if policy.decision == "blocked":
-        raise ValueError(policy.reason)
     if policy.decision == "requires_approval" and not approval_granted:
         raise ValueError(policy.reason)
-    return policy.args
+
+
+def _command_env() -> dict[str, str]:
+    """Inherit the environment minus credentials such as provider API keys."""
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if not SECRET_ENV_NAME.search(key)
+    }
 
 
 def _resolve_command_cwd(workspace_root: Path, cwd: str | None) -> Path:
@@ -76,17 +87,12 @@ def _resolve_command_cwd(workspace_root: Path, cwd: str | None) -> Path:
     return resolved
 
 
-def _resolve_workspace_local_executable(
-    args: list[str],
-    workspace_root: Path,
-) -> list[str]:
-    executable = args[0]
-    if not executable.startswith(".venv/"):
-        return args
-    resolved = workspace_root.expanduser().resolve() / executable
-    if not resolved.exists():
-        return args
-    return [resolved.as_posix(), *args[1:]]
+def _resolve_workspace_local_executable(command: str, workspace_root: Path) -> str:
+    """Let `.venv/...` commands work from any cwd inside the workspace."""
+    if not command.startswith(".venv/"):
+        return command
+    root = workspace_root.expanduser().resolve()
+    return f"{shlex.quote(root.as_posix())}/{command}"
 
 
 def _format_command_result(
@@ -126,11 +132,3 @@ def _truncate_output(text: str, max_chars: int) -> str:
         + f"\n[... truncated {omitted} chars ...]\n"
         + text[-tail_chars:].lstrip("\n").rstrip("\n")
     )
-
-
-def _normalize_subprocess_output(output: str | bytes | None) -> str:
-    if output is None:
-        return ""
-    if isinstance(output, bytes):
-        return output.decode("utf-8", errors="replace")
-    return output

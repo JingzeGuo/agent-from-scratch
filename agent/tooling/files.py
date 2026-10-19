@@ -8,6 +8,7 @@ import re
 from collections.abc import Iterator
 from pathlib import Path
 
+from ..sandbox import PROTECTED_DIRS
 from ..workspace import resolve_workspace_path
 
 # Searching and whole-file rewrites skip large files so a 50MB log cannot
@@ -158,6 +159,15 @@ def read_file(
     )
 
 
+def _resolve_writable_path(workspace_root: Path, path: str) -> Path:
+    """Apply the sandbox's write policy to in-process file tools too."""
+    p = resolve_workspace_path(workspace_root, path)
+    relative = p.relative_to(workspace_root.expanduser().resolve())
+    if relative.parts and relative.parts[0] in PROTECTED_DIRS:
+        raise PermissionError(f"Path is read-only: {path}")
+    return p
+
+
 def edit_file(
     path: str,
     old_text: str,
@@ -166,7 +176,7 @@ def edit_file(
     workspace_root: Path,
 ) -> str:
     """Replace one exact text match in a workspace file and return a diff."""
-    p = resolve_workspace_path(workspace_root, path)
+    p = _resolve_writable_path(workspace_root, path)
     if not p.exists():
         raise FileNotFoundError(f"File not found: {path}")
     if not p.is_file():
@@ -202,7 +212,7 @@ def write_file(
     overwrite: bool = False,
 ) -> str:
     """Create a file or intentionally overwrite an existing workspace file."""
-    p = resolve_workspace_path(workspace_root, path)
+    p = _resolve_writable_path(workspace_root, path)
     if p.exists() and not p.is_file():
         raise IsADirectoryError(f"Path is not a file: {path}")
     if p.exists() and not overwrite:

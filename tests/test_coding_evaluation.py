@@ -261,7 +261,9 @@ def test_clone_instance_fetches_only_base_commit_and_removes_remote(
 
 def test_swe_bench_instance_records_tool_inputs_in_trajectory(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr("agent.security.sandbox_available", lambda: True)
     source = initialize_git_repo(tmp_path / "source")
     (source / "README.md").write_text("demo\n", encoding="utf-8")
     git(source, "add", "README.md")

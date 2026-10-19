@@ -129,12 +129,13 @@ class ToolRegistry:
             return None
         if not args:
             return None
-        command_name = Path(args[0]).name
-        if command_name in self.blocked_command_names:
-            return (
-                "Tool 'run_command' blocked by workspace isolation: "
-                f"command '{command_name}' is unavailable."
-            )
+        # Shell commands can chain, so any word may name a blocked command.
+        for command_name in sorted({Path(arg).name for arg in args}):
+            if command_name in self.blocked_command_names:
+                return (
+                    "Tool 'run_command' blocked by workspace isolation: "
+                    f"command '{command_name}' is unavailable."
+                )
         for argument in args[1:]:
             blocked_part = self._blocked_path_part(argument)
             if blocked_part is not None:

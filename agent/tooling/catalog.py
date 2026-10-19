@@ -97,9 +97,9 @@ def _create_tool_catalog(
         Tool(
             name="run_command",
             description=(
-                "Run a bounded command without a shell inside the workspace. "
-                "Shell operators (&&, |, ;, redirection) and built-ins such as cd "
-                "are unsupported; use cwd for subdirectories. "
+                "Run a bounded /bin/sh command inside the workspace sandbox. "
+                "Shell operators are supported. Writes outside the workspace and "
+                "to .git or .agents fail, and network access is unavailable. "
                 "Return exit code, stdout, stderr, duration, and timeout status."
             ),
             input_schema=RunCommandInput,

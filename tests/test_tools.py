@@ -944,6 +944,7 @@ async def test_run_command_returns_success_result(tmp_path: Path) -> None:
     output, is_error = await registry.execute(
         "run_command",
         {"command": f"{shlex.quote(sys.executable)} -m py_compile module.py"},
+        approval_granted=True,
     )
 
     assert "exit_code: 0" in output
@@ -961,6 +962,7 @@ async def test_run_command_returns_failure_exit_code(tmp_path: Path) -> None:
     output, is_error = await registry.execute(
         "run_command",
         {"command": f"{shlex.quote(sys.executable)} -m py_compile module.py"},
+        approval_granted=True,
     )
 
     assert "exit_code: 1" in output
@@ -983,6 +985,7 @@ async def test_run_command_times_out(tmp_path: Path) -> None:
             "command": f"{shlex.quote(sys.executable)} -m pytest test_slow.py",
             "timeout_seconds": 0.1,
         },
+        approval_granted=True,
     )
 
     assert "exit_code: null" in output
@@ -1004,6 +1007,7 @@ async def test_run_command_truncates_long_output(tmp_path: Path) -> None:
             "command": f"{shlex.quote(sys.executable)} -m pytest test_long_output.py",
             "max_output_chars": 200,
         },
+        approval_granted=True,
     )
 
     assert "[... truncated" in output
@@ -1011,19 +1015,8 @@ async def test_run_command_truncates_long_output(tmp_path: Path) -> None:
     assert is_error is False
 
 
-async def test_run_command_rejects_dangerous_command(tmp_path: Path) -> None:
-    registry = create_registry(tmp_path)
-
-    output, is_error = await registry.execute(
-        "run_command",
-        {"command": "rm -rf ."},
-    )
-
-    assert "Blocked dangerous command: rm" in output
-    assert is_error is True
-
-
-async def test_run_command_requires_approval_for_arbitrary_python(
+@pytest.mark.usefixtures("no_sandbox")
+async def test_run_command_requires_approval_without_sandbox(
     tmp_path: Path,
 ) -> None:
     registry = create_registry(tmp_path)
@@ -1034,21 +1027,8 @@ async def test_run_command_requires_approval_for_arbitrary_python(
     )
 
     assert "requires approval" in output
-    assert "outside the automatic safe command policy" in output
+    assert "not sandboxed" in output
     assert is_error is True
-
-
-async def test_run_command_allows_python_version_probe(tmp_path: Path) -> None:
-    registry = create_registry(tmp_path)
-
-    output, is_error = await registry.execute(
-        "run_command",
-        {"command": f"{shlex.quote(sys.executable)} --version"},
-    )
-
-    assert "exit_code: 0" in output
-    assert "Python" in output
-    assert is_error is False
 
 
 async def test_run_command_resolves_workspace_venv_from_subdirectory(
@@ -1065,6 +1045,7 @@ async def test_run_command_resolves_workspace_venv_from_subdirectory(
     output, is_error = await registry.execute(
         "run_command",
         {"command": ".venv/bin/python --version", "cwd": "package"},
+        approval_granted=True,
     )
 
     assert "exit_code: 0" in output
@@ -1098,6 +1079,7 @@ async def test_run_command_uses_workspace_relative_cwd(tmp_path: Path) -> None:
             "command": f"{shlex.quote(sys.executable)} -m py_compile module.py",
             "cwd": "package",
         },
+        approval_granted=True,
     )
 
     assert "exit_code: 0" in output
@@ -1117,6 +1099,7 @@ async def test_run_command_rejects_cwd_outside_workspace(tmp_path: Path) -> None
             "command": f"{shlex.quote(sys.executable)} -m py_compile module.py",
             "cwd": "../outside",
         },
+        approval_granted=True,
     )
 
     assert "Path is outside the workspace" in output

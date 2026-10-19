@@ -22,6 +22,7 @@ described below.
 - [uv](https://docs.astral.sh/uv/)
 - A DeepSeek API key for interactive use or live-model evaluation
 - A Tavily API key only when using `search_web`
+- On Linux, `bwrap` for sandboxed commands (for example `apt install bubblewrap`)
 
 Install the project and development dependencies:
 
@@ -136,11 +137,27 @@ are returned to the model as recoverable observations.
 
 ## Command safety
 
-`run_command` parses arguments without a shell, rejects shell operators and
-command substitution, blocks destructive commands, and confines `cwd` to the
-workspace. Focused commands such as `pytest`, `mypy`, `ruff`, `py_compile`, and
-read-only Git inspection run automatically. Broader commands require interactive
-approval.
+`run_command` runs `/bin/sh -c` inside an OS sandbox: `sandbox-exec` on macOS
+and [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`) on Linux.
+Both apply the same policy:
+
+- Commands may read any file but write only the workspace and temporary
+  directories.
+- `.git/` and `.agents/` stay read-only, so commands cannot plant Git hooks or
+  alter the agent's memory and sessions. `write_file` and `edit_file` enforce
+  the same rule.
+- Network access is unavailable.
+- Environment variables named like credentials (`*_API_KEY`, `*_TOKEN`, ...)
+  are removed.
+- A timeout kills the whole process group.
+
+Sandboxed commands run without approval. When no sandbox is available (other
+platforms, `bwrap` missing, or user namespaces blocked, as inside many
+containers), every command requires interactive approval and evaluation runs
+cannot execute commands.
+
+The sandbox does not protect files inside the workspace: a command can still
+delete or overwrite uncommitted work there. Commit or stash before long tasks.
 
 Command output is bounded and includes exit code, timeout state, duration,
 stdout, and stderr. Approval is a controller decision rather than a property of
@@ -285,7 +302,8 @@ long-term memory, and `agent/evaluation/` the evaluation harnesses.
 | `agent/provider.py` | DeepSeek transport and provider-neutral response normalization |
 | `agent/prompts.py` | System prompt and tool guidance |
 | `agent/schemas.py` | Provider-neutral controller, provider, and session models |
-| `agent/security.py` | Command policy and trace redaction |
+| `agent/sandbox.py` | macOS and Linux command sandbox |
+| `agent/security.py` | Command approval policy and trace redaction |
 | `agent/workspace.py` | Workspace-relative path resolution |
 | `agent/cli/main.py` | CLI parsing, provider setup, sessions, and startup wiring |
 | `agent/cli/commands.py` | Interactive slash commands, approval prompts, and checkpoints |
