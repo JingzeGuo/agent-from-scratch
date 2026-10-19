@@ -1,11 +1,8 @@
-import json
-
 from pydantic import BaseModel
 
 from ..agent import Agent
-from ..memory.store import TaskMemoryContext
 from ..schemas import SessionEvent, ToolCall
-from ..security import ToolApprovalPolicy
+from ..security import APPROVAL_REASON
 from ..state.session import SessionStore, utc_timestamp
 from ..workspace import resolve_workspace_path
 
@@ -22,6 +19,13 @@ COMMANDS = {
     "/paste": "Start multiline prompt entry.",
     "/exit": "Exit the application.",
 }
+
+
+def format_commands() -> str:
+    width = max(len(name) for name in COMMANDS)
+    return "\n".join(
+        f"  {name:<{width}} {description}" for name, description in COMMANDS.items()
+    )
 
 
 class CliSessionState(BaseModel):
@@ -79,18 +83,11 @@ def report_interrupted_action(
     print(message)
 
 
-def prompt_tool_approval(
-    tool_call: ToolCall,
-    policy: ToolApprovalPolicy,
-) -> bool:
-    raw_command = tool_call.input.get("command")
+def prompt_tool_approval(tool_call: ToolCall) -> bool:
     print("\nApproval required:")
     print(f"  Tool: {tool_call.name}")
-    print(f"  Reason: {policy.reason}")
-    if isinstance(raw_command, str):
-        print(f"  Command: {raw_command}")
-    else:
-        print(f"  Input: {_format_tool_approval_input(tool_call.input)}")
+    print(f"  Reason: {APPROVAL_REASON}")
+    print(f"  Command: {tool_call.input.get('command')}")
     while True:
         answer = input("Approve tool? [Y/n]: ").strip().lower()
         if answer in {"", "y", "yes"}:
@@ -98,16 +95,6 @@ def prompt_tool_approval(
         if answer in {"n", "no"}:
             return False
         print("Please answer y or n.")
-
-
-def _format_tool_approval_input(tool_input: dict[str, object]) -> str:
-    try:
-        text = json.dumps(tool_input, ensure_ascii=True, sort_keys=True)
-    except TypeError:
-        text = str(tool_input)
-    if len(text) <= 500:
-        return text
-    return text[:500] + "... [truncated]"
 
 
 def handle_command(
@@ -118,9 +105,7 @@ def handle_command(
 ) -> bool:
     if command == "/help":
         print("Available commands:")
-        width = max(len(name) for name in COMMANDS)
-        for name, description in COMMANDS.items():
-            print(f"  {name:<{width}} {description}")
+        print(format_commands())
         return False
     if command == "/tokens":
         input_tokens = agent.token_tracker.input_tokens
@@ -155,11 +140,7 @@ def handle_command(
         print(f"  Estimated cost: ${agent.token_tracker.estimated_cost:.6f}")
         return False
     if command == "/reset":
-        agent.messages.clear()
-        agent.task_starts.clear()
-        agent.context_builder.reset()
-        agent.task_memory_context = TaskMemoryContext()
-        agent.clear_approval_cache()
+        agent.reset_conversation()
         print("Conversation context reset.")
         return False
     if command == "/save":

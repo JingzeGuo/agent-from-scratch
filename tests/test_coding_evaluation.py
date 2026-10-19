@@ -226,8 +226,8 @@ def test_swe_bench_registry_removes_network_tools_and_blocks_git(
 def test_swe_bench_workspace_name_contains_only_random_identity() -> None:
     workspace = create_swe_bench_workspace()
     try:
-        assert re.fullmatch(r"agent-swe-[0-9a-f]{32}-.+", workspace.name)
-        assert "__" not in workspace.name
+        # mkdtemp appends 8 random [a-z0-9_] characters, which may include "__".
+        assert re.fullmatch(r"agent-swe-[0-9a-f]{32}-[a-z0-9_]{8}", workspace.name)
     finally:
         shutil.rmtree(workspace)
 

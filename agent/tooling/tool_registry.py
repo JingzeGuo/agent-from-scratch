@@ -70,10 +70,10 @@ class ToolRegistry:
         except Exception as e:
             return f"Tool '{name}' raised {type(e).__name__}: {e}", True
 
-        output, is_error = await tool.run(
-            parsed,
-            self._tool_extra_kwargs(name, approval_granted, extra_kwargs),
-        )
+        kwargs = dict(extra_kwargs or {})
+        if name == "run_command" and approval_granted:
+            kwargs["approval_granted"] = True
+        output, is_error = await tool.run(parsed, kwargs or None)
         if not is_error:
             self._record_successful_file_action(parsed, original_snapshot)
         return output, is_error
@@ -163,19 +163,6 @@ class ToolRegistry:
             if blocked_part in relative_parts:
                 return blocked_part
         return None
-
-    def _tool_extra_kwargs(
-        self,
-        name: str,
-        approval_granted: bool,
-        extra_kwargs: dict[str, Any] | None,
-    ) -> dict[str, Any] | None:
-        merged_kwargs = dict(extra_kwargs or {})
-        if name == "run_command" and approval_granted:
-            merged_kwargs["approval_granted"] = True
-        if not merged_kwargs:
-            return None
-        return merged_kwargs
 
     def get_diff(self, path: str | None = None) -> str:
         """Return unified diffs for files changed during this registry session."""

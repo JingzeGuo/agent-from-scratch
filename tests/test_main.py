@@ -32,7 +32,6 @@ from agent.schemas import (
     TokenUsage,
     ToolCall,
 )
-from agent.security import classify_command
 from agent.state.context import ContextBudgetExceeded
 from agent.state.session import SessionStore, utc_timestamp
 from agent.tooling.tool_registry import ToolRegistry
@@ -139,10 +138,9 @@ def test_prompt_tool_approval_accepts_yes(
         input={"command": "python -c \"print('ok')\""},
         tool_use_id="toolu_command",
     )
-    policy = classify_command("python -c \"print('ok')\"")
     monkeypatch.setattr("builtins.input", lambda prompt: "yes")
 
-    approved = prompt_tool_approval(tool_call, policy)
+    approved = prompt_tool_approval(tool_call)
 
     assert approved is True
     output = capsys.readouterr().out
@@ -158,10 +156,9 @@ def test_prompt_tool_approval_accepts_default(
         input={"command": "python -c \"print('ok')\""},
         tool_use_id="toolu_command",
     )
-    policy = classify_command("python -c \"print('ok')\"")
     monkeypatch.setattr("builtins.input", lambda prompt: "")
 
-    approved = prompt_tool_approval(tool_call, policy)
+    approved = prompt_tool_approval(tool_call)
 
     assert approved is True
 
@@ -174,10 +171,9 @@ def test_prompt_tool_approval_rejects_no(
         input={"command": "python -c \"print('ok')\""},
         tool_use_id="toolu_command",
     )
-    policy = classify_command("python -c \"print('ok')\"")
     monkeypatch.setattr("builtins.input", lambda prompt: "no")
 
-    approved = prompt_tool_approval(tool_call, policy)
+    approved = prompt_tool_approval(tool_call)
 
     assert approved is False
 
@@ -322,24 +318,18 @@ def test_parse_cli_args_supports_eval_command() -> None:
 
 
 def test_parse_cli_args_rejects_positional_task() -> None:
-    with pytest.raises(ValueError, match="Unexpected argument"):
+    with pytest.raises(ValueError, match="invalid choice"):
         parse_cli_args(["Fix", "the", "bug"])
 
 
 def test_parse_cli_args_rejects_invalid_resume_usage() -> None:
-    with pytest.raises(ValueError, match="Usage"):
+    with pytest.raises(ValueError, match="expected one argument"):
         parse_cli_args(["--resume"])
-
-    with pytest.raises(ValueError, match="only once"):
-        parse_cli_args(["--resume", "one", "--resume", "two"])
 
 
 def test_parse_cli_args_rejects_invalid_api_key_usage() -> None:
-    with pytest.raises(ValueError, match="Usage"):
+    with pytest.raises(ValueError, match="expected one argument"):
         parse_cli_args(["--api-key"])
-
-    with pytest.raises(ValueError, match="only once"):
-        parse_cli_args(["--api-key", "one", "--api-key", "two"])
 
 
 def test_pyproject_exposes_agent_console_script() -> None:
@@ -360,7 +350,7 @@ def test_cli_help_does_not_require_provider_config(
     asyncio.run(cli_main(["--help"]))
 
     output = capsys.readouterr().out
-    assert "Usage:" in output
+    assert "usage:" in output
     assert "--version" in output
     assert "/help" in output
 

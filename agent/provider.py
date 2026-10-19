@@ -75,6 +75,29 @@ class ProviderAdapter(Protocol):
         ...
 
 
+async def ask_json[T: BaseModel](
+    provider: ProviderAdapter,
+    *,
+    system: str,
+    messages: list[dict[str, Any]],
+    schema: type[T],
+    on_usage: Callable[[TokenUsage], None] | None = None,
+) -> T:
+    """Make one tool-free request whose reply must be JSON matching schema.
+
+    Raises ValueError (including pydantic's ValidationError) on a bad reply.
+    """
+    response = await provider.stream_response(system=system, tools=[], messages=messages)
+    if on_usage:
+        on_usage(response.usage)
+    if response.tool_calls or response.stop_reason != "end_turn":
+        raise ValueError("Model did not return a complete JSON answer")
+    text = "\n".join(response.text).strip()
+    if text.startswith("```json\n") and text.endswith("```"):
+        text = text[8:-3].strip()
+    return schema.model_validate_json(text)
+
+
 def format_provider_request_error(error: ProviderRequestError) -> str:
     """Return a concise, actionable CLI message for provider failures."""
     suggestions = {

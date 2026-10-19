@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 from ..sandbox import sandbox_argv
-from ..security import classify_command
+from ..security import APPROVAL_REASON, command_requires_approval
 from ..workspace import resolve_workspace_path
 
 SECRET_ENV_NAME = re.compile(r"(^|_)(API_KEY|TOKEN|SECRET|PASSWORD)($|_)", re.I)
@@ -25,7 +25,8 @@ def run_command(
     approval_granted: bool = False,
 ) -> str:
     """Run a bounded shell command inside the workspace and return its observation."""
-    _check_approval(command, approval_granted)
+    if command_requires_approval() and not approval_granted:
+        raise PermissionError(APPROVAL_REASON)
     command_cwd = _resolve_command_cwd(workspace_root, cwd)
     command = _resolve_workspace_local_executable(command, workspace_root)
     args = sandbox_argv(command, workspace_root) or ["/bin/sh", "-c", command]
@@ -58,12 +59,6 @@ def run_command(
         stderr=stderr,
         max_output_chars=max_output_chars,
     )
-
-
-def _check_approval(command: str, approval_granted: bool) -> None:
-    policy = classify_command(command)
-    if policy.decision == "requires_approval" and not approval_granted:
-        raise ValueError(policy.reason)
 
 
 def _command_env() -> dict[str, str]:

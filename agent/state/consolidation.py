@@ -4,9 +4,7 @@ import json
 from collections.abc import Callable
 from typing import Any, Protocol
 
-from pydantic import ValidationError
-
-from ..provider import ProviderAdapter
+from ..provider import ProviderAdapter, ask_json
 from ..schemas import ConsolidatedState, TokenUsage
 
 CONSOLIDATION_PROMPT = """Construct the minimum sufficient state required for a
@@ -69,25 +67,19 @@ class LLMConsolidator:
         # One shared repair attempt for invalid/oversized output; errors bubble to the
         # context builder's emergency policy. No tool execution is available.
         for attempt in range(2):
-            response = await self.provider.stream_response(
-                system=CONSOLIDATION_PROMPT, tools=[], messages=messages
-            )
-            if self.on_usage:
-                self.on_usage(response.usage)
-            text = "\n".join(response.text).strip()
-            if text.startswith("```json\n") and text.endswith("```"):
-                text = text[8:-3].strip()
             try:
-                if response.tool_calls or response.stop_reason != "end_turn":
-                    raise ValueError(
-                        "Consolidation did not return a complete JSON answer"
-                    )
-                state = ConsolidatedState.model_validate_json(text)
+                state = await ask_json(
+                    self.provider,
+                    system=CONSOLIDATION_PROMPT,
+                    messages=messages,
+                    schema=ConsolidatedState,
+                    on_usage=self.on_usage,
+                )
                 state.current_objective = current_objective
                 if validate_state:
                     validate_state(state)
                 return state
-            except (ValidationError, ValueError) as error:
+            except ValueError as error:
                 if attempt:
                     raise ValueError(
                         "Invalid consolidated state after repair"

@@ -21,7 +21,6 @@ from agent.schemas import (
     ToolDefinition,
     ToolResult,
 )
-from agent.security import ToolApprovalPolicy
 from agent.state.context import ContextBuilder
 from agent.state.session import SessionStore
 from agent.tooling.catalog import create_registry as create_workspace_registry
@@ -452,7 +451,7 @@ def test_agent_completes_read_search_edit_test_trajectory(
     ]
     agent, _ = create_agent(responses, registry=registry)
 
-    agent.configure_approval_callback(lambda tool_call, policy: True)
+    agent.configure_approval_callback(lambda tool_call: True)
 
     agent_run = asyncio.run(agent.run("Fix module.py"))
 
@@ -538,7 +537,7 @@ def test_failed_command_followed_by_repair_and_passing_command(
     ]
     agent, _ = create_agent(responses, registry=registry)
 
-    agent.configure_approval_callback(lambda tool_call, policy: True)
+    agent.configure_approval_callback(lambda tool_call: True)
 
     agent_run = asyncio.run(agent.run("Repair module.py"))
 
@@ -569,7 +568,7 @@ def test_agent_runs_approved_command_requiring_approval(tmp_path: Path) -> None:
         ),
     ]
     agent, _ = create_agent(responses, registry=registry)
-    agent.configure_approval_callback(lambda tool_call, policy: True)
+    agent.configure_approval_callback(lambda tool_call: True)
     session_store = SessionStore(tmp_path / "sessions")
     agent.configure_session_recording(session_store, "session-one")
 
@@ -622,7 +621,7 @@ def test_agent_reuses_approval_for_same_command(tmp_path: Path) -> None:
     agent, _ = create_agent(responses, registry=registry)
     approval_requests = 0
 
-    def approve(tool_call: ToolCall, policy: ToolApprovalPolicy) -> bool:
+    def approve(tool_call: ToolCall) -> bool:
         nonlocal approval_requests
         approval_requests += 1
         return True
@@ -673,7 +672,7 @@ def test_agent_requests_approval_again_for_different_cwd(tmp_path: Path) -> None
     agent, _ = create_agent(responses, registry=registry)
     approval_requests = 0
 
-    def approve(tool_call: ToolCall, policy: ToolApprovalPolicy) -> bool:
+    def approve(tool_call: ToolCall) -> bool:
         nonlocal approval_requests
         approval_requests += 1
         return True

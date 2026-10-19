@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 import os
 import sys
@@ -6,6 +7,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+from typing import NoReturn
 
 from dotenv import load_dotenv
 from pydantic import BaseModel
@@ -23,9 +25,9 @@ from ..state.context import ContextBudgetExceeded
 from ..state.session import SessionStore, utc_timestamp
 from ..tooling.catalog import create_registry
 from .commands import (
-    COMMANDS,
     CliSessionState,
     checkpoint_session,
+    format_commands,
     handle_command,
     prompt_tool_approval,
     report_interrupted_action,
@@ -48,68 +50,45 @@ class CliInputResult(BaseModel):
     should_exit: bool = False
 
 
+class _ArgumentParser(argparse.ArgumentParser):
+    """Raise instead of exiting so main() reports every usage error the same way."""
+
+    def error(self, message: str) -> NoReturn:
+        raise ValueError(message)
+
+
+ARG_PARSER = _ArgumentParser(
+    prog="agent",
+    usage="agent [options]\n       agent eval [eval-options] [cases...]",
+    add_help=False,
+    formatter_class=argparse.RawDescriptionHelpFormatter,
+    epilog=f"interactive commands:\n{format_commands()}",
+)
+ARG_PARSER.add_argument(
+    "-h", "--help", action="store_true", dest="show_help", help="Show this help message."
+)
+ARG_PARSER.add_argument(
+    "--version", action="store_true", dest="show_version", help="Show the installed version."
+)
+ARG_PARSER.add_argument(
+    "--resume",
+    dest="resume_session_id",
+    metavar="<session-id-or-name>",
+    help="Resume a saved session.",
+)
+ARG_PARSER.add_argument("--api-key", metavar="<key>", help="Provide the provider API key.")
+ARG_PARSER.add_argument("command", nargs="?", choices=["eval"], help=argparse.SUPPRESS)
+ARG_PARSER.add_argument("eval_args", nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
+
+
 def parse_cli_args(argv: Sequence[str]) -> CliArgs:
-    resume_session_id: str | None = None
-    api_key: str | None = None
-    eval_args: list[str] | None = None
-    show_help = False
-    show_version = False
-    index = 0
-
-    while index < len(argv):
-        arg = argv[index]
-        if arg == "eval":
-            eval_args = list(argv[index + 1 :])
-            break
-        if arg in {"--help", "-h"}:
-            show_help = True
-            index += 1
-            continue
-        if arg == "--version":
-            show_version = True
-            index += 1
-            continue
-        if arg == "--resume":
-            if resume_session_id is not None:
-                raise ValueError("Use --resume only once.")
-            if index + 1 >= len(argv):
-                raise ValueError("Usage: --resume <session-id-or-name>")
-            resume_session_id = argv[index + 1]
-            index += 2
-            continue
-        if arg.startswith("--resume="):
-            if resume_session_id is not None:
-                raise ValueError("Use --resume only once.")
-            resume_session_id = arg.removeprefix("--resume=")
-            if not resume_session_id:
-                raise ValueError("Usage: --resume <session-id-or-name>")
-            index += 1
-            continue
-        if arg == "--api-key":
-            if api_key is not None:
-                raise ValueError("Use --api-key only once.")
-            if index + 1 >= len(argv):
-                raise ValueError("Usage: --api-key <key>")
-            api_key = argv[index + 1]
-            index += 2
-            continue
-        if arg.startswith("--api-key="):
-            if api_key is not None:
-                raise ValueError("Use --api-key only once.")
-            api_key = arg.removeprefix("--api-key=")
-            if not api_key:
-                raise ValueError("Usage: --api-key <key>")
-            index += 1
-            continue
-
-        raise ValueError(f"Unexpected argument: {arg}")
-
+    args = ARG_PARSER.parse_args(argv)
     return CliArgs(
-        resume_session_id=resume_session_id,
-        api_key=api_key,
-        eval_args=eval_args,
-        show_help=show_help,
-        show_version=show_version,
+        resume_session_id=args.resume_session_id,
+        api_key=args.api_key,
+        eval_args=args.eval_args if args.command == "eval" else None,
+        show_help=args.show_help,
+        show_version=args.show_version,
     )
 
 
@@ -118,23 +97,6 @@ def package_version() -> str:
         return version(PACKAGE_NAME)
     except PackageNotFoundError:
         return FALLBACK_VERSION
-
-
-def print_cli_help() -> None:
-    print("Usage:")
-    print("  agent [options]")
-    print("  agent eval [eval-options] [cases...]")
-    print("")
-    print("Options:")
-    print("  -h, --help                       Show this help message.")
-    print("  --version                        Show the installed version.")
-    print("  --resume <session-id-or-name>    Resume a saved session.")
-    print("  --api-key <key>                  Provide the provider API key.")
-    print("")
-    print("Interactive commands:")
-    width = max(len(name) for name in COMMANDS)
-    for name, description in COMMANDS.items():
-        print(f"  {name:<{width}} {description}")
 
 
 async def run_eval_command(
@@ -290,7 +252,7 @@ async def main(argv: Sequence[str] | None = None) -> None:
         print(error)
         return
     if cli_args.show_help:
-        print_cli_help()
+        ARG_PARSER.print_help()
         return
     if cli_args.show_version:
         print(f"{PACKAGE_NAME} {package_version()}")

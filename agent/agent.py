@@ -23,7 +23,7 @@ from .schemas import (
     ToolDefinition,
     ToolResult,
 )
-from .security import ToolApprovalPolicy, classify_command, redact_text
+from .security import APPROVAL_REASON, command_requires_approval, redact_text
 from .state.consolidation import LLMConsolidator
 from .state.context import ContextBuilder, ContextConfig
 from .state.session import SessionStore, utc_timestamp
@@ -39,7 +39,7 @@ PARALLEL_READ_ONLY_TOOLS = {
     "search_text",
     "get_diff",
 }
-ApprovalCallback = Callable[[ToolCall, ToolApprovalPolicy], bool]
+ApprovalCallback = Callable[[ToolCall], bool]
 logger = logging.getLogger(__name__)
 
 
@@ -144,7 +144,12 @@ class Agent:
     ) -> None:
         self.approval_callback = approval_callback
 
-    def clear_approval_cache(self) -> None:
+    def reset_conversation(self) -> None:
+        """Forget the conversation; session totals and file tracking are kept."""
+        self.messages.clear()
+        self.task_starts.clear()
+        self.context_builder.reset()
+        self.task_memory_context = TaskMemoryContext()
         self._approved_commands.clear()
 
     def _context_overhead_tokens(
@@ -209,7 +214,7 @@ class Agent:
         self.token_tracker.output_tokens = snapshot.output_tokens
         self.token_tracker.estimated_cost = snapshot.estimated_cost
         self.task_memory_context = TaskMemoryContext()
-        self.clear_approval_cache()
+        self._approved_commands.clear()
         self.system_prompt = build_system_prompt(
             workspace_root=self.registry.workspace_root,
             system_prompt_suffix=self.system_prompt_suffix,
@@ -231,7 +236,13 @@ class Agent:
         base_overhead_tokens = self._context_overhead_tokens(request_system, tools)
         run_steps: list[AgentStep] = []
         run_id = self._new_run_id()
-        self._record_run_started(run_id, user_task)
+        self._emit(
+            "run_started",
+            run_id=run_id,
+            objective=user_task,
+            provider=self.provider,
+            model=self.model,
+        )
         self.task_starts.append(len(self.messages))
         self.messages.append(
             {
@@ -298,9 +309,12 @@ class Agent:
             )
             model_messages.extend(extra_messages)
             model_request_started = perf_counter()
-            self._record_model_request_started(
+            self._emit(
+                "model_request_started",
                 run_id=run_id,
                 step_number=step,
+                provider=self.provider,
+                model=self.model,
             )
             response = await self.provider_adapter.stream_response(
                 system=request_system,
@@ -317,16 +331,19 @@ class Agent:
             estimated_cost_delta = (
                 self.token_tracker.estimated_cost - estimated_cost_before
             )
-            self._record_model_response_finished(
+            self._emit(
+                "model_response_finished",
                 run_id=run_id,
                 step_number=step,
+                provider=self.provider,
+                model=self.model,
                 stop_reason=response.stop_reason,
                 input_tokens=response.usage.input_tokens,
                 output_tokens=response.usage.output_tokens,
-                estimated_cost_delta=estimated_cost_delta,
+                estimated_cost=estimated_cost_delta,
                 latency_ms=model_latency_ms,
                 tool_call_count=len(response.tool_calls),
-                text=response.text,
+                text_preview=self._preview_text("\n".join(response.text)),
                 native_metadata=response.native_metadata,
             )
 
@@ -353,9 +370,13 @@ class Agent:
                 tool_results=tool_results,
             )
             run_steps.append(agent_step)
-            self._record_step_finished(
+            self._emit(
+                "step_finished",
                 run_id=run_id,
-                agent_step=agent_step,
+                step_number=step,
+                stop_reason=response.stop_reason,
+                tool_call_count=len(tool_calls),
+                text_preview=self._preview_text("\n".join(text_blocks)),
             )
 
             if response.stop_reason == "end_turn" and not tool_calls:
@@ -409,10 +430,16 @@ class Agent:
             final_stop_reason=final_stop_reason,
         )
         self.completed_runs.append(agent_run)
-        self._record_run_finished(
+        self._emit(
+            "run_finished",
             run_id=run_id,
             objective=objective,
-            agent_run=agent_run,
+            termination=termination,
+            final_stop_reason=final_stop_reason,
+            step_count=len(steps),
+            input_tokens=self.token_tracker.input_tokens,
+            output_tokens=self.token_tracker.output_tokens,
+            estimated_cost=self.token_tracker.estimated_cost,
         )
         if self.memory_formation is not None and termination != "error":
             snapshot = capture_task_memory(
@@ -482,145 +509,40 @@ class Agent:
     def _new_run_id(self) -> str:
         return f"run-{uuid4().hex}"
 
-    def _record_run_started(self, run_id: str, objective: str) -> None:
-        self._append_session_event(
-            SessionEvent(
-                event_type="run_started",
-                session_id=self.session_id or "",
-                created_at=utc_timestamp(),
-                run_id=run_id,
-                objective=objective,
-                provider=self.provider,
-                model=self.model,
-            )
-        )
-
-    def _record_model_request_started(
-        self,
-        run_id: str,
-        step_number: int,
-    ) -> None:
-        self._append_session_event(
-            SessionEvent(
-                event_type="model_request_started",
-                session_id=self.session_id or "",
-                created_at=utc_timestamp(),
-                run_id=run_id,
-                step_number=step_number,
-                provider=self.provider,
-                model=self.model,
-            )
-        )
-
-    def _record_model_response_finished(
-        self,
-        run_id: str,
-        step_number: int,
-        stop_reason: str | None,
-        input_tokens: int,
-        output_tokens: int,
-        estimated_cost_delta: float,
-        latency_ms: float,
-        tool_call_count: int,
-        text: list[str],
-        native_metadata: dict[str, Any],
-    ) -> None:
-        self._append_session_event(
-            SessionEvent(
-                event_type="model_response_finished",
-                session_id=self.session_id or "",
-                created_at=utc_timestamp(),
-                run_id=run_id,
-                step_number=step_number,
-                provider=self.provider,
-                model=self.model,
-                stop_reason=stop_reason,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                estimated_cost=estimated_cost_delta,
-                latency_ms=latency_ms,
-                tool_call_count=tool_call_count,
-                text_preview=self._preview_text("\n".join(text)),
-                native_metadata=native_metadata,
-            )
-        )
-
-    def _record_tool_started(
-        self,
-        run_id: str,
-        step_number: int,
-        tool_call: ToolCall,
-    ) -> None:
-        if self.session_store is None or self.session_id is None:
-            return
-        created_at = utc_timestamp()
-        if self.record_pending_actions:
-            pending_action = PendingAction(
-                session_id=self.session_id,
-                step_number=step_number,
-                tool_name=tool_call.name,
-                tool_use_id=tool_call.tool_use_id,
-            )
-            self.session_store.write_pending_action(pending_action)
-        self._append_session_event(
-            SessionEvent(
-                event_type="tool_started",
-                session_id=self.session_id,
-                created_at=created_at,
-                run_id=run_id,
-                step_number=step_number,
-                tool_name=tool_call.name,
-                tool_use_id=tool_call.tool_use_id,
-                tool_input=tool_call.input,
-                command=self._tool_command(tool_call),
-            )
-        )
-
     async def _execute_tool_calls(
         self,
         run_id: str,
         step_number: int,
         tool_calls: list[ToolCall],
     ) -> list[ToolResult]:
-        if self._can_execute_tool_calls_concurrently(tool_calls):
-            self._record_tool_schedule_decided(
-                run_id=run_id,
-                step_number=step_number,
-                tool_calls=tool_calls,
-                mode="parallel",
-                reason="all tool calls are read-only",
-            )
-            return list(
-                await asyncio.gather(
-                    *[
-                        self._execute_one_tool_call(
-                            run_id=run_id,
-                            step_number=step_number,
-                            tool_call=tool_call,
-                        )
-                        for tool_call in tool_calls
-                    ]
-                )
-            )
-
         if len(tool_calls) > 1:
-            self._record_tool_schedule_decided(
+            parallel = all(call.name in PARALLEL_READ_ONLY_TOOLS for call in tool_calls)
+            reason = (
+                "parallel: all tool calls are read-only"
+                if parallel
+                else "serial: one or more tool calls may mutate state or depend on ordering"
+            )
+            tool_names = ", ".join(call.name for call in tool_calls)
+            self._emit(
+                "tool_schedule_decided",
                 run_id=run_id,
                 step_number=step_number,
-                tool_calls=tool_calls,
-                mode="serial",
-                reason="one or more tool calls may mutate state or depend on ordering",
+                tool_call_count=len(tool_calls),
+                message=f"{reason}; tools: {tool_names}",
             )
-        tool_results: list[ToolResult] = []
-        for tool_call in tool_calls:
-            tool_results.append(
-                await self._execute_one_tool_call(
-                    run_id=run_id,
-                    step_number=step_number,
-                    tool_call=tool_call,
+            if parallel:
+                return list(
+                    await asyncio.gather(
+                        *(
+                            self._execute_one_tool_call(run_id, step_number, call)
+                            for call in tool_calls
+                        )
+                    )
                 )
-            )
-        return tool_results
+        return [
+            await self._execute_one_tool_call(run_id, step_number, call)
+            for call in tool_calls
+        ]
 
     async def _execute_one_tool_call(
         self,
@@ -628,294 +550,119 @@ class Agent:
         step_number: int,
         tool_call: ToolCall,
     ) -> ToolResult:
-        approval = self._required_approval(tool_call)
-        if approval is not None:
-            cache_key = self._approval_cache_key(tool_call, approval)
-            approved = cache_key in self._approved_commands if cache_key else False
-            if not approved:
-                approved = self._request_tool_approval(
-                    run_id=run_id,
-                    step_number=step_number,
-                    tool_call=tool_call,
-                    policy=approval,
-                )
-                if approved and cache_key is not None:
-                    self._approved_commands.add(cache_key)
-            if not approved:
-                output = self._format_approval_denied(tool_call, approval)
-                self._record_tool_finished(
-                    run_id=run_id,
-                    step_number=step_number,
-                    tool_call=tool_call,
-                    is_error=True,
-                    output=output,
-                    latency_ms=0.0,
-                )
-                return ToolResult(
-                    tool_use_id=tool_call.tool_use_id,
-                    content=output,
-                    is_error=True,
-                )
+        needs_approval = tool_call.name == "run_command" and command_requires_approval()
+        if needs_approval and not self._approve(run_id, step_number, tool_call):
+            output = (
+                f"Tool '{tool_call.name}' approval denied: "
+                f"{self._approval_message(tool_call)}"
+            )
+            self._record_tool_finished(run_id, step_number, tool_call, output, True, 0.0)
+            return ToolResult(
+                tool_use_id=tool_call.tool_use_id, content=output, is_error=True
+            )
 
-        self._record_tool_started(
+        if (
+            self.record_pending_actions
+            and self.session_store is not None
+            and self.session_id is not None
+        ):
+            self.session_store.write_pending_action(
+                PendingAction(
+                    session_id=self.session_id,
+                    step_number=step_number,
+                    tool_name=tool_call.name,
+                    tool_use_id=tool_call.tool_use_id,
+                )
+            )
+        self._emit(
+            "tool_started",
             run_id=run_id,
             step_number=step_number,
-            tool_call=tool_call,
+            tool_name=tool_call.name,
+            tool_use_id=tool_call.tool_use_id,
+            tool_input=tool_call.input,
+            command=self._tool_command(tool_call),
         )
         if self.stream_output:
             self.print_activity(format_tool_activity(tool_call))
-        if tool_call.name == "sub_agent":
-            output, is_error, latency_ms = await self._run_tool_call(
-                tool_call,
-                extra_kwargs={"parent_agent": self},
-            )
-        else:
-            output, is_error, latency_ms = await self._run_tool_call(
-                tool_call,
-                approval_granted=approval is not None,
-            )
-        self._record_tool_finished(
-            run_id=run_id,
-            step_number=step_number,
-            tool_call=tool_call,
-            is_error=is_error,
-            output=output,
-            latency_ms=latency_ms,
-        )
-        return ToolResult(
-            tool_use_id=tool_call.tool_use_id,
-            content=output,
-            is_error=is_error,
-        )
-
-    async def _run_tool_call(
-        self,
-        tool_call: ToolCall,
-        *,
-        approval_granted: bool = False,
-        extra_kwargs: dict[str, Any] | None = None,
-    ) -> tuple[str, bool, float]:
         tool_started = perf_counter()
         output, is_error = await self.registry.execute(
             tool_call.name,
             tool_call.input,
-            approval_granted=approval_granted,
-            extra_kwargs=extra_kwargs,
+            approval_granted=needs_approval,
+            extra_kwargs={"parent_agent": self} if tool_call.name == "sub_agent" else None,
         )
-        tool_latency_ms = (perf_counter() - tool_started) * 1000
-        return output, is_error, tool_latency_ms
-
-    def _required_approval(
-        self,
-        tool_call: ToolCall,
-    ) -> ToolApprovalPolicy | None:
-        if tool_call.name != "run_command":
-            return None
-        raw_command = tool_call.input.get("command")
-        if not isinstance(raw_command, str):
-            return None
-        try:
-            policy = classify_command(raw_command)
-        except ValueError:
-            return None
-        if policy.decision != "requires_approval":
-            return None
-        return policy
-
-    def _approval_cache_key(
-        self,
-        tool_call: ToolCall,
-        policy: ToolApprovalPolicy,
-    ) -> str | None:
-        if tool_call.name != "run_command":
-            return None
-        cwd = tool_call.input.get("cwd")
-        if cwd is not None and not isinstance(cwd, str):
-            return None
-        return json.dumps(
-            [tool_call.name, policy.args, cwd],
-            ensure_ascii=True,
-            separators=(",", ":"),
+        latency_ms = (perf_counter() - tool_started) * 1000
+        self._record_tool_finished(
+            run_id, step_number, tool_call, output, is_error, latency_ms
+        )
+        return ToolResult(
+            tool_use_id=tool_call.tool_use_id, content=output, is_error=is_error
         )
 
-    def _request_tool_approval(
-        self,
-        *,
-        run_id: str,
-        step_number: int,
-        tool_call: ToolCall,
-        policy: ToolApprovalPolicy,
-    ) -> bool:
-        self._record_tool_approval_event(
-            event_type="tool_approval_requested",
-            run_id=run_id,
-            step_number=step_number,
-            tool_call=tool_call,
-            policy=policy,
+    def _approve(self, run_id: str, step_number: int, tool_call: ToolCall) -> bool:
+        cache_key = json.dumps(
+            [tool_call.input.get("command"), tool_call.input.get("cwd")], default=str
         )
-        approved = False
-        if self.approval_callback is not None:
-            approved = self.approval_callback(tool_call, policy)
-        self._record_tool_approval_event(
-            event_type="tool_approval_granted" if approved else "tool_approval_denied",
-            run_id=run_id,
-            step_number=step_number,
-            tool_call=tool_call,
-            policy=policy,
-        )
-        return approved
+        if cache_key in self._approved_commands:
+            return True
 
-    def _record_tool_approval_event(
-        self,
-        *,
-        event_type: SessionEventType,
-        run_id: str,
-        step_number: int,
-        tool_call: ToolCall,
-        policy: ToolApprovalPolicy,
-    ) -> None:
-        self._append_session_event(
-            SessionEvent(
-                event_type=event_type,
-                session_id=self.session_id or "",
-                created_at=utc_timestamp(),
+        def emit(event_type: SessionEventType) -> None:
+            self._emit(
+                event_type,
                 run_id=run_id,
                 step_number=step_number,
                 tool_name=tool_call.name,
                 tool_use_id=tool_call.tool_use_id,
-                message=f"{policy.reason} {self._approval_detail(tool_call)}",
+                message=self._approval_message(tool_call),
             )
-        )
 
-    def _format_approval_denied(
-        self,
-        tool_call: ToolCall,
-        policy: ToolApprovalPolicy,
-    ) -> str:
-        return (
-            f"Tool '{tool_call.name}' approval denied: "
-            f"{policy.reason} {self._approval_detail(tool_call)}"
+        emit("tool_approval_requested")
+        approved = self.approval_callback is not None and self.approval_callback(
+            tool_call
         )
+        emit("tool_approval_granted" if approved else "tool_approval_denied")
+        if approved:
+            self._approved_commands.add(cache_key)
+        return approved
 
-    def _approval_detail(self, tool_call: ToolCall) -> str:
-        raw_command = tool_call.input.get("command")
-        if isinstance(raw_command, str):
-            return f"Command: {raw_command}"
-        try:
-            input_text = json.dumps(
-                tool_call.input,
-                ensure_ascii=True,
-                sort_keys=True,
-            )
-        except TypeError:
-            input_text = str(tool_call.input)
-        return f"Input: {self._preview_text(input_text)}"
-
-    def _can_execute_tool_calls_concurrently(
-        self,
-        tool_calls: list[ToolCall],
-    ) -> bool:
-        return len(tool_calls) > 1 and all(
-            tool_call.name in PARALLEL_READ_ONLY_TOOLS for tool_call in tool_calls
-        )
-
-    def _record_tool_schedule_decided(
-        self,
-        run_id: str,
-        step_number: int,
-        tool_calls: list[ToolCall],
-        mode: str,
-        reason: str,
-    ) -> None:
-        tool_names = ", ".join(tool_call.name for tool_call in tool_calls)
-        self._append_session_event(
-            SessionEvent(
-                event_type="tool_schedule_decided",
-                session_id=self.session_id or "",
-                created_at=utc_timestamp(),
-                run_id=run_id,
-                step_number=step_number,
-                tool_call_count=len(tool_calls),
-                message=f"{mode}: {reason}; tools: {tool_names}",
-            )
-        )
+    def _approval_message(self, tool_call: ToolCall) -> str:
+        return f"{APPROVAL_REASON} Command: {tool_call.input.get('command')}"
 
     def _record_tool_finished(
         self,
         run_id: str,
         step_number: int,
         tool_call: ToolCall,
-        is_error: bool,
         output: str,
+        is_error: bool,
         latency_ms: float,
     ) -> None:
-        self._append_session_event(
-            SessionEvent(
-                event_type="tool_finished",
-                session_id=self.session_id or "",
-                created_at=utc_timestamp(),
-                run_id=run_id,
-                step_number=step_number,
-                tool_name=tool_call.name,
-                tool_use_id=tool_call.tool_use_id,
-                tool_input=tool_call.input,
-                command=self._tool_command(tool_call),
-                is_error=is_error,
-                latency_ms=latency_ms,
-                output_preview=self._preview_text(output),
-                output_chars=len(output),
-            )
+        self._emit(
+            "tool_finished",
+            run_id=run_id,
+            step_number=step_number,
+            tool_name=tool_call.name,
+            tool_use_id=tool_call.tool_use_id,
+            tool_input=tool_call.input,
+            command=self._tool_command(tool_call),
+            is_error=is_error,
+            latency_ms=latency_ms,
+            output_preview=self._preview_text(output),
+            output_chars=len(output),
         )
 
-    def _record_step_finished(
-        self,
-        run_id: str,
-        agent_step: AgentStep,
-    ) -> None:
-        self._append_session_event(
-            SessionEvent(
-                event_type="step_finished",
-                session_id=self.session_id or "",
-                created_at=utc_timestamp(),
-                run_id=run_id,
-                step_number=agent_step.step_number,
-                stop_reason=agent_step.stop_reason,
-                tool_call_count=len(agent_step.tool_calls),
-                text_preview=self._preview_text("\n".join(agent_step.text)),
-            )
-        )
-
-    def _record_run_finished(
-        self,
-        run_id: str,
-        objective: str,
-        agent_run: AgentRun,
-    ) -> None:
-        self._append_session_event(
-            SessionEvent(
-                event_type="run_finished",
-                session_id=self.session_id or "",
-                created_at=utc_timestamp(),
-                run_id=run_id,
-                objective=objective,
-                termination=agent_run.termination,
-                final_stop_reason=agent_run.final_stop_reason,
-                step_count=len(agent_run.steps),
-                input_tokens=self.token_tracker.input_tokens,
-                output_tokens=self.token_tracker.output_tokens,
-                estimated_cost=self.token_tracker.estimated_cost,
-            )
-        )
-
-    def _append_session_event(self, event: SessionEvent) -> None:
+    def _emit(self, event_type: SessionEventType, **fields: Any) -> None:
+        """Append one trace event when session recording is configured."""
         if self.session_store is None or self.session_id is None:
             return
         self.session_store.append_event(
-            event.model_copy(
-                update={
-                    "session_id": self.session_id,
-                    "agent_label": self.activity_label,
-                }
+            SessionEvent(
+                event_type=event_type,
+                session_id=self.session_id,
+                created_at=utc_timestamp(),
+                agent_label=self.activity_label,
+                **fields,
             )
         )
 

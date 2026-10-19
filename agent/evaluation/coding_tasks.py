@@ -26,7 +26,6 @@ from ..schemas import (
     ToolDefinition,
     ToolResult,
 )
-from ..security import ToolApprovalPolicy
 from ..state.session import SessionStore
 from ..tooling.catalog import create_registry
 from ..tooling.tool_registry import ToolRegistry
@@ -516,11 +515,8 @@ def verify_case(
     )
 
 
-def deny_broad_command(
-    tool_call: ToolCall,
-    policy: ToolApprovalPolicy,
-) -> bool:
-    del tool_call, policy
+def deny_broad_command(tool_call: ToolCall) -> bool:
+    del tool_call
     return False
 
 

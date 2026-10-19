@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-from ..provider import ProviderAdapter
+from ..provider import ProviderAdapter, ask_json
 from ..schemas import AgentRun, TokenUsage
 from ..security import redact_text
 from ..state.context import count_tokens
@@ -149,27 +149,16 @@ class LLMMemoryFormation:
     async def _ask[T: BaseModel](
         self, prompt: str, payload: dict[str, object], schema: type[T]
     ) -> T:
-        response = await self.provider.stream_response(
-            system=prompt,
-            tools=[],
-            messages=[
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        {**payload, "schema": schema.model_json_schema()},
-                        ensure_ascii=False,
-                    ),
-                }
-            ],
+        content = json.dumps(
+            {**payload, "schema": schema.model_json_schema()}, ensure_ascii=False
         )
-        if self.on_usage:
-            self.on_usage(response.usage)
-        if response.tool_calls or response.stop_reason != "end_turn":
-            raise ValueError("Memory formation requires a complete JSON response")
-        text = "\n".join(response.text).strip()
-        if text.startswith("```json\n") and text.endswith("```"):
-            text = text[8:-3].strip()
-        return schema.model_validate_json(text)
+        return await ask_json(
+            self.provider,
+            system=prompt,
+            messages=[{"role": "user", "content": content}],
+            schema=schema,
+            on_usage=self.on_usage,
+        )
 
     async def form(self, snapshot: TaskMemorySnapshot) -> None:
         injected = [
