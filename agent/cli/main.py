@@ -58,8 +58,8 @@ class _ArgumentParser(argparse.ArgumentParser):
 
 
 ARG_PARSER = _ArgumentParser(
-    prog="agent",
-    usage="agent [options]\n       agent eval [eval-options] [cases...]",
+    prog="myagent",
+    usage="myagent [options]\n       myagent eval [eval-options] [cases...]",
     add_help=False,
     formatter_class=argparse.RawDescriptionHelpFormatter,
     epilog=f"interactive commands:\n{format_commands()}",

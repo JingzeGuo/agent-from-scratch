@@ -31,16 +31,23 @@ uv sync --dev
 cp .env.example .env
 ```
 
-Set `DEEPSEEK_API_KEY` in `.env`, then start the agent from the repository you
-want it to operate on:
+Set `DEEPSEEK_API_KEY` in `.env`. `uv sync` generates the `myagent` command in
+`.venv/bin/`; to run it from any directory, link it onto your `PATH` from this
+repository's root:
+
+```bash
+ln -s "$PWD/.venv/bin/myagent" ~/.local/bin/myagent
+```
+
+Then start the agent from the repository you want it to operate on:
 
 ```bash
 cd /path/to/target-repository
-/path/to/agent-from-scratch/.venv/bin/agent
+myagent
 ```
 
 The current directory becomes the workspace root. `python -m agent` is equivalent
-to the `agent` command.
+to the `myagent` command.
 
 ## Configuration
 
@@ -65,10 +72,10 @@ prices only.
 Startup options:
 
 ```text
-agent [--api-key KEY] [--resume SESSION_ID_OR_NAME]
-agent --help
-agent --version
-agent eval [evaluation options]
+myagent [--api-key KEY] [--resume SESSION_ID_OR_NAME]
+myagent --help
+myagent --version
+myagent eval [evaluation options]
 ```
 
 Interactive commands:
@@ -91,7 +98,7 @@ Completed interactive turns are checkpointed automatically. Resume by session
 ID or name:
 
 ```bash
-agent --resume session-20260813-120000-000000
+myagent --resume session-20260813-120000-000000
 ```
 
 ## Tools
@@ -338,9 +345,9 @@ Each result reports success, verification status, termination reason, steps,
 tool calls, tokens, estimated cost, latency, and a failure reason when needed.
 
 ```bash
-.venv/bin/agent eval
-.venv/bin/agent eval --list
-.venv/bin/agent eval small_bug_fix
+.venv/bin/myagent eval
+.venv/bin/myagent eval --list
+.venv/bin/myagent eval small_bug_fix
 ```
 
 ### Optional live-model tasks
@@ -349,8 +356,8 @@ Live provider calls are opt-in. With no case name, this mode runs only the
 read-only `repository_search` case.
 
 ```bash
-.venv/bin/agent eval --real-model
-.venv/bin/agent eval --real-model small_bug_fix --max-steps 20
+.venv/bin/myagent eval --real-model
+.venv/bin/myagent eval --real-model small_bug_fix --max-steps 20
 ```
 
 ### SWE-bench-compatible patch generation
@@ -387,7 +394,7 @@ predictions with exactly these standard fields:
 - `model_patch`
 
 ```bash
-.venv/bin/agent eval \
+.venv/bin/myagent eval \
   --swe-bench instances.jsonl \
   --instance-id owner__repo-123 \
   --swe-bench-predictions predictions.jsonl \
@@ -426,7 +433,7 @@ Run the normal local checks with the project environment:
 .venv/bin/ruff check .
 .venv/bin/mypy .
 .venv/bin/python -m pytest -q
-.venv/bin/agent eval
+.venv/bin/myagent eval
 ```
 
 Tests use fake providers and temporary workspaces; they do not make live API

@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [project.scripts]
-agent = "agent.cli.main:cli"
+myagent = "agent.cli.main:cli"
 
 [dependency-groups]
 dev = [

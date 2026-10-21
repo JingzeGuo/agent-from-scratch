@@ -332,10 +332,10 @@ def test_parse_cli_args_rejects_invalid_api_key_usage() -> None:
         parse_cli_args(["--api-key"])
 
 
-def test_pyproject_exposes_agent_console_script() -> None:
+def test_pyproject_exposes_myagent_console_script() -> None:
     pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
 
-    assert pyproject["project"]["scripts"]["agent"] == "agent.cli.main:cli"
+    assert pyproject["project"]["scripts"]["myagent"] == "agent.cli.main:cli"
 
 
 def test_cli_help_does_not_require_provider_config(
