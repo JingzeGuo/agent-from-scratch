@@ -58,6 +58,7 @@ to the `myagent` command.
 | `DEEPSEEK_BASE_URL` | API base URL; defaults to `https://api.deepseek.com` |
 | `TAVILY_API_KEY` | Required only by `search_web` |
 | `AGENT_STATE_DIR` | Session and trace directory; defaults to `<workspace>/.agents` |
+| `AGENT_CONTEXT_TOKENS` | Usable input budget before context consolidation; defaults to `128000` |
 | `AGENT_DEBUG` | Set to `1`, `true`, `yes`, or `on` to print provider tracebacks |
 | `AGENT_TRACE_REDACT_PATTERNS` | Optional newline-separated regular expressions redacted from traces |
 
@@ -196,7 +197,11 @@ are written.
 
 Working context is an optional `ConsolidatedState` followed by the raw recent
 history. Task completion does not summarize anything. Below the soft threshold,
-even multi-task sessions remain raw. At the threshold, the context builder folds
+even multi-task sessions remain raw. At the threshold, the context builder first
+replaces old tool results (oldest first, skipping the most recent and small ones)
+with placeholders naming the tool and its arguments, until the context drops below
+the clear target. This needs no model call and only ever advances, so the request
+prefix stays stable for prompt caching. If that is not enough, it folds
 the oldest completed tasks first, stopping as soon as the state plus remaining raw
 history fits below it. Only when necessary does it fold an active task's old
 prefix, preserving the latest messages and complete tool exchanges. Later folds
@@ -211,17 +216,21 @@ warning. If even the latest indivisible exchange cannot fit, the request fails
 with `ContextBudgetExceeded` instead of sending an oversized/broken tool sequence.
 Consolidation calls contribute to session token/cost totals.
 
-Configure `Agent(..., context_config=ContextConfig(...))` in Python. Defaults:
+Configure `Agent(..., context_config=ContextConfig(...))` in Python, or set
+`AGENT_CONTEXT_TOKENS` to change only the input budget. Defaults:
 
 | Setting | Default |
 | --- | --- |
-| Usable input budget (reserve model output separately) | 32,000 tokens |
+| Usable input budget (reserve model output separately) | 128,000 tokens |
 | Soft / emergency threshold | 65% / 90% |
 | Consolidated state hard limit | 2,048 tokens |
 | State budget reserved when choosing a fold boundary | 1,024 tokens |
 | Active task's minimum raw suffix | 8 messages, expanded to a tool boundary |
 | Pathological single tool-result limit | 16,000 tokens |
 | Retained head + tail of a pathological result | 2,000 tokens plus truncation marker |
+| Tool-result clear target | 50% |
+| Most recent tool results never cleared | 6 |
+| Smallest tool result worth clearing | 200 tokens |
 
 Token pressure includes system instructions, long-term memory, tool definitions,
 and runtime step instructions. Counting uses `tiktoken`'s `cl100k_base` BPE as an estimate, not

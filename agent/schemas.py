@@ -102,6 +102,8 @@ class WorkingContextState(BaseModel):
 
     consolidated_state: ConsolidatedState | None = None
     folded_message_count: int = Field(default=0, ge=0)
+    # Oldest tool results replaced by placeholders; only ever grows (cache-stable).
+    cleared_tool_result_count: int = Field(default=0, ge=0)
 
 
 SessionEventType = Literal[

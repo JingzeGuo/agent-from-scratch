@@ -312,7 +312,12 @@ def test_exact_soft_threshold_triggers_consolidation() -> None:
     messages = task("Old", 300) + task("Active", 100)
     tokens = ContextBuilder().measure_tokens(messages)
     builder = ContextBuilder(
-        fake, ContextConfig(usable_context_tokens=tokens * 2, soft_threshold=0.5)
+        fake,
+        ContextConfig(
+            usable_context_tokens=tokens * 2,
+            soft_threshold=0.5,
+            clear_target_threshold=0.4,
+        ),
     )
     result = build(builder, messages)
     assert len(fake.calls) == 1
@@ -359,7 +364,10 @@ def test_state_reserve_avoids_repeated_folding_calls(
 
     fake = AsyncMock()
     fake.consolidate.return_value = make_state("Active", "detail " * 1000)
-    builder = ContextBuilder(fake, ContextConfig(state_reserve_tokens=reserve))
+    builder = ContextBuilder(
+        fake,
+        ContextConfig(usable_context_tokens=32_000, state_reserve_tokens=reserve),
+    )
     messages = (
         task("Task1", 4000)
         + task("Task2", 7000)
@@ -427,3 +435,132 @@ def test_reset_clears_folded_state() -> None:
 def test_invalid_configuration_is_rejected(kwargs: dict[str, Any]) -> None:
     with pytest.raises(ValueError):
         ContextConfig(**kwargs)
+
+
+def test_context_config_from_env_defaults_to_128k(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AGENT_CONTEXT_TOKENS", raising=False)
+
+    assert ContextConfig.from_env().usable_context_tokens == 128_000
+
+
+def test_context_config_from_env_overrides_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENT_CONTEXT_TOKENS", "32000")
+
+    assert ContextConfig.from_env().usable_context_tokens == 32_000
+    assert ContextBuilder().config.usable_context_tokens == 32_000
+
+
+@pytest.mark.parametrize("raw", ["abc", "0", "-5"])
+def test_context_config_from_env_rejects_invalid_budget(
+    monkeypatch: pytest.MonkeyPatch, raw: str
+) -> None:
+    monkeypatch.setenv("AGENT_CONTEXT_TOKENS", raw)
+
+    with pytest.raises(ValueError, match="AGENT_CONTEXT_TOKENS"):
+        ContextConfig.from_env()
+
+
+def read_exchange(name: str, size: int) -> list[Message]:
+    return [
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": name,
+                    "name": "read_file",
+                    "input": {"path": f"{name}.py"},
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": name, "content": "line " * size}
+            ],
+        },
+    ]
+
+
+def reading_session(count: int) -> list[Message]:
+    messages: list[Message] = [{"role": "user", "content": "Investigate"}]
+    for i in range(count):
+        messages.extend(read_exchange(f"read{i}", 300))
+    return messages
+
+
+def cleared_ids(messages: list[Message]) -> list[str]:
+    return [
+        block["tool_use_id"]
+        for message in messages
+        if isinstance(message["content"], list)
+        for block in message["content"]
+        if block["type"] == "tool_result"
+        and block["content"].startswith("[Earlier tool result cleared:")
+    ]
+
+
+def test_old_tool_results_are_cleared_before_consolidation() -> None:
+    fake = FakeConsolidator()
+    builder = ContextBuilder(
+        fake, ContextConfig(usable_context_tokens=4000, recent_tool_result_count=2)
+    )
+    messages = reading_session(12)
+    original = deepcopy(messages)
+
+    result = build(builder, messages)
+
+    assert fake.calls == []
+    assert messages == original
+    cleared = cleared_ids(result)
+    assert cleared == [f"read{i}" for i in range(len(cleared))]
+    assert 0 < len(cleared) <= 10
+    assert "read_file" in str(result) and "read0.py" in str(result)
+    assert builder.measure_tokens(result) < 4000 * 0.5
+    assert builder.state.cleared_tool_result_count == len(cleared)
+
+
+def test_cleared_tool_results_stay_cleared_on_later_builds() -> None:
+    builder = ContextBuilder(
+        FakeConsolidator(),
+        ContextConfig(usable_context_tokens=4000, recent_tool_result_count=2),
+    )
+    messages = reading_session(12)
+    first = build(builder, messages)
+    messages.extend(read_exchange("late", 20))
+
+    second = build(builder, messages)
+
+    assert second[: len(first)] == first
+    assert cleared_ids(second) == cleared_ids(first)
+
+
+def test_recent_and_small_tool_results_are_never_cleared() -> None:
+    fake = FakeConsolidator()
+    builder = ContextBuilder(
+        fake, ContextConfig(usable_context_tokens=4000, recent_tool_result_count=3)
+    )
+    messages = [*read_exchange("small", 50), *reading_session(12)]
+
+    result = build(builder, messages)
+
+    assert "small" not in cleared_ids(result)
+    assert not {"read9", "read10", "read11"} & set(cleared_ids(result))
+
+
+def test_consolidation_follows_clearing_and_sees_uncleared_history() -> None:
+    fake = FakeConsolidator()
+    builder = ContextBuilder(
+        fake, ContextConfig(usable_context_tokens=4000, recent_tool_result_count=8)
+    )
+    messages = reading_session(12)
+
+    build(builder, messages)
+
+    assert builder.state.cleared_tool_result_count > 0
+    assert fake.calls
+    assert not cleared_ids(fake.calls[0][1])

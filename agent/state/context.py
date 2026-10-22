@@ -1,6 +1,7 @@
 """Token-pressure policy over full, append-only session history."""
 
 import json
+import os
 from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ from .consolidation import Consolidator
 
 Message = dict[str, Any]
 CONSOLIDATED_STATE_HEADER = "[Consolidated state]"
+DEFAULT_USABLE_CONTEXT_TOKENS = 128_000
 
 
 @lru_cache(maxsize=1)
@@ -29,7 +31,7 @@ def count_tokens(text: str) -> int:
 @dataclass(frozen=True)
 class ContextConfig:
     # Input budget after reserving model output. System/tools count against it.
-    usable_context_tokens: int = 32_000
+    usable_context_tokens: int = DEFAULT_USABLE_CONTEXT_TOKENS
     soft_threshold: float = 0.65
     emergency_threshold: float = 0.90
     max_consolidated_state_tokens: int = 2_048
@@ -39,10 +41,17 @@ class ContextConfig:
     recent_message_count: int = 8
     collapse_recent_message_count: int = 12
     collapse_recent_turn_count: int = 2
+    # Before LLM consolidation, replace old tool results with placeholders,
+    # oldest first, until the context drops below the clear target.
+    recent_tool_result_count: int = 6
+    min_cleared_tool_result_tokens: int = 200
+    clear_target_threshold: float = 0.50
 
     def __post_init__(self) -> None:
         if not 0 < self.soft_threshold < self.emergency_threshold < 1:
             raise ValueError("Require 0 < soft < emergency < 1")
+        if not 0 < self.clear_target_threshold < self.soft_threshold:
+            raise ValueError("Require 0 < clear target < soft")
         if self.usable_context_tokens <= 0:
             raise ValueError("usable_context_tokens must be positive")
         if self.max_consolidated_state_tokens <= 0:
@@ -63,6 +72,19 @@ class ContextConfig:
         ):
             raise ValueError("Recent history counts must be positive")
 
+    @classmethod
+    def from_env(cls) -> "ContextConfig":
+        """Default config, with AGENT_CONTEXT_TOKENS overriding the input budget."""
+        raw = os.getenv("AGENT_CONTEXT_TOKENS", "").strip()
+        if not raw:
+            return cls()
+        try:
+            return cls(usable_context_tokens=int(raw))
+        except ValueError as error:
+            raise ValueError(
+                f"AGENT_CONTEXT_TOKENS must be a positive integer, got {raw!r}"
+            ) from error
+
 
 class ContextBudgetExceeded(ValueError):
     """Even the latest indivisible message/tool exchange cannot fit safely."""
@@ -76,7 +98,7 @@ class ContextBuilder:
         token_counter: Callable[[str], int] = count_tokens,
     ) -> None:
         self.consolidator = consolidator
-        self.config = config or ContextConfig()
+        self.config = config or ContextConfig.from_env()
         self.token_counter = token_counter
         self.state = WorkingContextState()
 
@@ -97,17 +119,38 @@ class ContextBuilder:
         task_starts: list[int] | None = None,
         request_overhead_tokens: int = 0,
     ) -> list[Message]:
-        raw = self._protected_history(messages)
+        # The consolidator summarizes the uncleared history; the model sees `raw`.
+        original = self._protected_history(messages)
+        raw = deepcopy(original)
+        tool_results = self._tool_results(raw)
+        calls = self._tool_calls(raw)
+        for block in tool_results[: self.state.cleared_tool_result_count]:
+            self._clear_tool_result(block, calls)
         starts = self._task_starts(raw, task_starts)
         objective = self._objective(raw, starts, objective)
         context = self._assemble(raw, objective)
         soft = self.config.usable_context_tokens * self.config.soft_threshold
         emergency = self.config.usable_context_tokens * self.config.emergency_threshold
+        clear_target = (
+            self.config.usable_context_tokens * self.config.clear_target_threshold
+        )
 
         while True:
             context_tokens = self.measure_tokens(context)
             if context_tokens + request_overhead_tokens < soft:
                 return context
+            cleared = self.state.cleared_tool_result_count
+            clear_limit = len(tool_results) - self.config.recent_tool_result_count
+            if cleared < clear_limit:
+                excess = context_tokens + request_overhead_tokens - clear_target
+                while cleared < clear_limit and excess > 0:
+                    excess -= self._clear_tool_result(tool_results[cleared], calls)
+                    cleared += 1
+                self.state = self.state.model_copy(
+                    update={"cleared_tool_result_count": cleared}
+                )
+                context = self._assemble(raw, objective)
+                continue
             candidates = self._fold_boundaries(raw, starts)
             if not candidates:
                 break
@@ -130,7 +173,7 @@ class ContextBuilder:
                     self.state.consolidated_state.model_copy(deep=True)
                     if self.state.consolidated_state
                     else None,
-                    deepcopy(raw[self.state.folded_message_count : end]),
+                    deepcopy(original[self.state.folded_message_count : end]),
                     objective,
                     validate_state=self._validate_state_size,
                 )
@@ -148,9 +191,8 @@ class ContextBuilder:
                 candidate = [state_message, *raw[end:]]
                 if self.measure_tokens(candidate) >= context_tokens:
                     raise ValueError("Consolidation did not reduce context tokens")
-                self.state = WorkingContextState(
-                    consolidated_state=state,
-                    folded_message_count=end,
+                self.state = self.state.model_copy(
+                    update={"consolidated_state": state, "folded_message_count": end}
                 )
                 context = candidate
             except Exception:
@@ -317,6 +359,44 @@ class ContextBuilder:
                     f"approximately {tokens} tokens; middle omitted]\n{tail}"
                 )
         return raw
+
+    @staticmethod
+    def _tool_results(raw: list[Message]) -> list[dict[str, Any]]:
+        return [
+            block
+            for message in raw
+            if isinstance(message.get("content"), list)
+            for block in message["content"]
+            if isinstance(block, dict) and block.get("type") == "tool_result"
+        ]
+
+    @staticmethod
+    def _tool_calls(raw: list[Message]) -> dict[str, dict[str, Any]]:
+        return {
+            block["id"]: block
+            for message in raw
+            if isinstance(message.get("content"), list)
+            for block in message["content"]
+            if isinstance(block, dict) and block.get("type") == "tool_use"
+        }
+
+    def _clear_tool_result(
+        self, block: dict[str, Any], calls: dict[str, dict[str, Any]]
+    ) -> int:
+        """Replace a large result with a placeholder; return the tokens saved."""
+        output = block.get("content")
+        if not isinstance(output, str):
+            return 0
+        tokens = self.token_counter(output)
+        if tokens < self.config.min_cleared_tool_result_tokens:
+            return 0
+        call = calls.get(block.get("tool_use_id", ""), {})
+        arguments = json.dumps(call.get("input", {}), ensure_ascii=False)[:200]
+        block["content"] = (
+            f"[Earlier tool result cleared: {call.get('name', 'tool')} {arguments}; "
+            f"about {tokens} tokens. Re-run the tool if you need it again.]"
+        )
+        return tokens - self.token_counter(block["content"])
 
     def _clip(self, text: str, tokens: int, *, tail: bool = False) -> str:
         low, high = 0, len(text)

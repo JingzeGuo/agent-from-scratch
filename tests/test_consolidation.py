@@ -7,7 +7,7 @@ import pytest
 
 from agent.schemas import ProviderResponse, TokenUsage, WorkingContextState
 from agent.state.consolidation import LLMConsolidator
-from agent.state.context import ContextBuilder
+from agent.state.context import ContextBuilder, ContextConfig
 from tests.test_context import build, make_state, task
 
 
@@ -80,7 +80,10 @@ def test_oversized_state_retries_once_before_commit_or_fallback(
         response(corrected.model_dump_json()),
     ]
     usage: list[TokenUsage] = []
-    builder = ContextBuilder(LLMConsolidator(provider, on_usage=usage.append))
+    builder = ContextBuilder(
+        LLMConsolidator(provider, on_usage=usage.append),
+        ContextConfig(usable_context_tokens=32_000),
+    )
     previous = WorkingContextState(
         consolidated_state=make_state("Old"), folded_message_count=2
     )
