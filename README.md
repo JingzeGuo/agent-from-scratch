@@ -11,8 +11,8 @@ every tool input, records resumable sessions and JSONL traces, compacts long
 conversations into a single continuation state under context pressure, and tracks token use and estimated
 cost.
 
-In an audited run on a fixed random 50-instance subset of SWE-bench Lite, the
-agent resolved **29/50 instances (58%)** with DeepSeek V4 Flash. Patches were
+In a run on a fixed random 50-instance subset of SWE-bench Lite, the
+agent resolved **33/50 instances (66%)** with DeepSeek V4 Flash. Patches were
 scored by the official SWE-bench harness under the isolated evaluation profile
 described below.
 
@@ -362,27 +362,44 @@ read-only `repository_search` case.
 
 ### SWE-bench-compatible patch generation
 
-#### Audited result
+#### Result
 
-The isolated evaluation profile was run against a fixed random 50-instance
-subset of SWE-bench Lite and scored with the official harness on `linux/amd64`.
-The denominator includes empty patches.
+The isolated evaluation profile was run at commit `2969bb7` (2026-10-22)
+against a fixed random 50-instance subset of SWE-bench Lite and scored with the
+official harness on `linux/amd64`. The denominator includes empty patches.
 
 | Metric | Result |
 | --- | ---: |
-| Resolved | **29/50 (58%)** |
-| Unresolved after harness execution | 17 |
-| Empty patches | 4 |
+| Resolved | **33/50 (66%)** |
+| Unresolved after harness execution | 14 |
+| Empty patches | 3 |
 | Submitted | 50 |
-| Completed by the harness | 46 |
+| Completed by the harness | 47 |
 | Infrastructure failures | 0 |
 | Evaluator errors | 0 |
+| Estimated model cost | $2.58 |
+| Mean model steps per instance | 20.6 |
 
-One unresolved instance, `pytest-dev__pytest-5692`, was marked ambiguous
-because the harness collected no tests. The run used DeepSeek V4 Flash, one
-harness worker, a 3,600-second per-instance timeout, and run ID
-`deepseek-v4-flash-audit-random-50-v2-amd64`. This is a subset result, not a
-claim about the complete SWE-bench Lite test set or leaderboard.
+The run used DeepSeek V4 Flash, one harness worker, a 3,600-second
+per-instance timeout, and run ID
+`deepseek-v4-flash-rerun-random-50-1022-1057-amd64`
+(`django__django-16816` was rescored separately after an image pull error;
+unresolved). This is a single-run subset result, not a claim about the complete SWE-bench
+Lite test set or leaderboard. An earlier run at an older commit (2026-08-29)
+resolved 29/50 on the same subset; 26 instances were resolved in both runs.
+
+To score predictions, pre-pull the `linux/amd64` evaluation images (the harness
+otherwise pulls for the host platform and fails on Apple Silicon), then pass a
+local dataset export that includes the harness `image` and `eval_script` fields:
+
+```bash
+python -m swebench.harness.run_evaluation \
+  --dataset_name lite-random-50.dataset.jsonl \
+  --predictions_path predictions.jsonl \
+  --max_workers 1 --timeout 3600 \
+  --run_id <run-id> \
+  --report_dir official-reports
+```
 
 Pass a JSON or JSONL export containing `instance_id`, `repo`, `base_commit`, and
 `problem_statement`. The runner clones each selected repository, checks out the
