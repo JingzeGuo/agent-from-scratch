@@ -384,9 +384,8 @@ The run used DeepSeek V4 Flash, one harness worker, a 3,600-second
 per-instance timeout, and run ID
 `deepseek-v4-flash-rerun-random-50-1022-1057-amd64`
 (`django__django-16816` was rescored separately after an image pull error;
-unresolved). This is a single-run subset result, not a claim about the complete SWE-bench
-Lite test set or leaderboard. An earlier run at an older commit (2026-08-29)
-resolved 29/50 on the same subset; 26 instances were resolved in both runs.
+unresolved). This is a single-run subset result, not a claim about the complete
+SWE-bench Lite test set or leaderboard.
 
 To score predictions, pre-pull the `linux/amd64` evaluation images (the harness
 otherwise pulls for the host platform and fails on Apple Silicon), then pass a
