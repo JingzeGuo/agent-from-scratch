@@ -3,7 +3,7 @@
 from functools import partial
 from pathlib import Path
 
-from .command import run_command
+from .command import CommandLauncher, run_command
 from .files import edit_file, glob_files, read_file, search_text, write_file
 from .inputs import (
     EditFileInput,
@@ -29,13 +29,14 @@ def create_registry(
     allowed_tools: frozenset[str] | None = None,
     blocked_path_parts: frozenset[str] = frozenset(),
     blocked_command_names: frozenset[str] = frozenset(),
+    command_launcher: CommandLauncher | None = None,
 ) -> ToolRegistry:
     registry = ToolRegistry(
         workspace_root,
         blocked_path_parts=blocked_path_parts,
         blocked_command_names=blocked_command_names,
     )
-    tool_catalog = _create_tool_catalog(workspace_root, registry)
+    tool_catalog = _create_tool_catalog(workspace_root, registry, command_launcher)
     if allowed_tools is not None:
         unknown_tools = allowed_tools.difference(tool_catalog)
         if unknown_tools:
@@ -56,6 +57,7 @@ def create_registry(
 def _create_tool_catalog(
     workspace_root: Path,
     registry: ToolRegistry,
+    command_launcher: CommandLauncher | None = None,
 ) -> dict[str, Tool]:
     tools = [
         Tool(
@@ -103,7 +105,9 @@ def _create_tool_catalog(
                 "Return exit code, stdout, stderr, duration, and timeout status."
             ),
             input_schema=RunCommandInput,
-            fn=partial(run_command, workspace_root=workspace_root),
+            fn=partial(
+                run_command, workspace_root=workspace_root, launcher=command_launcher
+            ),
         ),
         Tool(
             name="sub_agent",

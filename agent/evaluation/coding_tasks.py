@@ -28,7 +28,9 @@ from ..schemas import (
 )
 from ..state.session import SessionStore
 from ..tooling.catalog import create_registry
+from ..tooling.command import CommandLauncher
 from ..tooling.tool_registry import ToolRegistry
+from .swe_bench_docker import SweBenchContainer, instance_image
 
 PYTHON = sys.executable
 EvaluationMode = Literal["deterministic", "real_model", "swe_bench"]
@@ -66,7 +68,9 @@ environment.
 The benchmark workspace is intentionally isolated. Do not inspect Git metadata,
 history, refs, remotes, newer revisions, issue trackers, pull requests, or any
 other network source. Solve the task only from the checked-out files and problem
-statement provided in this run.
+statement provided in this run. No other version of this project exists in the
+environment: do not search release notes, changelogs, package caches, installed
+packages, or the wider filesystem for an existing fix.
 
 Do not create dependency shims, any conftest.py, pytest.ini, temporary
 verification scripts, scratch files, or paths beginning with _tmp. In
@@ -74,6 +78,20 @@ particular, never add distutils, pytz, or asgiref replacements. Do not install
 dependencies. Use the existing repository files only, except for changes that
 directly implement the reported issue and focused regression tests that belong
 in the project's existing test suite.
+"""
+SWE_BENCH_DOCKER_PROMPT_SUFFIX = """
+## Prepared test environment
+
+This overrides the best-effort verification guidance above. Commands run inside
+the benchmark's prepared environment, where the repository's dependencies are
+installed and its existing test suite can run. If one test runner fails to
+start, try the project's own test entry point before treating the environment as
+blocked.
+
+Before changing product code, add a focused regression test for the reported
+behavior to the project's existing test suite and run it to confirm it fails.
+Then fix the code and rerun that test plus the closest existing tests. Passing
+tests that do not exercise the reported behavior are not verification.
 """
 
 
@@ -520,6 +538,11 @@ def deny_broad_command(tool_call: ToolCall) -> bool:
     return False
 
 
+def approve_command(tool_call: ToolCall) -> bool:
+    del tool_call
+    return True
+
+
 async def evaluate_cases(
     selected_names: list[str],
     *,
@@ -595,6 +618,7 @@ async def evaluate_swe_bench_instances(
     max_steps: int,
     metrics_path: Path | None = None,
     trajectories_dir: Path | None = None,
+    docker: bool = False,
 ) -> list[CodingTaskResult]:
     provider = create_real_provider_adapter(api_key)
     resolved_metrics_path = metrics_path or default_swe_bench_metrics_path(
@@ -617,6 +641,7 @@ async def evaluate_swe_bench_instances(
                 keep_workspace=keep_workspaces,
                 max_steps=max_steps,
                 trajectories_dir=resolved_trajectories_dir,
+                docker=docker,
             )
             append_prediction(predictions_path, instance, provider, patch)
             append_swe_bench_metrics(resolved_metrics_path, result)
@@ -637,6 +662,7 @@ async def evaluate_swe_bench_instance(
     keep_workspace: bool,
     max_steps: int,
     trajectories_dir: Path | None = None,
+    docker: bool = False,
 ) -> tuple[CodingTaskResult, str]:
     workspace = create_swe_bench_workspace()
     repo_workspace = workspace / "repo"
@@ -648,15 +674,29 @@ async def evaluate_swe_bench_instance(
     if trajectory_store is not None:
         trajectory_store.reset_events(instance.instance_id)
     print(f"{activity_prefix}[main] Starting with max_steps={max_steps}.")
+    container = (
+        SweBenchContainer(instance_image(instance.instance_id), repo_workspace)
+        if docker
+        else None
+    )
     try:
-        clone_instance(instance, repo_workspace)
+        if container is None:
+            clone_instance(instance, repo_workspace)
+        else:
+            container.start()
+            repo_workspace = container.workspace
         agent = Agent(
             provider_adapter=provider_adapter,
-            registry=create_swe_bench_registry(repo_workspace),
+            registry=create_swe_bench_registry(
+                repo_workspace,
+                command_launcher=None if container is None else container.launch,
+            ),
             max_steps=max_steps,
             stream_output=False,
-            approval_callback=deny_broad_command,
-            system_prompt_suffix=SWE_BENCH_SYSTEM_PROMPT_SUFFIX,
+            # The container is the isolation boundary for its commands.
+            approval_callback=deny_broad_command if container is None else approve_command,
+            system_prompt_suffix=SWE_BENCH_SYSTEM_PROMPT_SUFFIX
+            + ("" if container is None else SWE_BENCH_DOCKER_PROMPT_SUFFIX),
             reserve_finalization_steps=SWE_BENCH_FINALIZATION_STEPS,
             activity_prefix=activity_prefix,
             activity_label="main",
@@ -695,6 +735,8 @@ async def evaluate_swe_bench_instance(
             )
         return result, patch
     finally:
+        if container is not None:
+            container.stop()
         if keep_workspace:
             print(f"Kept SWE-bench workspace: {workspace}")
         else:
@@ -705,12 +747,15 @@ def create_swe_bench_workspace() -> Path:
     return Path(tempfile.mkdtemp(prefix=f"agent-swe-{uuid4().hex}-"))
 
 
-def create_swe_bench_registry(workspace_root: Path) -> ToolRegistry:
+def create_swe_bench_registry(
+    workspace_root: Path, command_launcher: CommandLauncher | None = None
+) -> ToolRegistry:
     return create_registry(
         workspace_root,
         allowed_tools=SWE_BENCH_ALLOWED_TOOLS,
         blocked_path_parts=SWE_BENCH_BLOCKED_PATH_PARTS,
         blocked_command_names=SWE_BENCH_BLOCKED_COMMAND_NAMES,
+        command_launcher=command_launcher,
     )
 
 
@@ -958,6 +1003,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--swe-bench-limit", type=int)
     parser.add_argument(
+        "--swe-bench-docker",
+        action="store_true",
+        help=(
+            "Generate patches inside each instance's prebuilt SWE-bench image "
+            "(swebench/sweb.eval.x86_64.*), where tests can run."
+        ),
+    )
+    parser.add_argument(
         "--instance-id",
         action="append",
         default=[],
@@ -1018,6 +1071,7 @@ async def run_eval_cli(
             max_steps=args.max_steps or 30,
             metrics_path=args.swe_bench_metrics,
             trajectories_dir=args.swe_bench_trajectories,
+            docker=args.swe_bench_docker,
         )
     else:
         mode: Literal["deterministic", "real_model"] = (

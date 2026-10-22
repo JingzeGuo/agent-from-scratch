@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from agent.evaluation.coding_tasks import (
+    SWE_BENCH_DOCKER_PROMPT_SUFFIX,
     SWE_BENCH_SYSTEM_PROMPT_SUFFIX,
     CodingTaskResult,
     ScriptedProviderAdapter,
@@ -209,6 +210,10 @@ def test_swe_bench_profile_stops_on_environment_failures() -> None:
     assert "never add distutils, pytz, or asgiref" in (SWE_BENCH_SYSTEM_PROMPT_SUFFIX)
     assert "Do not inspect Git metadata" in SWE_BENCH_SYSTEM_PROMPT_SUFFIX
     assert "network source" in SWE_BENCH_SYSTEM_PROMPT_SUFFIX
+    assert "search release notes" in SWE_BENCH_SYSTEM_PROMPT_SUFFIX
+    assert "package caches" in SWE_BENCH_SYSTEM_PROMPT_SUFFIX
+    assert "regression test" in SWE_BENCH_DOCKER_PROMPT_SUFFIX
+    assert "confirm it fails" in SWE_BENCH_DOCKER_PROMPT_SUFFIX
 
 
 def test_swe_bench_registry_removes_network_tools_and_blocks_git(
