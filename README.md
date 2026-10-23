@@ -11,9 +11,9 @@ every tool input, records resumable sessions and JSONL traces, compacts long
 conversations into a single continuation state under context pressure, and tracks token use and estimated
 cost.
 
-In a run on a fixed random 50-instance subset of SWE-bench Lite, the
-agent resolved **33/50 instances (66%)** with DeepSeek V4 Flash. Patches were
-scored by the official SWE-bench harness under the isolated evaluation profile
+On a held-out random 100-instance subset of SWE-bench Lite, the agent resolved
+**74/100 instances (74%)** with DeepSeek V4 Flash. Patches were generated inside
+each instance's SWE-bench image and scored by the official SWE-bench harness, as
 described below.
 
 ## Requirements and setup
@@ -373,36 +373,36 @@ read-only `repository_search` case.
 
 #### Result
 
-The isolated evaluation profile was run at commit `2969bb7` (2026-10-22)
-against a fixed random 50-instance subset of SWE-bench Lite and scored with the
-official harness on `linux/amd64`. The denominator includes empty patches.
+Patches were generated at commit `1734386` (2026-10-22) with DeepSeek V4 Flash,
+`--swe-bench-docker`, at most 40 steps, and the default 128k context budget, then
+scored once with the official harness on `linux/amd64`.
+
+The 100 test instances were drawn with a fixed seed from the 250 SWE-bench Lite
+instances outside a separate 50-instance development set; all agent changes
+were made against the development set only. The seed and instance IDs are in
+`swe_bench_lite_test_100.meta.json`.
 
 | Metric | Result |
 | --- | ---: |
-| Resolved | **33/50 (66%)** |
-| Unresolved after harness execution | 14 |
-| Empty patches | 3 |
-| Submitted | 50 |
-| Completed by the harness | 47 |
-| Infrastructure failures | 0 |
-| Evaluator errors | 0 |
-| Estimated model cost | $2.58 |
-| Mean model steps per instance | 20.6 |
+| Resolved | **74/100 (74%)** |
+| Unresolved after harness execution | 26 |
+| Empty patches | 0 |
+| Infrastructure failures / evaluator errors | 0 / 0 |
+| Estimated model cost | $9.74 |
+| Mean model steps per instance | 29.4 |
 
-The run used DeepSeek V4 Flash, one harness worker, a 3,600-second
-per-instance timeout, and run ID
-`deepseek-v4-flash-rerun-random-50-1022-1057-amd64`
-(`django__django-16816` was rescored separately after an image pull error;
-unresolved). This is a single-run subset result, not a claim about the complete
-SWE-bench Lite test set or leaderboard.
+This is a single-run subset result (roughly ±9 points at 95% confidence), not a
+claim about the complete SWE-bench Lite test set or leaderboard. The model may
+have seen these public issues during training.
 
 To score predictions, pre-pull the `linux/amd64` evaluation images (the harness
-otherwise pulls for the host platform and fails on Apple Silicon), then pass a
-local dataset export that includes the harness `image` and `eval_script` fields:
+otherwise pulls for the host platform and fails on Apple Silicon). The SWE-bench
+Lite export already includes the harness `image` and `eval_script` fields, so the
+same file can be passed to both the agent and the harness:
 
 ```bash
 python -m swebench.harness.run_evaluation \
-  --dataset_name lite-random-50.dataset.jsonl \
+  --dataset_name swe_bench_lite_test_100.jsonl \
   --predictions_path predictions.jsonl \
   --max_workers 1 --timeout 3600 \
   --run_id <run-id> \
@@ -426,6 +426,13 @@ predictions with exactly these standard fields:
   --swe-bench-metrics predictions.metrics.jsonl \
   --swe-bench-trajectories predictions.trajectories
 ```
+
+With `--swe-bench-docker`, each instance runs in its prebuilt
+`swebench/sweb.eval.x86_64.*` image instead of a fresh clone, so the repository's
+own tests can run. The image's `/testbed` is copied to the host workspace, its Git
+history is replaced by a single baseline commit, and it is mounted back into a
+container without network access. File tools edit the host copy; `run_command`
+runs in the container.
 
 Use `--swe-bench-limit N` for a prefix of the selected instances and repeat
 `--instance-id` to select several IDs. This mode generates patches only. Use the
