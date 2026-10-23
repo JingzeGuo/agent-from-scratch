@@ -30,9 +30,9 @@
     }
   },
   "categories": {
-    "implementation_defect": 5,
-    "specification_mismatch": 7,
-    "coverage_gap": 5,
+    "implementation_defect": 4,
+    "specification_mismatch": 9,
+    "coverage_gap": 4,
     "golden_scope_expansion": 4,
     "root_cause_miss": 5
   },
@@ -132,5 +132,12 @@
     "Trajectory output_preview/text_preview fields may be truncated.",
     "Primary categories are analytical judgments, not official benchmark labels.",
     "F2P/P2P counts preserve harness metadata even where raw logs show parser inconsistencies."
-  ]
+  ],
+  "categories_note": "Updated 2026-10-23 after review: django-14155 (I\u2192S) and scikit-learn-10949 (E\u2192S) reclassified.",
+  "published_data": {
+    "data/official-report.json": "e6db6aa21beafcb4623335147032ec444a135247a19d5a1432904d994e3f48a7",
+    "data/predictions.jsonl": "1a69042bcf3b8a5898079cb2ebc79b8d4ee08a676979d014e23fef516ac2639e",
+    "data/results.jsonl": "9784fb323a31f298370d784890c5b950195884190e13037b78813de2c0d28d7f",
+    "data/run-metadata.json": "18dba13bab4c375a59364240975e621d44d8bf43a786e9aed28bc1bfa374fd3c"
+  }
 }

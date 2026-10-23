@@ -36,17 +36,16 @@ Use a separate member_name variable or helper and assert template fullname/name 
 
 ## Source evidence
 
-The excerpts below come from local run artifacts. Dataset hints are included for retrospective context only; the solving objective contained the problem statement, not hints or golden patches.
+Raw harness logs and trajectories are local-only (not published); the excerpts below were taken from them. Dataset hints are included for retrospective context only; the solving objective contained the problem statement, not hints or golden patches.
 
 | Artifact | Source | JSONL row |
 |---|---|---:|
-| dataset | [swe_bench_lite_test_100.jsonl](../../../swe_bench_lite_test_100.jsonl) | 74 |
-| prediction | [predictions.jsonl](../../../.agents/evals/test-100-1022-1755/predictions.jsonl) | 74 |
-| metrics | [predictions.metrics.jsonl](../../../.agents/evals/test-100-1022-1755/predictions.metrics.jsonl) | 74 |
-| report | [report.json](../../../.agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/sphinx-doc__sphinx-7686/report.json) | — |
-| test_output | [test_output.txt](../../../.agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/sphinx-doc__sphinx-7686/test_output.txt) | — |
-| harness_log | [run_instance.log](../../../.agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/sphinx-doc__sphinx-7686/run_instance.log) | — |
-| trajectory | [sphinx-doc__sphinx-7686.jsonl](../../../.agents/evals/test-100-1022-1755/trajectories/events/sphinx-doc__sphinx-7686.jsonl) | — |
+| dataset | [SWE-bench Lite](https://huggingface.co/datasets/princeton-nlp/SWE-bench_Lite) (test split, `sphinx-doc__sphinx-7686`) | — |
+| prediction | [predictions.jsonl](../data/predictions.jsonl) | 74 |
+| metrics + per-test results | [results.jsonl](../data/results.jsonl) | 74 |
+| test_output | `test_output.txt` (local only) | — |
+| harness_log | `run_instance.log` (local only) | — |
+| trajectory | `sphinx-doc__sphinx-7686.jsonl` (local only) | — |
 
 <details>
 <summary>Supplied problem statement</summary>

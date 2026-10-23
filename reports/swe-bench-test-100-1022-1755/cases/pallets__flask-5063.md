@@ -36,17 +36,16 @@ Make required CLI headings explicit in task acceptance. Treat table schema as an
 
 ## Source evidence
 
-The excerpts below come from local run artifacts. Dataset hints are included for retrospective context only; the solving objective contained the problem statement, not hints or golden patches.
+Raw harness logs and trajectories are local-only (not published); the excerpts below were taken from them. Dataset hints are included for retrospective context only; the solving objective contained the problem statement, not hints or golden patches.
 
 | Artifact | Source | JSONL row |
 |---|---|---:|
-| dataset | [swe_bench_lite_test_100.jsonl](../../../swe_bench_lite_test_100.jsonl) | 52 |
-| prediction | [predictions.jsonl](../../../.agents/evals/test-100-1022-1755/predictions.jsonl) | 52 |
-| metrics | [predictions.metrics.jsonl](../../../.agents/evals/test-100-1022-1755/predictions.metrics.jsonl) | 52 |
-| report | [report.json](../../../.agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/pallets__flask-5063/report.json) | — |
-| test_output | [test_output.txt](../../../.agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/pallets__flask-5063/test_output.txt) | — |
-| harness_log | [run_instance.log](../../../.agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/pallets__flask-5063/run_instance.log) | — |
-| trajectory | [pallets__flask-5063.jsonl](../../../.agents/evals/test-100-1022-1755/trajectories/events/pallets__flask-5063.jsonl) | — |
+| dataset | [SWE-bench Lite](https://huggingface.co/datasets/princeton-nlp/SWE-bench_Lite) (test split, `pallets__flask-5063`) | — |
+| prediction | [predictions.jsonl](../data/predictions.jsonl) | 52 |
+| metrics + per-test results | [results.jsonl](../data/results.jsonl) | 52 |
+| test_output | `test_output.txt` (local only) | — |
+| harness_log | `run_instance.log` (local only) | — |
+| trajectory | `pallets__flask-5063.jsonl` (local only) | — |
 
 <details>
 <summary>Supplied problem statement</summary>

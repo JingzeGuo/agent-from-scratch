@@ -65,14 +65,6 @@ Method: all 26 failures were compared against the issue text, agent patch, gold 
 | Resolved | 74 | 28.4 | 29 | 15 | 3.49 min | $6.75 |
 | Unresolved | 26 | 32.4 | 37.5 | 10 | 5.08 min | $2.99 |
 
-## Recommendations
-
-1. **Trustworthy verification:** propagate exit codes (validate pipefail), fail on zero collected tests, keep full logs.
-2. **Final fresh-process check:** run a minimal reproduction after the last edit, and reserve a few steps for fixing or rolling back. This would have caught 11564 and 11400.
-3. **Trace one level below the symptom** and test the producer, not the caller (R cases).
-4. **Small contract matrix** around each change: invalid values, neighboring types/shapes, related operations (E cases).
-5. **Audit S/G cases as benchmark issues** separately; keep the official 74% unchanged.
-6. **Test each change separately** on this frozen 100-instance sample.
 
 ## Caveats
 
@@ -81,4 +73,13 @@ Method: all 26 failures were compared against the issue text, agent patch, gold 
 
 ## Artifacts
 
-[Official report](../../.agents/evals/test-100-1022-1755/official-reports/deepseek__deepseek-v4-flash.test-100-1022-1755.json) · [Dataset](../../swe_bench_lite_test_100.jsonl) · [Sampling meta](../../swe_bench_lite_test_100.meta.json) (seed `20261022`) · [Predictions](../../.agents/evals/test-100-1022-1755/predictions.jsonl) · [Metrics](../../.agents/evals/test-100-1022-1755/predictions.metrics.jsonl) · [Classifications](failure-classifications.json) · [Audit](audit.json) · [Per-case details](cases/)
+Published with this report (all links work in the repo):
+
+- [`data/official-report.json`](data/official-report.json): official SWE-bench aggregate (74/100).
+- [`data/results.jsonl`](data/results.jsonl): one row per instance with resolved flag, F2P/P2P counts and failing test names, patch-apply evidence, steps, tokens, cost and latency.
+- [`data/predictions.jsonl`](data/predictions.jsonl): the 100 submitted patches.
+- [`data/run-metadata.json`](data/run-metadata.json): model, agent commit, config, sampling seed and instance IDs.
+- [`failure-classifications.json`](failure-classifications.json): the 26 classifications. [`audit.json`](audit.json): integrity checks and SHA-256 hashes. [`cases/`](cases/): per-case evidence.
+- Dataset: [SWE-bench Lite](https://huggingface.co/datasets/princeton-nlp/SWE-bench_Lite) test split. [Sampling meta](../../swe_bench_lite_test_100.meta.json) (seed `20261022`).
+
+Raw harness logs (~100 MB) and agent trajectories (~19 MB) are kept locally only; case pages quote the relevant excerpts.

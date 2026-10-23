@@ -36,17 +36,16 @@ Retain this as a benchmark audit example. For broader validation, check value, p
 
 ## Source evidence
 
-The excerpts below come from local run artifacts. Dataset hints are included for retrospective context only; the solving objective contained the problem statement, not hints or golden patches.
+Raw harness logs and trajectories are local-only (not published); the excerpts below were taken from them. Dataset hints are included for retrospective context only; the solving objective contained the problem statement, not hints or golden patches.
 
 | Artifact | Source | JSONL row |
 |---|---|---:|
-| dataset | [swe_bench_lite_test_100.jsonl](../../../swe_bench_lite_test_100.jsonl) | 43 |
-| prediction | [predictions.jsonl](../../../.agents/evals/test-100-1022-1755/predictions.jsonl) | 43 |
-| metrics | [predictions.metrics.jsonl](../../../.agents/evals/test-100-1022-1755/predictions.metrics.jsonl) | 43 |
-| report | [report.json](../../../.agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/matplotlib__matplotlib-22711/report.json) | — |
-| test_output | [test_output.txt](../../../.agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/matplotlib__matplotlib-22711/test_output.txt) | — |
-| harness_log | [run_instance.log](../../../.agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/matplotlib__matplotlib-22711/run_instance.log) | — |
-| trajectory | [matplotlib__matplotlib-22711.jsonl](../../../.agents/evals/test-100-1022-1755/trajectories/events/matplotlib__matplotlib-22711.jsonl) | — |
+| dataset | [SWE-bench Lite](https://huggingface.co/datasets/princeton-nlp/SWE-bench_Lite) (test split, `matplotlib__matplotlib-22711`) | — |
+| prediction | [predictions.jsonl](../data/predictions.jsonl) | 43 |
+| metrics + per-test results | [results.jsonl](../data/results.jsonl) | 43 |
+| test_output | `test_output.txt` (local only) | — |
+| harness_log | `run_instance.log` (local only) | — |
+| trajectory | `matplotlib__matplotlib-22711.jsonl` (local only) | — |
 
 <details>
 <summary>Supplied problem statement</summary>

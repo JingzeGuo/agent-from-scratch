@@ -36,17 +36,16 @@ Specify the return-type contract in acceptance. For agent design, preserve exist
 
 ## Source evidence
 
-The excerpts below come from local run artifacts. Dataset hints are included for retrospective context only; the solving objective contained the problem statement, not hints or golden patches.
+Raw harness logs and trajectories are local-only (not published); the excerpts below were taken from them. Dataset hints are included for retrospective context only; the solving objective contained the problem statement, not hints or golden patches.
 
 | Artifact | Source | JSONL row |
 |---|---|---:|
-| dataset | [swe_bench_lite_test_100.jsonl](../../../swe_bench_lite_test_100.jsonl) | 80 |
-| prediction | [predictions.jsonl](../../../.agents/evals/test-100-1022-1755/predictions.jsonl) | 80 |
-| metrics | [predictions.metrics.jsonl](../../../.agents/evals/test-100-1022-1755/predictions.metrics.jsonl) | 80 |
-| report | [report.json](../../../.agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/sympy__sympy-13043/report.json) | — |
-| test_output | [test_output.txt](../../../.agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/sympy__sympy-13043/test_output.txt) | — |
-| harness_log | [run_instance.log](../../../.agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/sympy__sympy-13043/run_instance.log) | — |
-| trajectory | [sympy__sympy-13043.jsonl](../../../.agents/evals/test-100-1022-1755/trajectories/events/sympy__sympy-13043.jsonl) | — |
+| dataset | [SWE-bench Lite](https://huggingface.co/datasets/princeton-nlp/SWE-bench_Lite) (test split, `sympy__sympy-13043`) | — |
+| prediction | [predictions.jsonl](../data/predictions.jsonl) | 80 |
+| metrics + per-test results | [results.jsonl](../data/results.jsonl) | 80 |
+| test_output | `test_output.txt` (local only) | — |
+| harness_log | `run_instance.log` (local only) | — |
+| trajectory | `sympy__sympy-13043.jsonl` (local only) | — |
 
 <details>
 <summary>Supplied problem statement</summary>
