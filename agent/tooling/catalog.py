@@ -99,8 +99,9 @@ def _create_tool_catalog(
         Tool(
             name="run_command",
             description=(
-                "Run a bounded /bin/sh command inside the workspace sandbox. "
-                "Shell operators are supported. Writes outside the workspace and "
+                "Run a bounded shell command (bash when available) inside the workspace sandbox. "
+                "Shell operators are supported, and a pipeline fails if any of "
+                "its commands fails. Writes outside the workspace and "
                 "to .git or .agents fail, and network access is unavailable. "
                 "Return exit code, stdout, stderr, duration, and timeout status."
             ),

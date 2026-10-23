@@ -145,7 +145,10 @@ are returned to the model as recoverable observations.
 
 ## Command safety
 
-`run_command` runs `/bin/sh -c` inside an OS sandbox: `sandbox-exec` on macOS
+`run_command` runs commands with `bash -c` (or `/bin/sh -c` when bash is
+missing) and `pipefail` enabled, so a failure anywhere in a pipeline such as
+`pytest | tail` fails the whole command. Commands run inside an OS sandbox:
+`sandbox-exec` on macOS
 and [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`) on Linux.
 Both apply the same policy:
 

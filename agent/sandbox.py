@@ -5,11 +5,16 @@ policy: read anything, write only the workspace and temporary directories,
 keep PROTECTED_DIRS read-only, and deny network access.
 """
 
+import shutil
 import subprocess
 import sys
 import tempfile
 from functools import cache
 from pathlib import Path
+
+# Commands run in bash when installed: it supports pipefail, while /bin/sh is
+# dash on Debian and Ubuntu.
+SHELL = shutil.which("bash") or "/bin/sh"
 
 # Used outside the sandbox later (git hooks, agent memory), so never writable.
 PROTECTED_DIRS = (".git", ".agents")
@@ -38,7 +43,7 @@ def sandbox_argv(command: str, workspace_root: Path) -> list[str] | None:
     """Wrap a shell command in the platform sandbox, or None if unavailable."""
     if not sandbox_available():
         return None
-    return _wrap(workspace_root.resolve(), ["/bin/sh", "-c", command])
+    return _wrap(workspace_root.resolve(), [SHELL, "-c", command])
 
 
 @cache
@@ -47,7 +52,7 @@ def sandbox_available() -> bool:
     if sys.platform != "darwin" and not sys.platform.startswith("linux"):
         return False
     # Installed is not enough: containers and AppArmor can block namespaces.
-    probe = _wrap(Path(tempfile.gettempdir()).resolve(), ["/bin/sh", "-c", "true"])
+    probe = _wrap(Path(tempfile.gettempdir()).resolve(), [SHELL, "-c", "true"])
     try:
         return subprocess.run(probe, capture_output=True, timeout=10).returncode == 0
     except (OSError, subprocess.TimeoutExpired):

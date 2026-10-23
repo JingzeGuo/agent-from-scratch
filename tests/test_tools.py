@@ -1,4 +1,5 @@
 import shlex
+import shutil
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -969,6 +970,52 @@ async def test_run_command_returns_failure_exit_code(tmp_path: Path) -> None:
     assert "timed_out: false" in output
     assert "SyntaxError" in output
     assert is_error is False
+
+
+async def test_run_command_reports_failure_inside_pipeline(tmp_path: Path) -> None:
+    target = tmp_path / "module.py"
+    target.write_text("def broken(:\n", encoding="utf-8")
+    registry = create_registry(tmp_path)
+
+    output, is_error = await registry.execute(
+        "run_command",
+        {
+            "command": (
+                f"{shlex.quote(sys.executable)} -m py_compile module.py 2>&1 | tail -3"
+            )
+        },
+        approval_granted=True,
+    )
+
+    assert "exit_code: 1" in output
+    assert "SyntaxError" in output
+    assert is_error is False
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not installed")
+async def test_run_command_prefers_bash(tmp_path: Path) -> None:
+    registry = create_registry(tmp_path)
+
+    output, _ = await registry.execute(
+        "run_command",
+        {"command": "echo shell=${BASH_VERSION:+bash}"},
+        approval_granted=True,
+    )
+
+    assert "shell=bash" in output
+
+
+async def test_run_command_keeps_heredoc_commands_working(tmp_path: Path) -> None:
+    registry = create_registry(tmp_path)
+
+    output, _ = await registry.execute(
+        "run_command",
+        {"command": "cat <<'EOF' | tr a-z A-Z\nhello\nEOF"},
+        approval_granted=True,
+    )
+
+    assert "exit_code: 0" in output
+    assert "HELLO" in output
 
 
 async def test_run_command_times_out(tmp_path: Path) -> None:

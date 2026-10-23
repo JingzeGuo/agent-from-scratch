@@ -9,11 +9,15 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from ..sandbox import sandbox_argv
+from ..sandbox import SHELL, sandbox_argv
 from ..security import APPROVAL_REASON, command_requires_approval
 from ..workspace import resolve_workspace_path
 
 SECRET_ENV_NAME = re.compile(r"(^|_)(API_KEY|TOKEN|SECRET|PASSWORD)($|_)", re.I)
+# A failure anywhere in a pipeline fails the command, so `pytest ... | tail` cannot
+# report exit code 0 for failing tests. Probed in a subshell first because shells
+# without pipefail (older dash) exit on an unknown `set` option.
+PIPEFAIL_PREFIX = "(set -o pipefail) 2>/dev/null && set -o pipefail\n"
 # Builds the argv for (command, resolved working directory, timeout seconds).
 # Used to run commands somewhere other than the local OS sandbox, e.g. a container.
 CommandLauncher = Callable[[str, Path, float], list[str]]
@@ -33,11 +37,13 @@ def run_command(
     if command_requires_approval() and not approval_granted:
         raise PermissionError(APPROVAL_REASON)
     command_cwd = _resolve_command_cwd(workspace_root, cwd)
-    command = _resolve_workspace_local_executable(command, workspace_root)
+    command = PIPEFAIL_PREFIX + _resolve_workspace_local_executable(
+        command, workspace_root
+    )
     if launcher is not None:
         args = launcher(command, command_cwd, timeout_seconds)
     else:
-        args = sandbox_argv(command, workspace_root) or ["/bin/sh", "-c", command]
+        args = sandbox_argv(command, workspace_root) or [SHELL, "-c", command]
 
     start = time.monotonic()
     # A new session lets a timeout kill the shell's children along with it.
