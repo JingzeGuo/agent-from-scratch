@@ -331,10 +331,10 @@ long-term memory, and `agent/evaluation/` the evaluation harnesses.
 | `agent/tooling/tool.py` | Tool definition, validation, execution, and retry boundary |
 | `agent/tooling/tool_registry.py` | Dispatch, workspace isolation, action tracking, and diffs |
 | `agent/tooling/files.py` | Glob, search, read, edit, write, and unified diffs |
-| `agent/tooling/command.py` | Bounded, shell-free command execution |
+| `agent/tooling/command.py` | Bounded, sandboxed shell command execution |
 | `agent/tooling/web.py` | URL fetching and web search |
 | `agent/tooling/sub_agent.py` | Read-only child agent profiles and delegation |
-| `agent/tooling/retry.py` | Retry policy for transient tool errors |
+| `agent/tooling/retry.py` | Retry policy for transient web tool errors |
 | `agent/state/context.py` | Token pressure, prefix selection, working context, emergency fallback |
 | `agent/state/consolidation.py` | LLM-generated, schema-validated continuation state |
 | `agent/state/session.py` | Snapshots, pending actions, and JSONL events |

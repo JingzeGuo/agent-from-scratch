@@ -78,6 +78,8 @@ class Agent:
         memory_store: MemoryStore | None = None,
         memory_config: MemoryConfig | None = None,
     ) -> None:
+        if max_steps < 1:
+            raise ValueError("max_steps must be at least 1")
         if reserve_finalization_steps is None:
             reserve_finalization_steps = min(2, max_steps)
         if reserve_finalization_steps < 0:

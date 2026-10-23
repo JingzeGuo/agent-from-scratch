@@ -1,7 +1,10 @@
+from pathlib import Path
+
 import httpx
 import pytest
 from pydantic import BaseModel
 
+from agent.tooling.catalog import create_registry
 from agent.tooling.retry import is_transient_error, retry
 from agent.tooling.tool import Tool
 
@@ -85,7 +88,7 @@ async def test_retry_does_not_repeat_permanent_errors(
 
 
 @pytest.mark.anyio
-async def test_async_tool_uses_retry(
+async def test_opted_in_tool_uses_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     attempts = 0
@@ -108,6 +111,7 @@ async def test_async_tool_uses_retry(
         description="Process a value.",
         input_schema=SampleToolInput,
         fn=sample_tool,
+        retry_transient_errors=True,
     )
 
     output, is_error = await tool.execute({"value": "sample"})
@@ -116,6 +120,39 @@ async def test_async_tool_uses_retry(
     assert is_error is False
     assert attempts == 2
     assert sleep_calls == [1.0]
+
+
+@pytest.mark.anyio
+async def test_tool_does_not_retry_by_default() -> None:
+    attempts = 0
+
+    async def sample_tool(value: str) -> str:
+        nonlocal attempts
+        attempts += 1
+        raise TimeoutError("temporary failure")
+
+    tool = Tool(
+        name="run_command",
+        description="Process a value.",
+        input_schema=SampleToolInput,
+        fn=sample_tool,
+    )
+
+    output, is_error = await tool.execute({"value": "sample"})
+
+    assert is_error is True
+    assert "TimeoutError" in output
+    assert attempts == 1
+
+
+def test_only_web_tools_retry_transient_errors(tmp_path: Path) -> None:
+    registry = create_registry(tmp_path)
+
+    retrying_tools = {
+        name for name, tool in registry.tools.items() if tool.retry_transient_errors
+    }
+
+    assert retrying_tools == {"fetch_url", "search_web"}
 
 
 @pytest.mark.parametrize(

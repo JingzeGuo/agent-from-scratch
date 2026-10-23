@@ -121,12 +121,14 @@ def _create_tool_catalog(
             description="Fetch the content of a known URL with bounded output.",
             input_schema=FetchUrlInput,
             fn=fetch_url,
+            retry_transient_errors=True,
         ),
         Tool(
             name="search_web",
             description="Search the web for relevant information.",
             input_schema=SearchWebInput,
             fn=search_web,
+            retry_transient_errors=True,
         ),
     ]
     return {tool.name: tool for tool in tools}

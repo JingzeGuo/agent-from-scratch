@@ -804,6 +804,12 @@ def test_agent_recovers_from_failed_edit(
     assert recovery_observation["is_error"] is True
 
 
+@pytest.mark.parametrize("max_steps", [0, -1])
+def test_agent_rejects_non_positive_max_steps(max_steps: int) -> None:
+    with pytest.raises(ValueError, match="max_steps must be at least 1"):
+        create_agent([], max_steps=max_steps)
+
+
 def test_agent_stops_at_max_steps(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

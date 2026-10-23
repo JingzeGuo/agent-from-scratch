@@ -9,6 +9,8 @@ from pydantic import BaseModel, ValidationError
 from ..schemas import ToolDefinition
 from .retry import retry
 
+_retry_transient = retry(max_attempts=3, backoff=2)
+
 
 @dataclass
 class Tool:
@@ -16,6 +18,9 @@ class Tool:
     description: str
     input_schema: type[BaseModel]
     fn: Callable[..., Any]
+    # Only idempotent network calls should retry; re-running commands or child
+    # agents could repeat side effects or burn a whole extra run.
+    retry_transient_errors: bool = False
 
     def to_definition(self) -> ToolDefinition:
         """Build a provider-neutral tool definition."""
@@ -55,11 +60,15 @@ class Tool:
     ) -> tuple[str, bool]:
         """Run already-validated input, turning exceptions into observations."""
         try:
-            return str(await self._invoke(parsed_input, extra_kwargs)), False
+            invoke = (
+                _retry_transient(self._invoke)
+                if self.retry_transient_errors
+                else self._invoke
+            )
+            return str(await invoke(parsed_input, extra_kwargs)), False
         except Exception as e:
             return f"Tool '{self.name}' raised {type(e).__name__}: {e}", True
 
-    @retry(max_attempts=3, backoff=2)
     async def _invoke(
         self,
         parsed_input: BaseModel,
