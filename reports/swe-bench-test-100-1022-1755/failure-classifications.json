@@ -1,0 +1,1616 @@
+[
+  {
+    "instance_id": "django__django-11564",
+    "primary_category": "implementation_defect",
+    "confidence": "high",
+    "title": "Distributed URL changes introduce a circular import",
+    "summary": "The submitted patch cannot import Django; it also prefixes root-relative URLs instead of implementing the settings-level contract.",
+    "issue": "Support dynamic SCRIPT_NAME in static/media URLs; the issue discusses template tags and storage as possible change sites.",
+    "agent_patch": "Adds prefix logic in storage, template context processors and static tags, with module-level imports from django.urls. It prefixes strings starting with a slash.",
+    "golden_patch": "Centralizes prefixing in LazySettings.STATIC_URL and MEDIA_URL, leaves absolute paths/URLs alone, and imports get_script_prefix lazily.",
+    "observed_failure": "run_instance.log explicitly says the source patch applied cleanly. The test runner then fails on ImportError: cannot import name get_script_prefix, through urls -> forms -> templatetags.static -> urls. No reliable per-test grading is available.",
+    "scope_assessment": "There is ambiguity about which URLs should be prefixed and where the feature belongs. Nevertheless, the immediate blocker is an agent-introduced circular import, independently of the golden design.",
+    "trajectory_assessment": "At steps 38–39, pytest is unavailable and the native Django runner hits the import cycle. Both piped commands report exit_code 0. The step-40 final response explicitly admits the tree is broken.",
+    "improvement": "Move the shared behavior to the lowest common configuration layer, use a lazy import where required, and reserve time for a fresh-process import smoke test and URL classification cases.",
+    "secondary_tags": [
+      "wrong_abstraction_layer",
+      "step_budget",
+      "masked_test_exit",
+      "misleading_patch_status",
+      "issue_ambiguity"
+    ],
+    "fail_to_pass": null,
+    "pass_to_pass": null,
+    "steps": 40,
+    "at_step_ceiling": true,
+    "official_patch_successfully_applied": false,
+    "patch_applied_in_harness_log": true,
+    "sources": {
+      "dataset": {
+        "path": "swe_bench_lite_test_100.jsonl",
+        "jsonl_line": 7
+      },
+      "prediction": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.jsonl",
+        "jsonl_line": 7
+      },
+      "metrics": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.metrics.jsonl",
+        "jsonl_line": 7
+      },
+      "report": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/django__django-11564/report.json"
+      },
+      "test_output": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/django__django-11564/test_output.txt"
+      },
+      "harness_log": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/django__django-11564/run_instance.log"
+      },
+      "trajectory": {
+        "path": ".agents/evals/test-100-1022-1755/trajectories/events/django__django-11564.jsonl"
+      }
+    },
+    "evidence_file": "cases/django__django-11564.md"
+  },
+  {
+    "instance_id": "django__django-11905",
+    "primary_category": "specification_mismatch",
+    "confidence": "high",
+    "title": "The issue asks for an error; the accepted change is a deprecation warning",
+    "summary": "The agent implements the literal issue request, while the golden test requires backward-compatible warning behavior.",
+    "issue": "The supplied problem statement says non-boolean __isnull values should raise an error.",
+    "agent_patch": "Raises ValueError for a non-bool RHS, using the same error text discussed in the issue history.",
+    "golden_patch": "Emits RemovedInDjango40Warning and retains the old behavior during deprecation. The dataset hints record the later decision to deprecate first, but those hints were not included in the agent objective.",
+    "observed_failure": "The patch applies cleanly. A golden assertWarnsMessage case instead receives ValueError. While formatting the failed subtest, unittest evaluates a QuerySet representation, raises the error again and aborts reporting. report.json consequently has no tests_status and misleadingly says patch_successfully_applied=false.",
+    "scope_assessment": "This is the clearest task/acceptance contradiction in the run. The agent could have considered Django compatibility policy, but the specific deprecation decision was absent from the task it received.",
+    "trajectory_assessment": "The agent wrote tests asserting ValueError and ran native lookup tests after discovering pytest was absent. Those tests validate its interpretation, not the golden warning contract.",
+    "improvement": "Flag this task for benchmark contract review. In general, inspect version-specific deprecation conventions before replacing previously accepted input with an exception; do not expose gold patches to the solving agent.",
+    "secondary_tags": [
+      "compatibility_policy",
+      "withheld_hints",
+      "misleading_patch_status"
+    ],
+    "fail_to_pass": null,
+    "pass_to_pass": null,
+    "steps": 26,
+    "at_step_ceiling": false,
+    "official_patch_successfully_applied": false,
+    "patch_applied_in_harness_log": true,
+    "sources": {
+      "dataset": {
+        "path": "swe_bench_lite_test_100.jsonl",
+        "jsonl_line": 11
+      },
+      "prediction": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.jsonl",
+        "jsonl_line": 11
+      },
+      "metrics": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.metrics.jsonl",
+        "jsonl_line": 11
+      },
+      "report": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/django__django-11905/report.json"
+      },
+      "test_output": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/django__django-11905/test_output.txt"
+      },
+      "harness_log": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/django__django-11905/run_instance.log"
+      },
+      "trajectory": {
+        "path": ".agents/evals/test-100-1022-1755/trajectories/events/django__django-11905.jsonl"
+      }
+    },
+    "evidence_file": "cases/django__django-11905.md"
+  },
+  {
+    "instance_id": "django__django-12308",
+    "primary_category": "coverage_gap",
+    "confidence": "medium",
+    "title": "Valid JSON works, but unserializable dictionaries still crash",
+    "summary": "Delegating to the form field misses the invalid raw-value fallback.",
+    "issue": "Render readonly JSONField values as JSON rather than Python dictionaries. The suggested implementation mentions prepare_value and InvalidJSONInput.",
+    "agent_patch": "Calls field.formfield().prepare_value(value) for JSONField values without catching serialization errors.",
+    "golden_patch": "Uses field.get_prep_value for nonempty values and falls back to display_for_value on TypeError.",
+    "observed_failure": "A dictionary with a tuple key, {(\"a\", \"b\"): \"c\"}, reaches json.dumps and raises TypeError: keys must be a string. The report also lists test_label_for_field as failed, but the raw log shows that test ending in ok on a merged output line; the tuple-key error is the supported causal evidence.",
+    "scope_assessment": "Handling an InvalidJSONInput wrapper does not cover an invalid Python dictionary. This is a defensible invalid-input boundary case, with misleading implementation guidance as a contributor.",
+    "trajectory_assessment": "The added test covers ordinary dictionaries, lists and strings. A focused native suite passes, but the recorded tests do not cover the tuple-key fallback.",
+    "improvement": "Test valid JSON, a wrapper value, an unserializable raw object, empty values and a custom encoder separately; preserve the existing display fallback.",
+    "secondary_tags": [
+      "invalid_input",
+      "misleading_issue_guidance",
+      "test_parser_artifact"
+    ],
+    "fail_to_pass": {
+      "passed": 0,
+      "total": 2,
+      "reported_failures": [
+        "test_json_display_for_field (admin_utils.tests.UtilsTests)",
+        "test_label_for_field (admin_utils.tests.UtilsTests)"
+      ]
+    },
+    "pass_to_pass": {
+      "passed": 20,
+      "total": 20,
+      "reported_failures": []
+    },
+    "steps": 23,
+    "at_step_ceiling": false,
+    "official_patch_successfully_applied": true,
+    "patch_applied_in_harness_log": true,
+    "sources": {
+      "dataset": {
+        "path": "swe_bench_lite_test_100.jsonl",
+        "jsonl_line": 16
+      },
+      "prediction": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.jsonl",
+        "jsonl_line": 16
+      },
+      "metrics": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.metrics.jsonl",
+        "jsonl_line": 16
+      },
+      "report": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/django__django-12308/report.json"
+      },
+      "test_output": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/django__django-12308/test_output.txt"
+      },
+      "harness_log": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/django__django-12308/run_instance.log"
+      },
+      "trajectory": {
+        "path": ".agents/evals/test-100-1022-1755/trajectories/events/django__django-12308.jsonl"
+      }
+    },
+    "evidence_file": "cases/django__django-12308.md"
+  },
+  {
+    "instance_id": "django__django-13660",
+    "primary_category": "specification_mismatch",
+    "confidence": "high",
+    "title": "The proposed empty exec namespace conflicts with the accepted globals contract",
+    "summary": "The reported function/import crash is fixed, but golden tests require __name__ in the execution globals.",
+    "issue": "The issue explicitly suggests passing a new empty dictionary as the second argument to exec.",
+    "agent_patch": "Passes {} to exec for both -c commands and stdin.",
+    "golden_patch": "Passes globals() instead, preserving module globals including __name__.",
+    "observed_failure": "Both F2P function-call cases pass. Two P2P cases print False instead of True for \"__name__\" in globals().",
+    "scope_assessment": "This combines a real namespace compatibility difference with contradictory issue guidance. Calling it only a careless regression would omit the fact that the agent followed the suggested fix exactly.",
+    "trajectory_assessment": "A native shell suite and a new inline-function test were run; no test asserted namespace contents. Earlier piped test failures also surfaced as exit_code 0.",
+    "improvement": "Treat issue-proposed code as a hypothesis. Verify both nested-name resolution and the public execution namespace before changing exec context.",
+    "secondary_tags": [
+      "namespace_compatibility",
+      "misleading_issue_guidance",
+      "p2p_failure"
+    ],
+    "fail_to_pass": {
+      "passed": 2,
+      "total": 2,
+      "reported_failures": []
+    },
+    "pass_to_pass": {
+      "passed": 4,
+      "total": 6,
+      "reported_failures": [
+        "test_command_option_globals (shell.tests.ShellCommandTestCase)",
+        "test_stdin_read_globals (shell.tests.ShellCommandTestCase)"
+      ]
+    },
+    "steps": 13,
+    "at_step_ceiling": false,
+    "official_patch_successfully_applied": true,
+    "patch_applied_in_harness_log": true,
+    "sources": {
+      "dataset": {
+        "path": "swe_bench_lite_test_100.jsonl",
+        "jsonl_line": 25
+      },
+      "prediction": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.jsonl",
+        "jsonl_line": 25
+      },
+      "metrics": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.metrics.jsonl",
+        "jsonl_line": 25
+      },
+      "report": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/django__django-13660/report.json"
+      },
+      "test_output": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/django__django-13660/test_output.txt"
+      },
+      "harness_log": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/django__django-13660/run_instance.log"
+      },
+      "trajectory": {
+        "path": ".agents/evals/test-100-1022-1755/trajectories/events/django__django-13660.jsonl"
+      }
+    },
+    "evidence_file": "cases/django__django-13660.md"
+  },
+  {
+    "instance_id": "django__django-14155",
+    "primary_category": "specification_mismatch",
+    "confidence": "high",
+    "title": "A repr improvement changes resolver state and misses the accepted representation",
+    "summary": "The agent unwraps the callable and merges bound arguments into ResolverMatch instead of limiting the change to display.",
+    "issue": "Show the underlying function and bound arguments in ResolverMatch.__repr__; the issue suggests unwrapping partials in __init__.",
+    "agent_patch": "Replaces self.func with the underlying function and merges partial arguments into match args/kwargs. __repr__ itself remains unchanged.",
+    "golden_patch": "Preserves the stored callable and arguments, uses repr(self.func) for a partial, and changes several display fields from %s to %r.",
+    "observed_failure": "The existing repr expectation fails on string quoting, and partial/nested/wrapped cases fail because they expect functools.partial(...) and unchanged match kwargs. The extra report entry test_resolver_match_on_request is on a merged raw-log line ending in ok, so it is not independently established as a failing assertion.",
+    "scope_assessment": "The agent implements the issue's explicit suggestion (unwrap partials in __init__). Every failing assertion checks a repr format the issue never specifies: %r quoting of all fields and keeping the partial object itself. The third F2P name is a parser artifact. Changing stored state for a display problem is a secondary design concern, not the decisive failure.",
+    "trajectory_assessment": "New tests assert the unwrapping design. At steps 30–38 the agent iterates until those tests pass, reaching the 40-step ceiling without validating a representation-only solution.",
+    "improvement": "Separate representation from execution state. Preserve callable identity unless the behavior contract explicitly requires otherwise, and test partial, nested and wrapped callables.",
+    "secondary_tags": [
+      "implementation_breadth",
+      "step_budget",
+      "test_parser_artifact"
+    ],
+    "fail_to_pass": {
+      "passed": 0,
+      "total": 3,
+      "reported_failures": [
+        "test_repr (urlpatterns_reverse.tests.ResolverMatchTests)",
+        "test_repr_functools_partial (urlpatterns_reverse.tests.ResolverMatchTests)",
+        "test_resolver_match_on_request (urlpatterns_reverse.tests.ResolverMatchTests)"
+      ]
+    },
+    "pass_to_pass": {
+      "passed": 89,
+      "total": 89,
+      "reported_failures": []
+    },
+    "steps": 40,
+    "at_step_ceiling": true,
+    "official_patch_successfully_applied": true,
+    "patch_applied_in_harness_log": true,
+    "sources": {
+      "dataset": {
+        "path": "swe_bench_lite_test_100.jsonl",
+        "jsonl_line": 28
+      },
+      "prediction": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.jsonl",
+        "jsonl_line": 28
+      },
+      "metrics": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.metrics.jsonl",
+        "jsonl_line": 28
+      },
+      "report": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/django__django-14155/report.json"
+      },
+      "test_output": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/django__django-14155/test_output.txt"
+      },
+      "harness_log": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/django__django-14155/run_instance.log"
+      },
+      "trajectory": {
+        "path": ".agents/evals/test-100-1022-1755/trajectories/events/django__django-14155.jsonl"
+      }
+    },
+    "evidence_file": "cases/django__django-14155.md"
+  },
+  {
+    "instance_id": "django__django-16820",
+    "primary_category": "golden_scope_expansion",
+    "confidence": "medium",
+    "title": "A RenameIndex-only fix is graded against a broader migration optimizer change",
+    "summary": "The patch covers the direct transition but omits AddIndex/RemoveIndex folding and differs in normalized option representation.",
+    "issue": "Squashing the Meta.index_together -> Meta.indexes transition should eliminate deprecation warnings. The short statement does not enumerate optimizer rules.",
+    "agent_patch": "Folds RenameIndex(old_fields=...) into CreateModel and keeps remaining index_together entries as a list. It does not fold AddIndex or RemoveIndex.",
+    "golden_patch": "Adds reductions for AddIndex, RemoveIndex and RenameIndex, updates autodetector expectations, and keeps remaining index_together values as a set.",
+    "observed_failure": "Only 1/7 F2P tests passes. Failures include add/remove-index reductions, migration operation-count expectations, and a list-versus-set mismatch for remaining index_together entries. All 203 P2P tests pass.",
+    "scope_assessment": "The accepted scope is materially broader than the short issue. The agent also leaves incomplete operation-family coverage, so this is a mixed scope/coverage case rather than proof that the benchmark is invalid.",
+    "trajectory_assessment": "The step-36 command shows that the agent tried broader index reductions, encountered old autodetector expectations, then removed the AddIndex/RemoveIndex branch at step 37. The final narrow patch reflects retreat in response to existing tests.",
+    "improvement": "Define the optimizer invariant across create/add/remove/rename sequences. When old tests encode an intentionally changed operation count, distinguish obsolete expectations from unintended regressions.",
+    "secondary_tags": [
+      "operation_family_gap",
+      "representation_contract",
+      "step_budget",
+      "old_test_conflict"
+    ],
+    "fail_to_pass": {
+      "passed": 1,
+      "total": 7,
+      "reported_failures": [
+        "test_create_model_add_index (migrations.test_optimizer.OptimizerTests.test_create_model_add_index)",
+        "test_create_model_index_together_rename_index (migrations.test_optimizer.OptimizerTests.test_create_model_index_together_rename_index)",
+        "test_create_model_remove_index (migrations.test_optimizer.OptimizerTests.test_create_model_remove_index)",
+        "test_add_model_order_with_respect_to_index (migrations.test_autodetector.AutodetectorTests.test_add_model_order_with_respect_to_index)",
+        "Test creation of new model with indexes already defined.",
+        "#22275 - A migration with circular FK dependency does not try"
+      ]
+    },
+    "pass_to_pass": {
+      "passed": 203,
+      "total": 203,
+      "reported_failures": []
+    },
+    "steps": 40,
+    "at_step_ceiling": true,
+    "official_patch_successfully_applied": true,
+    "patch_applied_in_harness_log": true,
+    "sources": {
+      "dataset": {
+        "path": "swe_bench_lite_test_100.jsonl",
+        "jsonl_line": 41
+      },
+      "prediction": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.jsonl",
+        "jsonl_line": 41
+      },
+      "metrics": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.metrics.jsonl",
+        "jsonl_line": 41
+      },
+      "report": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/django__django-16820/report.json"
+      },
+      "test_output": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/django__django-16820/test_output.txt"
+      },
+      "harness_log": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/django__django-16820/run_instance.log"
+      },
+      "trajectory": {
+        "path": ".agents/evals/test-100-1022-1755/trajectories/events/django__django-16820.jsonl"
+      }
+    },
+    "evidence_file": "cases/django__django-16820.md"
+  },
+  {
+    "instance_id": "matplotlib__matplotlib-18869",
+    "primary_category": "specification_mismatch",
+    "confidence": "high",
+    "title": "An open-ended version feature is graded against one private parser and tuple format",
+    "summary": "The agent exposes a comparable release tuple; all four golden failures call an unspecified helper.",
+    "issue": "Expose version information that is easier to compare; a tuple or LooseVersion is explicitly acceptable in the discussion.",
+    "agent_patch": "Adds lazy __version_info__ using parse_version(...).release, a tuple of numeric release components.",
+    "golden_patch": "Defines a five-field _VersionInfo, a private _parse_to_version_info helper, prerelease labels and special post-release handling.",
+    "observed_failure": "All four F2P cases raise AttributeError because matplotlib._parse_to_version_info does not exist. The three P2P tests pass.",
+    "scope_assessment": "The helper name and five-field schema are unspecified implementation choices. Separately, a release-only tuple loses prerelease distinctions, which is a substantive limitation for general version comparison.",
+    "trajectory_assessment": "The agent verified a public tuple and ran its modified test_matplotlib module. Its printed runtime version tuple was (0, 0) for a 0.0.post... version, showing it did not adopt a fixed five-field shape.",
+    "improvement": "Review acceptance tests for public-behavior coverage. For the agent, explicitly test final, prerelease, development and post-release versions before declaring a comparison API complete.",
+    "secondary_tags": [
+      "private_api_test",
+      "prerelease_coverage",
+      "underspecified_api"
+    ],
+    "fail_to_pass": {
+      "passed": 0,
+      "total": 4,
+      "reported_failures": [
+        "lib/matplotlib/tests/test_matplotlib.py::test_parse_to_version_info[3.5.0-version_tuple0]",
+        "lib/matplotlib/tests/test_matplotlib.py::test_parse_to_version_info[3.5.0rc2-version_tuple1]",
+        "lib/matplotlib/tests/test_matplotlib.py::test_parse_to_version_info[3.5.0.dev820+g6768ef8c4c-version_tuple2]",
+        "lib/matplotlib/tests/test_matplotlib.py::test_parse_to_version_info[3.5.0.post820+g6768ef8c4c-version_tuple3]"
+      ]
+    },
+    "pass_to_pass": {
+      "passed": 3,
+      "total": 3,
+      "reported_failures": []
+    },
+    "steps": 17,
+    "at_step_ceiling": false,
+    "official_patch_successfully_applied": true,
+    "patch_applied_in_harness_log": true,
+    "sources": {
+      "dataset": {
+        "path": "swe_bench_lite_test_100.jsonl",
+        "jsonl_line": 42
+      },
+      "prediction": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.jsonl",
+        "jsonl_line": 42
+      },
+      "metrics": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.metrics.jsonl",
+        "jsonl_line": 42
+      },
+      "report": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/matplotlib__matplotlib-18869/report.json"
+      },
+      "test_output": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/matplotlib__matplotlib-18869/test_output.txt"
+      },
+      "harness_log": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/matplotlib__matplotlib-18869/run_instance.log"
+      },
+      "trajectory": {
+        "path": ".agents/evals/test-100-1022-1755/trajectories/events/matplotlib__matplotlib-18869.jsonl"
+      }
+    },
+    "evidence_file": "cases/matplotlib__matplotlib-18869.md"
+  },
+  {
+    "instance_id": "matplotlib__matplotlib-22711",
+    "primary_category": "golden_scope_expansion",
+    "confidence": "high",
+    "title": "The issue reproduces a polygon crash; the golden patch fixes handle synchronization",
+    "summary": "The agent addresses the reported degenerate initialization, while grading checks a different RangeSlider behavior.",
+    "issue": "RangeSlider(valinit=[0, 0]) raises IndexError at xy[4]; the issue suggests removing that assignment.",
+    "agent_patch": "Rebuilds polygon vertices and uses Polygon.set_xy, avoiding assumptions about an existing closing vertex.",
+    "golden_patch": "Leaves the xy[4] assignments in place and instead updates handle coordinates, vertical dragging and handle selection.",
+    "observed_failure": "Both F2P orientation cases fail after set_val((0.2, 0.6)): handle positions remain [0.1, 0.34]. The failing assertion is not the reported IndexError. All 91 scored P2P tests pass.",
+    "scope_assessment": "This is a strong issue/golden focus mismatch. Handle synchronization is a valid widget requirement, but the golden source and tests target a different symptom than the supplied reproduction.",
+    "trajectory_assessment": "The agent wrote and ran equal-initial-value cases for both orientations, then ran slider-focused tests. A separate rectangle-selector deprecation failure appears in the broader log and is not a scored regression.",
+    "improvement": "Retain this as a benchmark audit example. For broader validation, check value, polygon and handle positions together after initialization, set_val, reset and dragging.",
+    "secondary_tags": [
+      "different_symptom",
+      "widget_state_consistency"
+    ],
+    "fail_to_pass": {
+      "passed": 0,
+      "total": 2,
+      "reported_failures": [
+        "lib/matplotlib/tests/test_widgets.py::test_range_slider[horizontal]",
+        "lib/matplotlib/tests/test_widgets.py::test_range_slider[vertical]"
+      ]
+    },
+    "pass_to_pass": {
+      "passed": 91,
+      "total": 91,
+      "reported_failures": []
+    },
+    "steps": 25,
+    "at_step_ceiling": false,
+    "official_patch_successfully_applied": true,
+    "patch_applied_in_harness_log": true,
+    "sources": {
+      "dataset": {
+        "path": "swe_bench_lite_test_100.jsonl",
+        "jsonl_line": 43
+      },
+      "prediction": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.jsonl",
+        "jsonl_line": 43
+      },
+      "metrics": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.metrics.jsonl",
+        "jsonl_line": 43
+      },
+      "report": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/matplotlib__matplotlib-22711/report.json"
+      },
+      "test_output": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/matplotlib__matplotlib-22711/test_output.txt"
+      },
+      "harness_log": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/matplotlib__matplotlib-22711/run_instance.log"
+      },
+      "trajectory": {
+        "path": ".agents/evals/test-100-1022-1755/trajectories/events/matplotlib__matplotlib-22711.jsonl"
+      }
+    },
+    "evidence_file": "cases/matplotlib__matplotlib-22711.md"
+  },
+  {
+    "instance_id": "mwaskom__seaborn-3407",
+    "primary_category": "specification_mismatch",
+    "confidence": "high",
+    "title": "Plotting succeeds; an internal-container equality assertion fails",
+    "summary": "A one-dimensional object array fixes the tuple-label bug, but the golden test assumes a list.",
+    "issue": "pairplot must accept a DataFrame with MultiIndex columns without raising KeyError.",
+    "agent_patch": "Allocates one-dimensional object arrays and assigns tuple labels into them, preventing NumPy from creating a two-dimensional array.",
+    "golden_patch": "Stores the original Python lists directly for diag_vars and diag_axes.",
+    "observed_failure": "The golden test gets past g = pairplot(df). It fails only at assert g.diag_vars == list(cols), with ValueError about an array truth value. All 120 P2P tests pass.",
+    "scope_assessment": "The observed failure is tied to container/equality semantics, not the original plotting crash. The issue does not specify a list return type for diag_vars. This is strong evidence of implementation-sensitive acceptance, although it does not establish equivalence for every downstream use.",
+    "trajectory_assessment": "The agent identified the tuple-to-2D-array root cause and its PairGrid test run reports 47 passed. Its own test uses array-compatible assertions.",
+    "improvement": "For benchmark review, assert label contents and successful plotting unless a list is a documented contract. For implementation simplicity, retain the existing list instead of converting it unnecessarily.",
+    "secondary_tags": [
+      "implementation_sensitive_test",
+      "container_type"
+    ],
+    "fail_to_pass": {
+      "passed": 0,
+      "total": 1,
+      "reported_failures": [
+        "tests/test_axisgrid.py::TestPairGrid::test_pairplot_column_multiindex"
+      ]
+    },
+    "pass_to_pass": {
+      "passed": 120,
+      "total": 120,
+      "reported_failures": []
+    },
+    "steps": 19,
+    "at_step_ceiling": false,
+    "official_patch_successfully_applied": true,
+    "patch_applied_in_harness_log": true,
+    "sources": {
+      "dataset": {
+        "path": "swe_bench_lite_test_100.jsonl",
+        "jsonl_line": 50
+      },
+      "prediction": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.jsonl",
+        "jsonl_line": 50
+      },
+      "metrics": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.metrics.jsonl",
+        "jsonl_line": 50
+      },
+      "report": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/mwaskom__seaborn-3407/report.json"
+      },
+      "test_output": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/mwaskom__seaborn-3407/test_output.txt"
+      },
+      "harness_log": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/mwaskom__seaborn-3407/run_instance.log"
+      },
+      "trajectory": {
+        "path": ".agents/evals/test-100-1022-1755/trajectories/events/mwaskom__seaborn-3407.jsonl"
+      }
+    },
+    "evidence_file": "cases/mwaskom__seaborn-3407.md"
+  },
+  {
+    "instance_id": "pallets__flask-4045",
+    "primary_category": "golden_scope_expansion",
+    "confidence": "high",
+    "title": "Blueprint name validation passes; unrelated exception-type harmonization is missing",
+    "summary": "The only scored failure concerns endpoint/view-function errors, beyond the requested blueprint-name check.",
+    "issue": "Raise an error when a blueprint name contains a dot; the issue says endpoint-name validation already exists.",
+    "agent_patch": "Adds the same Blueprint.__init__ ValueError check as the golden patch.",
+    "golden_patch": "Also replaces AssertionError with ValueError for dotted endpoint names and dotted view-function names in add_url_rule.",
+    "observed_failure": "The blueprint-name F2P case passes. test_route_decorator_custom_endpoint_with_dots expects ValueError but receives the preexisting AssertionError. All 50 scored P2P tests pass.",
+    "scope_assessment": "The extra exception-type changes are concrete accepted scope beyond the literal request. This should not be described as failure to add blueprint-name validation.",
+    "trajectory_assessment": "The agent runs the new dotted-name test and related defaults tests. Broader raw output contains dependency/deprecation failures; the scored rejection has a direct, separate exception-type explanation.",
+    "improvement": "Audit this as a scope-expanded task. In general, inspect adjacent validation contracts when adding an error, while distinguishing consistency improvements from explicit issue requirements.",
+    "secondary_tags": [
+      "exception_contract",
+      "related_api_scope"
+    ],
+    "fail_to_pass": {
+      "passed": 1,
+      "total": 2,
+      "reported_failures": [
+        "tests/test_blueprints.py::test_route_decorator_custom_endpoint_with_dots"
+      ]
+    },
+    "pass_to_pass": {
+      "passed": 50,
+      "total": 50,
+      "reported_failures": []
+    },
+    "steps": 22,
+    "at_step_ceiling": false,
+    "official_patch_successfully_applied": true,
+    "patch_applied_in_harness_log": true,
+    "sources": {
+      "dataset": {
+        "path": "swe_bench_lite_test_100.jsonl",
+        "jsonl_line": 51
+      },
+      "prediction": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.jsonl",
+        "jsonl_line": 51
+      },
+      "metrics": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.metrics.jsonl",
+        "jsonl_line": 51
+      },
+      "report": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/pallets__flask-4045/report.json"
+      },
+      "test_output": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/pallets__flask-4045/test_output.txt"
+      },
+      "harness_log": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/pallets__flask-4045/run_instance.log"
+      },
+      "trajectory": {
+        "path": ".agents/evals/test-100-1022-1755/trajectories/events/pallets__flask-4045.jsonl"
+      }
+    },
+    "evidence_file": "cases/pallets__flask-4045.md"
+  },
+  {
+    "instance_id": "pallets__flask-5063",
+    "primary_category": "specification_mismatch",
+    "confidence": "high",
+    "title": "Domain information is present, but accepted column headings differ from the issue example",
+    "summary": "Both scored failures are heading checks: Domain versus Subdomain/Host.",
+    "issue": "Display domain/subdomain information in flask routes; the proposed output labels the first column Domain and shows fully qualified domains.",
+    "agent_patch": "Adds a Domain column, assembles full domains when SERVER_NAME is present, supports host rules and domain sorting.",
+    "golden_patch": "Uses a Subdomain or Host heading according to host_matching, and displays the corresponding rule attribute.",
+    "observed_failure": "Both F2P invocations exit successfully and show the correct a/b domain values. Tests fail solely because Subdomain or Host is absent from the Domain-headed output. All 54 P2P tests pass.",
+    "scope_assessment": "This is a strong acceptance-detail mismatch: the agent follows the issue example. Other design differences exist, but these logs establish heading mismatches as the scored failures, not lost domain data.",
+    "trajectory_assessment": "The agent tests subdomains, host cases and sorting using its chosen output schema; the final recorded CLI suite reports 58 passed.",
+    "improvement": "Make required CLI headings explicit in task acceptance. Treat table schema as an API choice and verify host versus subdomain semantics without assuming the example is the final specification.",
+    "secondary_tags": [
+      "output_schema",
+      "misleading_issue_example"
+    ],
+    "fail_to_pass": {
+      "passed": 0,
+      "total": 2,
+      "reported_failures": [
+        "tests/test_cli.py::TestRoutes::test_subdomain",
+        "tests/test_cli.py::TestRoutes::test_host"
+      ]
+    },
+    "pass_to_pass": {
+      "passed": 54,
+      "total": 54,
+      "reported_failures": []
+    },
+    "steps": 39,
+    "at_step_ceiling": false,
+    "official_patch_successfully_applied": true,
+    "patch_applied_in_harness_log": true,
+    "sources": {
+      "dataset": {
+        "path": "swe_bench_lite_test_100.jsonl",
+        "jsonl_line": 52
+      },
+      "prediction": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.jsonl",
+        "jsonl_line": 52
+      },
+      "metrics": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.metrics.jsonl",
+        "jsonl_line": 52
+      },
+      "report": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/pallets__flask-5063/report.json"
+      },
+      "test_output": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/pallets__flask-5063/test_output.txt"
+      },
+      "harness_log": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/pallets__flask-5063/run_instance.log"
+      },
+      "trajectory": {
+        "path": ".agents/evals/test-100-1022-1755/trajectories/events/pallets__flask-5063.jsonl"
+      }
+    },
+    "evidence_file": "cases/pallets__flask-5063.md"
+  },
+  {
+    "instance_id": "psf__requests-3362",
+    "primary_category": "root_cause_miss",
+    "confidence": "high",
+    "title": "A JSON header default bypasses the failing streaming-decoder branch",
+    "summary": "The fix is specific to the example MIME type and leaves encoding=None streaming behavior unchanged.",
+    "issue": "iter_content(decode_unicode=True) returns bytes while response.text returns Unicode; application/json is the motivating example.",
+    "agent_patch": "Defaults application/json headers to UTF-8 in get_encoding_from_headers.",
+    "golden_patch": "Changes stream_decode_response_unicode to fall back to apparent_encoding when encoding is None and handle decoder lookup failures.",
+    "observed_failure": "A Response with raw bytes and encoding=None still yields bytes under decode_unicode=True. The single F2P test fails; all 75 P2P tests pass.",
+    "scope_assessment": "This is a symptom-specific fix in the same file as gold, demonstrating why file overlap is not enough to assess root-cause localization. The behavioral invariant belongs to decoding, not only JSON header interpretation.",
+    "trajectory_assessment": "The agent adds a header-parsing test and runs the old streaming test, which only covered known encodings. It never adds the decisive unknown-encoding response case.",
+    "improvement": "Trace the difference between text and streaming decoding, then test known, absent and invalid encodings plus split multibyte input at the public API.",
+    "secondary_tags": [
+      "example_overfitting",
+      "wrong_function",
+      "unknown_encoding"
+    ],
+    "fail_to_pass": {
+      "passed": 0,
+      "total": 1,
+      "reported_failures": [
+        "tests/test_requests.py::TestRequests::test_response_decode_unicode"
+      ]
+    },
+    "pass_to_pass": {
+      "passed": 75,
+      "total": 75,
+      "reported_failures": []
+    },
+    "steps": 15,
+    "at_step_ceiling": false,
+    "official_patch_successfully_applied": true,
+    "patch_applied_in_harness_log": true,
+    "sources": {
+      "dataset": {
+        "path": "swe_bench_lite_test_100.jsonl",
+        "jsonl_line": 53
+      },
+      "prediction": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.jsonl",
+        "jsonl_line": 53
+      },
+      "metrics": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.metrics.jsonl",
+        "jsonl_line": 53
+      },
+      "report": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/psf__requests-3362/report.json"
+      },
+      "test_output": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/psf__requests-3362/test_output.txt"
+      },
+      "harness_log": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/psf__requests-3362/run_instance.log"
+      },
+      "trajectory": {
+        "path": ".agents/evals/test-100-1022-1755/trajectories/events/psf__requests-3362.jsonl"
+      }
+    },
+    "evidence_file": "cases/psf__requests-3362.md"
+  },
+  {
+    "instance_id": "scikit-learn__scikit-learn-10949",
+    "primary_category": "specification_mismatch",
+    "confidence": "high",
+    "title": "Collapsing DataFrame dtypes loses per-column conversion information",
+    "summary": "The log first fails on exact warning wording; static review also identifies a real mixed-dtype gap.",
+    "issue": "warn_on_dtype should warn for DataFrame input when data is converted; the example uses an all-object DataFrame.",
+    "agent_patch": "Collapses the DataFrame dtypes into np.result_type and reuses the single-original-dtype warning path.",
+    "golden_patch": "Retains each column dtype and compares the set of original dtypes with the result dtype, issuing a DataFrame-specific message.",
+    "observed_failure": "The first golden assertion receives \"was converted\" instead of \"were all converted\". Later mixed-dtype assertions in that test are not reached in the recorded run.",
+    "scope_assessment": "The only observed failure is the warning text: the agent emits the issue's 'Expected result' verbatim ('was converted to'), while the gold test requires 'were all converted to'. Collapsing per-column dtypes with np.result_type would also miss mixed int/float conversion, but that is a static inference, not an observed failure.",
+    "trajectory_assessment": "The agent runs dtype/DataFrame-focused tests and a filtered validation suite, but the added cases do not establish all mixed-column conversion behaviors.",
+    "improvement": "Preserve per-column metadata until after conversion. Test homogeneous object data, mixed numeric data, mixed object/numeric data, no conversion and explicit requested dtypes.",
+    "secondary_tags": [
+      "coverage_gap",
+      "mixed_dtypes"
+    ],
+    "fail_to_pass": {
+      "passed": 0,
+      "total": 1,
+      "reported_failures": [
+        "sklearn/utils/tests/test_validation.py::test_check_dataframe_warns_on_dtype"
+      ]
+    },
+    "pass_to_pass": {
+      "passed": 42,
+      "total": 42,
+      "reported_failures": []
+    },
+    "steps": 26,
+    "at_step_ceiling": false,
+    "official_patch_successfully_applied": true,
+    "patch_applied_in_harness_log": true,
+    "sources": {
+      "dataset": {
+        "path": "swe_bench_lite_test_100.jsonl",
+        "jsonl_line": 64
+      },
+      "prediction": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.jsonl",
+        "jsonl_line": 64
+      },
+      "metrics": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.metrics.jsonl",
+        "jsonl_line": 64
+      },
+      "report": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/scikit-learn__scikit-learn-10949/report.json"
+      },
+      "test_output": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/scikit-learn__scikit-learn-10949/test_output.txt"
+      },
+      "harness_log": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/scikit-learn__scikit-learn-10949/run_instance.log"
+      },
+      "trajectory": {
+        "path": ".agents/evals/test-100-1022-1755/trajectories/events/scikit-learn__scikit-learn-10949.jsonl"
+      }
+    },
+    "evidence_file": "cases/scikit-learn__scikit-learn-10949.md"
+  },
+  {
+    "instance_id": "scikit-learn__scikit-learn-25500",
+    "primary_category": "root_cause_miss",
+    "confidence": "high",
+    "title": "Flattening a calibration result leaves IsotonicRegression.predict with the wrong type",
+    "summary": "The caller workaround handles the reported broadcast failure but does not repair the producer API.",
+    "issue": "CalibratedClassifierCV fails with transform_output=\"pandas\" because the isotonic predictor produces a DataFrame.",
+    "agent_patch": "Wraps calibrator.predict(...) with column_or_1d inside calibration.py.",
+    "golden_patch": "Separates IsotonicRegression._transform from the output-wrapped transform method, so predict continues returning a NumPy array.",
+    "observed_failure": "The golden test confirms transform returns a DataFrame, then fails because predict also returns a DataFrame instead of ndarray. All 45 P2P tests pass.",
+    "scope_assessment": "The issue itself points to IsotonicRegression returning a DataFrame. The gold test checks the responsible API contract, so a different-file patch is evidence here only because the behavior remains wrong.",
+    "trajectory_assessment": "A new calibration reproduction and existing calibration/isotonic tests pass. No new direct predictor return-type assertion is added.",
+    "improvement": "Test the producer and consumer independently. Restore predict versus transform semantics at IsotonicRegression, then verify the calibration integration.",
+    "secondary_tags": [
+      "consumer_workaround",
+      "return_type_contract"
+    ],
+    "fail_to_pass": {
+      "passed": 0,
+      "total": 1,
+      "reported_failures": [
+        "sklearn/tests/test_isotonic.py::test_isotonic_regression_output_predict"
+      ]
+    },
+    "pass_to_pass": {
+      "passed": 45,
+      "total": 45,
+      "reported_failures": []
+    },
+    "steps": 38,
+    "at_step_ceiling": false,
+    "official_patch_successfully_applied": true,
+    "patch_applied_in_harness_log": true,
+    "sources": {
+      "dataset": {
+        "path": "swe_bench_lite_test_100.jsonl",
+        "jsonl_line": 71
+      },
+      "prediction": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.jsonl",
+        "jsonl_line": 71
+      },
+      "metrics": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.metrics.jsonl",
+        "jsonl_line": 71
+      },
+      "report": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/scikit-learn__scikit-learn-25500/report.json"
+      },
+      "test_output": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/scikit-learn__scikit-learn-25500/test_output.txt"
+      },
+      "harness_log": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/scikit-learn__scikit-learn-25500/run_instance.log"
+      },
+      "trajectory": {
+        "path": ".agents/evals/test-100-1022-1755/trajectories/events/scikit-learn__scikit-learn-25500.jsonl"
+      }
+    },
+    "evidence_file": "cases/scikit-learn__scikit-learn-25500.md"
+  },
+  {
+    "instance_id": "scikit-learn__scikit-learn-25638",
+    "primary_category": "coverage_gap",
+    "confidence": "high",
+    "title": "Nullable Series are handled, but nullable DataFrames are not",
+    "summary": "A Series-specific dtype conversion misses the two-dimensional input family.",
+    "issue": "Support pandas nullable numeric/boolean dtypes in unique_labels; all shown examples are Series.",
+    "agent_patch": "Converts inputs that have to_numpy, dtype and dtype.numpy_dtype inside type_of_target.",
+    "golden_patch": "Uses the shared check_array conversion in both type_of_target and is_multilabel, covering Series and DataFrames.",
+    "observed_failure": "9/10 F2P tests pass. The remaining test reaches a Float32 DataFrame and gets unknown instead of continuous-multioutput; all 194 P2P tests pass.",
+    "scope_assessment": "The golden tests extend beyond the Series example, but nullable DataFrames are a natural input-family boundary of the shared classifier. This is a strong coverage-gap case.",
+    "trajectory_assessment": "The added unique_labels test covers the three requested nullable Series dtypes. The source condition depends on singular dtype, which DataFrames do not expose as their per-column type interface.",
+    "improvement": "Reuse shared validation and build a matrix of Series/DataFrame, single/multiple outputs, and numeric/boolean nullable dtypes.",
+    "secondary_tags": [
+      "container_shape",
+      "shared_validation"
+    ],
+    "fail_to_pass": {
+      "passed": 9,
+      "total": 10,
+      "reported_failures": [
+        "sklearn/utils/tests/test_multiclass.py::test_type_of_target_pandas_nullable"
+      ]
+    },
+    "pass_to_pass": {
+      "passed": 194,
+      "total": 194,
+      "reported_failures": []
+    },
+    "steps": 33,
+    "at_step_ceiling": false,
+    "official_patch_successfully_applied": true,
+    "patch_applied_in_harness_log": true,
+    "sources": {
+      "dataset": {
+        "path": "swe_bench_lite_test_100.jsonl",
+        "jsonl_line": 72
+      },
+      "prediction": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.jsonl",
+        "jsonl_line": 72
+      },
+      "metrics": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.metrics.jsonl",
+        "jsonl_line": 72
+      },
+      "report": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/scikit-learn__scikit-learn-25638/report.json"
+      },
+      "test_output": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/scikit-learn__scikit-learn-25638/test_output.txt"
+      },
+      "harness_log": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/scikit-learn__scikit-learn-25638/run_instance.log"
+      },
+      "trajectory": {
+        "path": ".agents/evals/test-100-1022-1755/trajectories/events/scikit-learn__scikit-learn-25638.jsonl"
+      }
+    },
+    "evidence_file": "cases/scikit-learn__scikit-learn-25638.md"
+  },
+  {
+    "instance_id": "sphinx-doc__sphinx-10451",
+    "primary_category": "implementation_defect",
+    "confidence": "high",
+    "title": "Changing annotation keys globally fixes starred docstrings and breaks bare-name ones",
+    "summary": "The implementation makes one docstring style canonical instead of matching aliases at the consumer.",
+    "issue": "Avoid duplicated or incomplete *args/**kwargs parameter descriptions when autodoc_typehints is description.",
+    "agent_patch": "Stores annotations under *args and **kwargs in record_typehints rather than under bare parameter names.",
+    "golden_patch": "Matches starred names while augmenting field lists/descriptions, without changing the canonical annotation keys.",
+    "observed_failure": "Both F2P cases pass, but three P2P tests for documented __init__ parameters fail. Bare args/kwargs entries no longer receive the expected types, and output differs across description modes.",
+    "scope_assessment": "Supporting both starred and bare documentation syntax is a compatibility requirement. The error is introduced at the shared representation boundary, rather than an unavoidable ambiguity in the requested feature.",
+    "trajectory_assessment": "The agent adds starred-form tests and adjusts their expected output during iterations. It does not add the corresponding bare-name variadic cases before the 40-step final response.",
+    "improvement": "Normalize aliases locally when matching fields; keep the shared annotation map stable. Test bare/starred forms across all/documented/documented_params settings.",
+    "secondary_tags": [
+      "shared_representation_change",
+      "p2p_failure",
+      "step_budget"
+    ],
+    "fail_to_pass": {
+      "passed": 2,
+      "total": 2,
+      "reported_failures": []
+    },
+    "pass_to_pass": {
+      "passed": 77,
+      "total": 80,
+      "reported_failures": [
+        "tests/test_ext_autodoc_configs.py::test_autodoc_typehints_description_with_documented_init",
+        "tests/test_ext_autodoc_configs.py::test_autodoc_typehints_description_with_documented_init_no_undoc",
+        "tests/test_ext_autodoc_configs.py::test_autodoc_typehints_description_with_documented_init_no_undoc_doc_rtype"
+      ]
+    },
+    "steps": 40,
+    "at_step_ceiling": true,
+    "official_patch_successfully_applied": true,
+    "patch_applied_in_harness_log": true,
+    "sources": {
+      "dataset": {
+        "path": "swe_bench_lite_test_100.jsonl",
+        "jsonl_line": 73
+      },
+      "prediction": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.jsonl",
+        "jsonl_line": 73
+      },
+      "metrics": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.metrics.jsonl",
+        "jsonl_line": 73
+      },
+      "report": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/sphinx-doc__sphinx-10451/report.json"
+      },
+      "test_output": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/sphinx-doc__sphinx-10451/test_output.txt"
+      },
+      "harness_log": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/sphinx-doc__sphinx-10451/run_instance.log"
+      },
+      "trajectory": {
+        "path": ".agents/evals/test-100-1022-1755/trajectories/events/sphinx-doc__sphinx-10451.jsonl"
+      }
+    },
+    "evidence_file": "cases/sphinx-doc__sphinx-10451.md"
+  },
+  {
+    "instance_id": "sphinx-doc__sphinx-7686",
+    "primary_category": "implementation_defect",
+    "confidence": "high",
+    "title": "Member filtering shadows the module name and omits the skip-member hook",
+    "summary": "The patch introduces a variable-scope regression while incompletely implementing member selection.",
+    "issue": "Exclude imported members from the module template members variable when autosummary_imported_members is False.",
+    "agent_patch": "Adds a for name in ns[\"members\"] loop inside generate_autosummary_content, overwriting its name parameter. It filters imports but does not call autodoc-skip-member.",
+    "golden_patch": "Uses a separate ModuleScanner and honors both imported-member filtering and skip callbacks, without clobbering the generator argument.",
+    "observed_failure": "The skip-member test retains Exc/Foo/bar. Other evidence shows a generated title becoming function_ instead of underscore_module_, and recursive imports using __spec__.module. These are consistent with the overwritten name. The report has 0/2 F2P and 13/15 P2P.",
+    "scope_assessment": "Skip-hook integration is additional accepted behavior, but the name-shadowing regression is an independent implementation defect. A separate raw failure involving pytest-injected @py_builtins names should not be conflated with this defect.",
+    "trajectory_assessment": "At step 39, the agent reads a generated target.rst whose title is os. That visible signal of name corruption remains unresolved when the step budget ends.",
+    "improvement": "Use a separate member_name variable or helper and assert template fullname/name as well as members. Exercise recursive generation and skip callbacks.",
+    "secondary_tags": [
+      "variable_shadowing",
+      "missing_hook",
+      "p2p_failure",
+      "step_budget",
+      "raw_log_noise"
+    ],
+    "fail_to_pass": {
+      "passed": 0,
+      "total": 2,
+      "reported_failures": [
+        "tests/test_ext_autosummary.py::test_autosummary_generate_content_for_module",
+        "tests/test_ext_autosummary.py::test_autosummary_generate_content_for_module_skipped"
+      ]
+    },
+    "pass_to_pass": {
+      "passed": 13,
+      "total": 15,
+      "reported_failures": [
+        "tests/test_ext_autosummary.py::test_escaping",
+        "tests/test_ext_autosummary.py::test_autosummary_recursive"
+      ]
+    },
+    "steps": 40,
+    "at_step_ceiling": true,
+    "official_patch_successfully_applied": true,
+    "patch_applied_in_harness_log": true,
+    "sources": {
+      "dataset": {
+        "path": "swe_bench_lite_test_100.jsonl",
+        "jsonl_line": 74
+      },
+      "prediction": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.jsonl",
+        "jsonl_line": 74
+      },
+      "metrics": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.metrics.jsonl",
+        "jsonl_line": 74
+      },
+      "report": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/sphinx-doc__sphinx-7686/report.json"
+      },
+      "test_output": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/sphinx-doc__sphinx-7686/test_output.txt"
+      },
+      "harness_log": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/sphinx-doc__sphinx-7686/run_instance.log"
+      },
+      "trajectory": {
+        "path": ".agents/evals/test-100-1022-1755/trajectories/events/sphinx-doc__sphinx-7686.jsonl"
+      }
+    },
+    "evidence_file": "cases/sphinx-doc__sphinx-7686.md"
+  },
+  {
+    "instance_id": "sympy__sympy-11400",
+    "primary_category": "implementation_defect",
+    "confidence": "high",
+    "title": "A broader rewrite framework leaves Ne undefined",
+    "summary": "The submitted sinc code path raises NameError due to a missing import.",
+    "issue": "Generate C code for sinc using a guarded sin(x)/x expression with value 1 at zero.",
+    "agent_patch": "Adds a generic code-printer rewrite hook, a sinc-to-Piecewise rewrite in trigonometric.py, and relational printing changes. The new rewrite calls Ne without importing it.",
+    "golden_patch": "Adds a local _print_sinc method and relational printing directly in the C printer.",
+    "observed_failure": "test_ccode_Relational passes, but test_ccode_sinc raises NameError: name Ne is not defined in the new rewrite method.",
+    "scope_assessment": "The agent found the right mathematical structure. This failure is an unfinished implementation, amplified by a wider change than required; no scope mismatch is needed to explain it.",
+    "trajectory_assessment": "Late native SymPy runs still show a traceback, although the command exit code is zero. The final response explicitly identifies the missing import and admits the patch is incomplete at step 40.",
+    "improvement": "Prefer the local printer extension for a local feature. Run ccode(sinc(x)) in a fresh process immediately after the change, and repair or revert a known failure before spending the final step.",
+    "secondary_tags": [
+      "missing_import",
+      "unnecessary_scope",
+      "step_budget",
+      "masked_test_exit"
+    ],
+    "fail_to_pass": {
+      "passed": 1,
+      "total": 2,
+      "reported_failures": [
+        "test_ccode_sinc"
+      ]
+    },
+    "pass_to_pass": {
+      "passed": 29,
+      "total": 29,
+      "reported_failures": []
+    },
+    "steps": 40,
+    "at_step_ceiling": true,
+    "official_patch_successfully_applied": true,
+    "patch_applied_in_harness_log": true,
+    "sources": {
+      "dataset": {
+        "path": "swe_bench_lite_test_100.jsonl",
+        "jsonl_line": 78
+      },
+      "prediction": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.jsonl",
+        "jsonl_line": 78
+      },
+      "metrics": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.metrics.jsonl",
+        "jsonl_line": 78
+      },
+      "report": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/sympy__sympy-11400/report.json"
+      },
+      "test_output": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/sympy__sympy-11400/test_output.txt"
+      },
+      "harness_log": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/sympy__sympy-11400/run_instance.log"
+      },
+      "trajectory": {
+        "path": ".agents/evals/test-100-1022-1755/trajectories/events/sympy__sympy-11400.jsonl"
+      }
+    },
+    "evidence_file": "cases/sympy__sympy-11400.md"
+  },
+  {
+    "instance_id": "sympy__sympy-11870",
+    "primary_category": "golden_scope_expansion",
+    "confidence": "medium",
+    "title": "trigsimp examples are graded through sinc rewrite semantics",
+    "summary": "The agent changes the named simplifier, while the scored failure concerns an unchanged zero-safe rewrite API.",
+    "issue": "Simplify imaginary exponentials to sin(k), and ideally the divided expression to sinc(k).",
+    "agent_patch": "Adds an exponential-to-trigonometric fallback in futrig, selected by operation count; it leaves sinc.rewrite(sin) unchanged.",
+    "golden_patch": "Adds sin.rewrite(sinc) and makes sinc.rewrite(sin) Piecewise with a value at zero. It does not modify trigsimp.",
+    "observed_failure": "The scored test_sinc fails because sinc(x).rewrite(sin) is sin(x)/x rather than Piecewise((sin(x)/x, Ne(x, 0)), (1, True)). All 58 P2P tests pass.",
+    "scope_assessment": "This is not adequately explained by wrong file alone. There is a material issue/golden API mismatch, plus the agent leaves the explicit sinc part of the request incomplete. The exact zero behavior belongs to the accepted rewrite design rather than the shown trigsimp reproduction.",
+    "trajectory_assessment": "The agent adds simplifier tests and the recorded native run reports 23 passed and one expected failure. These tests cover its chosen simplifier behavior, not the golden rewrite contract.",
+    "improvement": "Separate the two requested transformations and verify each explicitly, including zero-domain behavior. Audit whether benchmark tests actually assess the named API in the issue.",
+    "secondary_tags": [
+      "different_api",
+      "partial_issue_completion",
+      "zero_case",
+      "step_budget"
+    ],
+    "fail_to_pass": {
+      "passed": 0,
+      "total": 1,
+      "reported_failures": [
+        "test_sinc"
+      ]
+    },
+    "pass_to_pass": {
+      "passed": 58,
+      "total": 58,
+      "reported_failures": []
+    },
+    "steps": 40,
+    "at_step_ceiling": true,
+    "official_patch_successfully_applied": true,
+    "patch_applied_in_harness_log": true,
+    "sources": {
+      "dataset": {
+        "path": "swe_bench_lite_test_100.jsonl",
+        "jsonl_line": 79
+      },
+      "prediction": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.jsonl",
+        "jsonl_line": 79
+      },
+      "metrics": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.metrics.jsonl",
+        "jsonl_line": 79
+      },
+      "report": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/sympy__sympy-11870/report.json"
+      },
+      "test_output": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/sympy__sympy-11870/test_output.txt"
+      },
+      "harness_log": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/sympy__sympy-11870/run_instance.log"
+      },
+      "trajectory": {
+        "path": ".agents/evals/test-100-1022-1755/trajectories/events/sympy__sympy-11870.jsonl"
+      }
+    },
+    "evidence_file": "cases/sympy__sympy-11870.md"
+  },
+  {
+    "instance_id": "sympy__sympy-13043",
+    "primary_category": "specification_mismatch",
+    "confidence": "high",
+    "title": "A deterministic list is rejected because gold chooses a set",
+    "summary": "Both approaches are suggested by the issue; grading commits to only one return type.",
+    "issue": "The arbitrary-order result should be sorted somehow or returned as a set.",
+    "agent_patch": "Sorts both separate=True return paths using default_sort_key and retains a list.",
+    "golden_patch": "Returns sets in both paths and changes all corresponding expectations to sets.",
+    "observed_failure": "test_decompose fails immediately on decompose(x, True) == {x}, since the agent returns [x]. The one scored P2P case passes.",
+    "scope_assessment": "This is a direct choice among alternatives allowed by the problem statement, not a missed polynomial edge case.",
+    "trajectory_assessment": "The agent updates deterministic-list expectations, runs the native focused test and later the intpoly suite. The raw official log also has an unrelated exception outside the scored P2P set.",
+    "improvement": "Specify the return-type contract in acceptance. For agent design, preserve existing API types unless evidence favors a deliberate breaking change; do not count this alternative as automatically correct under the official score.",
+    "secondary_tags": [
+      "alternative_valid_design",
+      "return_type_contract"
+    ],
+    "fail_to_pass": {
+      "passed": 0,
+      "total": 1,
+      "reported_failures": [
+        "test_decompose"
+      ]
+    },
+    "pass_to_pass": {
+      "passed": 1,
+      "total": 1,
+      "reported_failures": []
+    },
+    "steps": 36,
+    "at_step_ceiling": false,
+    "official_patch_successfully_applied": true,
+    "patch_applied_in_harness_log": true,
+    "sources": {
+      "dataset": {
+        "path": "swe_bench_lite_test_100.jsonl",
+        "jsonl_line": 80
+      },
+      "prediction": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.jsonl",
+        "jsonl_line": 80
+      },
+      "metrics": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.metrics.jsonl",
+        "jsonl_line": 80
+      },
+      "report": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/sympy__sympy-13043/report.json"
+      },
+      "test_output": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/sympy__sympy-13043/test_output.txt"
+      },
+      "harness_log": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/sympy__sympy-13043/run_instance.log"
+      },
+      "trajectory": {
+        "path": ".agents/evals/test-100-1022-1755/trajectories/events/sympy__sympy-13043.jsonl"
+      }
+    },
+    "evidence_file": "cases/sympy__sympy-13043.md"
+  },
+  {
+    "instance_id": "sympy__sympy-13895",
+    "primary_category": "root_cause_miss",
+    "confidence": "high",
+    "title": "Preventing a simplification masks incorrect negative-base rational powers",
+    "summary": "The reproduction agrees after the patch, but the underlying numeric power operation remains wrong.",
+    "issue": "An expression changes numeric value after simplify at x=9/5.",
+    "agent_patch": "Restricts Pow.as_numer_denom when the numerator sign is unknown, preventing the transformation that exposed the inconsistency.",
+    "golden_patch": "Repairs Integer._eval_power: factor the positive magnitude and handle the negative-one phase separately for rational exponents.",
+    "observed_failure": "The issue-specific consistency test passes, but test_powers_Integer still fails for (-8)**Rational(2, 5). All 82 P2P tests pass.",
+    "scope_assessment": "This is a clear root-cause miss: making two paths agree does not show either is mathematically correct. The primitive negative-base operation is independently defective.",
+    "trajectory_assessment": "Most of the budget is spent on exploratory expressions. The final source edit occurs at step 39 and prints equal results for the reproduction; no independent primitive-value check is established.",
+    "improvement": "Use an independent numeric/branch oracle and test primitive rational powers before disabling higher-level rewrites. Include positive/negative bases and multiple rational exponents.",
+    "secondary_tags": [
+      "symptom_suppression",
+      "independent_oracle_missing",
+      "step_budget"
+    ],
+    "fail_to_pass": {
+      "passed": 1,
+      "total": 2,
+      "reported_failures": [
+        "test_powers_Integer"
+      ]
+    },
+    "pass_to_pass": {
+      "passed": 82,
+      "total": 82,
+      "reported_failures": []
+    },
+    "steps": 40,
+    "at_step_ceiling": true,
+    "official_patch_successfully_applied": true,
+    "patch_applied_in_harness_log": true,
+    "sources": {
+      "dataset": {
+        "path": "swe_bench_lite_test_100.jsonl",
+        "jsonl_line": 82
+      },
+      "prediction": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.jsonl",
+        "jsonl_line": 82
+      },
+      "metrics": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.metrics.jsonl",
+        "jsonl_line": 82
+      },
+      "report": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/sympy__sympy-13895/report.json"
+      },
+      "test_output": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/sympy__sympy-13895/test_output.txt"
+      },
+      "harness_log": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/sympy__sympy-13895/run_instance.log"
+      },
+      "trajectory": {
+        "path": ".agents/evals/test-100-1022-1755/trajectories/events/sympy__sympy-13895.jsonl"
+      }
+    },
+    "evidence_file": "cases/sympy__sympy-13895.md"
+  },
+  {
+    "instance_id": "sympy__sympy-16106",
+    "primary_category": "coverage_gap",
+    "confidence": "medium",
+    "title": "Multiple indices lose grouping in Presentation MathML",
+    "summary": "Single-index printing works, but the multi-index representation differs and loses explicit fencing.",
+    "issue": "Print Indexed objects to MathML without TypeError, including larger expressions containing them.",
+    "agent_patch": "Adds content and presentation handlers, but renders multiple indices as adjacent children of mrow.",
+    "golden_patch": "Adds tuple rendering with mfenced and uses it for multiple indices in msub.",
+    "observed_failure": "test_print_IndexedBase fails at the b,c,d index case, expecting mfenced rather than mrow. All 55 scored P2P tests pass; unrelated raw MathML failures are outside that scored set.",
+    "scope_assessment": "The exact XML element is not stated in the issue, so acceptance is somewhat implementation-specific. However, adjacent unseparated indices omit grouping/separation, making this more than a purely cosmetic spelling difference.",
+    "trajectory_assessment": "The agent tests its own content/presentation strings, sees broader preexisting-environment-style failures, then gets the focused indexed tests to pass. The expected strings encode the same mrow choice as its implementation.",
+    "improvement": "Test one, multiple and tuple-valued indices with a semantic formatting oracle, and preserve separators/grouping. Compare XML structure rather than incidental attribute order where possible.",
+    "secondary_tags": [
+      "multi_index",
+      "format_contract",
+      "self_confirming_tests"
+    ],
+    "fail_to_pass": {
+      "passed": 0,
+      "total": 1,
+      "reported_failures": [
+        "test_print_IndexedBase"
+      ]
+    },
+    "pass_to_pass": {
+      "passed": 55,
+      "total": 55,
+      "reported_failures": []
+    },
+    "steps": 38,
+    "at_step_ceiling": false,
+    "official_patch_successfully_applied": true,
+    "patch_applied_in_harness_log": true,
+    "sources": {
+      "dataset": {
+        "path": "swe_bench_lite_test_100.jsonl",
+        "jsonl_line": 87
+      },
+      "prediction": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.jsonl",
+        "jsonl_line": 87
+      },
+      "metrics": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.metrics.jsonl",
+        "jsonl_line": 87
+      },
+      "report": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/sympy__sympy-16106/report.json"
+      },
+      "test_output": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/sympy__sympy-16106/test_output.txt"
+      },
+      "harness_log": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/sympy__sympy-16106/run_instance.log"
+      },
+      "trajectory": {
+        "path": ".agents/evals/test-100-1022-1755/trajectories/events/sympy__sympy-16106.jsonl"
+      }
+    },
+    "evidence_file": "cases/sympy__sympy-16106.md"
+  },
+  {
+    "instance_id": "sympy__sympy-16281",
+    "primary_category": "specification_mismatch",
+    "confidence": "high",
+    "title": "A subjective layout request permits choices that exact snapshots reject",
+    "summary": "The agent removes the complained-about bottom row; gold retains it and changes the bar geometry differently.",
+    "issue": "The Product sign is too wide, has an unwanted empty bottom row, and might benefit from an extended top bar; the issue expresses uncertainty about appearance.",
+    "agent_patch": "Uses width=func_height+1, extends the top bar and changes the number of vertical rows from func_height+1 to func_height.",
+    "golden_patch": "Retains the old width formula and row count, moves the vertical strokes inward by two columns and extends the bar.",
+    "observed_failure": "test_pretty_product and test_issue_6359 fail exact ASCII/Unicode snapshots; all 120 P2P tests pass.",
+    "scope_assessment": "The chosen golden geometry is not uniquely recoverable from the prose, and retaining the bottom row conflicts with one explicit complaint. This is an underspecified layout contract with potential composition risks, not evidence that every new layout is equivalent.",
+    "trajectory_assessment": "The agent updates product snapshots to its own output. One attempted keyword selection runs zero tests; a later full native run reports 123 passed and two exceptions.",
+    "improvement": "Define layout invariants or approved snapshots before treating aesthetic output as unique. Test nested products, powers and ASCII/Unicode independently without automatically replacing expected strings.",
+    "secondary_tags": [
+      "subjective_layout",
+      "snapshot_test",
+      "zero_tests_selected"
+    ],
+    "fail_to_pass": {
+      "passed": 0,
+      "total": 2,
+      "reported_failures": [
+        "test_pretty_product",
+        "test_issue_6359"
+      ]
+    },
+    "pass_to_pass": {
+      "passed": 120,
+      "total": 120,
+      "reported_failures": []
+    },
+    "steps": 37,
+    "at_step_ceiling": false,
+    "official_patch_successfully_applied": true,
+    "patch_applied_in_harness_log": true,
+    "sources": {
+      "dataset": {
+        "path": "swe_bench_lite_test_100.jsonl",
+        "jsonl_line": 88
+      },
+      "prediction": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.jsonl",
+        "jsonl_line": 88
+      },
+      "metrics": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.metrics.jsonl",
+        "jsonl_line": 88
+      },
+      "report": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/sympy__sympy-16281/report.json"
+      },
+      "test_output": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/sympy__sympy-16281/test_output.txt"
+      },
+      "harness_log": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/sympy__sympy-16281/run_instance.log"
+      },
+      "trajectory": {
+        "path": ".agents/evals/test-100-1022-1755/trajectories/events/sympy__sympy-16281.jsonl"
+      }
+    },
+    "evidence_file": "cases/sympy__sympy-16281.md"
+  },
+  {
+    "instance_id": "sympy__sympy-16503",
+    "primary_category": "root_cause_miss",
+    "confidence": "medium",
+    "title": "Moving the outer baseline does not fully correct summand centering",
+    "summary": "A one-line adjustment aligns the simple example but misses internal placement and mode-dependent geometry.",
+    "issue": "Align x and +3 in Sum(x, ...)+3; the issue allows moving either component.",
+    "agent_patch": "Subtracts adjustment from the final prettyF.baseline only.",
+    "golden_patch": "Changes the summand baseline calculation and returns the ASCII height adjustment, then sets the overall baseline with mode-dependent correction.",
+    "observed_failure": "test_pretty_sum fails a Unicode snapshot for a larger summand; all 121 P2P tests pass. The agent had already seen the native test_pretty_sum fail during its own run.",
+    "scope_assessment": "There is some layout latitude in the issue, but the outer-baseline patch leaves the accepted internal-centering problem untouched. Treat this as incomplete baseline reasoning, with snapshot-policy ambiguity secondary.",
+    "trajectory_assessment": "Steps 37 and 39 fail direct verification; the last attempt fails on an import before rewriting/rerunning snapshots. The final patch is not backed by a passing full sum test.",
+    "improvement": "Model the summand baseline and the composed expression baseline separately. Verify ASCII/Unicode, odd/even heights, nested sums and tall expressions before updating snapshots.",
+    "secondary_tags": [
+      "layout_invariant",
+      "known_test_failure",
+      "step_budget",
+      "snapshot_test"
+    ],
+    "fail_to_pass": {
+      "passed": 0,
+      "total": 1,
+      "reported_failures": [
+        "test_pretty_sum"
+      ]
+    },
+    "pass_to_pass": {
+      "passed": 121,
+      "total": 121,
+      "reported_failures": []
+    },
+    "steps": 40,
+    "at_step_ceiling": true,
+    "official_patch_successfully_applied": true,
+    "patch_applied_in_harness_log": true,
+    "sources": {
+      "dataset": {
+        "path": "swe_bench_lite_test_100.jsonl",
+        "jsonl_line": 89
+      },
+      "prediction": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.jsonl",
+        "jsonl_line": 89
+      },
+      "metrics": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.metrics.jsonl",
+        "jsonl_line": 89
+      },
+      "report": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/sympy__sympy-16503/report.json"
+      },
+      "test_output": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/sympy__sympy-16503/test_output.txt"
+      },
+      "harness_log": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/sympy__sympy-16503/run_instance.log"
+      },
+      "trajectory": {
+        "path": ".agents/evals/test-100-1022-1755/trajectories/events/sympy__sympy-16503.jsonl"
+      }
+    },
+    "evidence_file": "cases/sympy__sympy-16503.md"
+  },
+  {
+    "instance_id": "sympy__sympy-20322",
+    "primary_category": "root_cause_miss",
+    "confidence": "high",
+    "title": "A ceiling workaround leaves incorrect Mul.is_integer assumptions intact",
+    "summary": "The agent observes the faulty assumption but patches a consumer of it.",
+    "issue": "evaluate=False parsing changes the result of simplify for a ceiling expression.",
+    "agent_patch": "Restricts when RoundFunction.eval treats a term as integral, bypassing the misleading is_integer result for some numeric expressions.",
+    "golden_patch": "Reworks Mul._eval_is_integer to reason about factors and denominators without the erroneous fraction shortcut.",
+    "observed_failure": "test_Mul_is_integer still fails on Mul(2., S.Half, evaluate=False).is_integer, which must be None. All 89 P2P tests pass.",
+    "scope_assessment": "The trajectory itself shows a nested unevaluated -3/4 term with is_integer=True. Fixing ceiling leaves that bad shared assumption available to other consumers.",
+    "trajectory_assessment": "The agent explores the false assumption through steps 26–37, then edits RoundFunction at step 39. The same command tries pytest, which is unavailable, after printing the repaired reproduction.",
+    "improvement": "Repair and test the shared assumption predicate first. Cover nested unevaluated products, rationals, floats and symbolic parity, then recheck floor/ceiling.",
+    "secondary_tags": [
+      "consumer_workaround",
+      "shared_invariant",
+      "step_budget",
+      "verification_incomplete"
+    ],
+    "fail_to_pass": {
+      "passed": 0,
+      "total": 1,
+      "reported_failures": [
+        "test_Mul_is_integer"
+      ]
+    },
+    "pass_to_pass": {
+      "passed": 89,
+      "total": 89,
+      "reported_failures": []
+    },
+    "steps": 40,
+    "at_step_ceiling": true,
+    "official_patch_successfully_applied": true,
+    "patch_applied_in_harness_log": true,
+    "sources": {
+      "dataset": {
+        "path": "swe_bench_lite_test_100.jsonl",
+        "jsonl_line": 97
+      },
+      "prediction": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.jsonl",
+        "jsonl_line": 97
+      },
+      "metrics": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.metrics.jsonl",
+        "jsonl_line": 97
+      },
+      "report": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/sympy__sympy-20322/report.json"
+      },
+      "test_output": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/sympy__sympy-20322/test_output.txt"
+      },
+      "harness_log": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/sympy__sympy-20322/run_instance.log"
+      },
+      "trajectory": {
+        "path": ".agents/evals/test-100-1022-1755/trajectories/events/sympy__sympy-20322.jsonl"
+      }
+    },
+    "evidence_file": "cases/sympy__sympy-20322.md"
+  },
+  {
+    "instance_id": "sympy__sympy-22840",
+    "primary_category": "coverage_gap",
+    "confidence": "medium",
+    "title": "MatrixSymbol is atomic for CSE, but MatrixElement is still extracted",
+    "summary": "The patch removes whole-matrix copies yet leaves scalar element temporaries that the accepted codegen contract excludes.",
+    "issue": "CSE of indexed MatrixSymbols generates redundant copies of whole matrices before code generation.",
+    "agent_patch": "Adds MatrixSymbol to the atomic early-return cases in tree_cse._find_repeated.",
+    "golden_patch": "Treats both MatrixSymbol and MatrixElement as atomic, while allowing larger repeated products to be extracted.",
+    "observed_failure": "The MatrixSymbol F2P test passes. test_multidim_c_argument_cse fails because the generated code still extracts repeated element temporaries; all 95 P2P tests pass.",
+    "scope_assessment": "This is an adjacent-node/end-to-end coverage gap, with a genuine scope caveat: the issue specifically complains about whole-matrix copies, and exact scalar-temporary suppression is an additional accepted design choice.",
+    "trajectory_assessment": "The agent inspects MatrixElement and demonstrates remaining element substitutions, but validates only the CSE test module. The recorded native CSE run passes 42 tests with five expected failures; codegen is not validated.",
+    "improvement": "Check MatrixSymbol, MatrixElement and composite matrix expressions together, then inspect generated C. Explicitly decide which repeated objects merit temporaries.",
+    "secondary_tags": [
+      "adjacent_ast_node",
+      "end_to_end_gap",
+      "golden_scope_caveat"
+    ],
+    "fail_to_pass": {
+      "passed": 1,
+      "total": 2,
+      "reported_failures": [
+        "test_multidim_c_argument_cse"
+      ]
+    },
+    "pass_to_pass": {
+      "passed": 95,
+      "total": 95,
+      "reported_failures": []
+    },
+    "steps": 35,
+    "at_step_ceiling": false,
+    "official_patch_successfully_applied": true,
+    "patch_applied_in_harness_log": true,
+    "sources": {
+      "dataset": {
+        "path": "swe_bench_lite_test_100.jsonl",
+        "jsonl_line": 100
+      },
+      "prediction": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.jsonl",
+        "jsonl_line": 100
+      },
+      "metrics": {
+        "path": ".agents/evals/test-100-1022-1755/predictions.metrics.jsonl",
+        "jsonl_line": 100
+      },
+      "report": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/sympy__sympy-22840/report.json"
+      },
+      "test_output": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/sympy__sympy-22840/test_output.txt"
+      },
+      "harness_log": {
+        "path": ".agents/evals/test-100-1022-1755/logs/run_evaluation/test-100-1022-1755/deepseek__deepseek-v4-flash/sympy__sympy-22840/run_instance.log"
+      },
+      "trajectory": {
+        "path": ".agents/evals/test-100-1022-1755/trajectories/events/sympy__sympy-22840.jsonl"
+      }
+    },
+    "evidence_file": "cases/sympy__sympy-22840.md"
+  }
+]

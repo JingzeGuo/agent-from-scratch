@@ -1,0 +1,136 @@
+{
+  "run": "test-100-1022-1755",
+  "analysis_date": "2026-10-23",
+  "recorded_agent_commit": "1734386913c9f8557d3f580b8ead19f5a9ebce0e",
+  "recorded_git_status": "?? swe_bench_lite_test_100.meta.json",
+  "metrics": {
+    "all": {
+      "instances": 100,
+      "mean_steps": 29.42,
+      "median_steps": 30.0,
+      "at_40_steps": 25,
+      "estimated_cost_usd": 9.73898128,
+      "mean_minutes": 3.90553390786791
+    },
+    "resolved": {
+      "instances": 74,
+      "mean_steps": 28.37837837837838,
+      "median_steps": 29.0,
+      "at_40_steps": 15,
+      "estimated_cost_usd": 6.7502527400000005,
+      "mean_minutes": 3.4923892911411887
+    },
+    "unresolved": {
+      "instances": 26,
+      "mean_steps": 32.38461538461539,
+      "median_steps": 37.5,
+      "at_40_steps": 10,
+      "estimated_cost_usd": 2.9887285400000003,
+      "mean_minutes": 5.081407047782425
+    }
+  },
+  "categories": {
+    "implementation_defect": 5,
+    "specification_mismatch": 7,
+    "coverage_gap": 5,
+    "golden_scope_expansion": 4,
+    "root_cause_miss": 5
+  },
+  "repositories": [
+    {
+      "repo": "astropy/astropy",
+      "total": 2,
+      "resolved": 2,
+      "unresolved": 0
+    },
+    {
+      "repo": "django/django",
+      "total": 39,
+      "resolved": 33,
+      "unresolved": 6
+    },
+    {
+      "repo": "matplotlib/matplotlib",
+      "total": 8,
+      "resolved": 6,
+      "unresolved": 2
+    },
+    {
+      "repo": "mwaskom/seaborn",
+      "total": 1,
+      "resolved": 0,
+      "unresolved": 1
+    },
+    {
+      "repo": "pallets/flask",
+      "total": 2,
+      "resolved": 0,
+      "unresolved": 2
+    },
+    {
+      "repo": "psf/requests",
+      "total": 2,
+      "resolved": 1,
+      "unresolved": 1
+    },
+    {
+      "repo": "pydata/xarray",
+      "total": 1,
+      "resolved": 1,
+      "unresolved": 0
+    },
+    {
+      "repo": "pylint-dev/pylint",
+      "total": 3,
+      "resolved": 3,
+      "unresolved": 0
+    },
+    {
+      "repo": "pytest-dev/pytest",
+      "total": 5,
+      "resolved": 5,
+      "unresolved": 0
+    },
+    {
+      "repo": "scikit-learn/scikit-learn",
+      "total": 9,
+      "resolved": 6,
+      "unresolved": 3
+    },
+    {
+      "repo": "sphinx-doc/sphinx",
+      "total": 5,
+      "resolved": 3,
+      "unresolved": 2
+    },
+    {
+      "repo": "sympy/sympy",
+      "total": 23,
+      "resolved": 14,
+      "unresolved": 9
+    }
+  ],
+  "integrity_checks": {
+    "unique_dataset_predictions_metrics": 100,
+    "same_instance_ids_across_inputs": true,
+    "per_instance_scores_match_aggregate": true,
+    "submitted_patches_match_harness_patch_files": 100,
+    "reviewed_unresolved_cases": 26,
+    "cases_with_applied_patch_marker": 26
+  },
+  "source_sha256": {
+    "swe_bench_lite_test_100.jsonl": "7fac7273267b0830a988b7d6c57d7db934b8cfceaea4f3942fa66735afd2a2e2",
+    "swe_bench_lite_test_100.meta.json": "f24ae977e9950a94b28bb01a6c449c2ea7ed90545cd641c064a2890e29c9957b",
+    ".agents/evals/test-100-1022-1755/predictions.jsonl": "1a69042bcf3b8a5898079cb2ebc79b8d4ee08a676979d014e23fef516ac2639e",
+    ".agents/evals/test-100-1022-1755/predictions.metrics.jsonl": "0fe9a69db6ffdc29483876ab1a7ad165197d31fe39a3b1c8978ee7069e2fae87",
+    ".agents/evals/test-100-1022-1755/commit.txt": "1c741c6e4a2cc00677cdc3c9e2eaa0e2989dc9ac1fc442dfb890beeadb7d9081",
+    ".agents/evals/test-100-1022-1755/config.txt": "b9085a59e2b204b5ebb7e02b3a26dc3e7f20d80a33abc9c625b3efaa1a7d7990",
+    ".agents/evals/test-100-1022-1755/official-reports/deepseek__deepseek-v4-flash.test-100-1022-1755.json": "e6db6aa21beafcb4623335147032ec444a135247a19d5a1432904d994e3f48a7"
+  },
+  "limitations": [
+    "Retrospective artifact review; no benchmark or counterfactual gold reruns performed.",
+    "Trajectory output_preview/text_preview fields may be truncated.",
+    "Primary categories are analytical judgments, not official benchmark labels.",
+    "F2P/P2P counts preserve harness metadata even where raw logs show parser inconsistencies."
+  ]
+}
